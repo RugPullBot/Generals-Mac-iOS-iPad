@@ -492,6 +492,27 @@ Int parseYRes(char *args[], int num)
 	return 1;
 }
 
+// GeneralsX @bugfix -fps had no effect in any shipping build. Both this handler and
+// its "-fps" table entry sat inside "#if defined(RTS_DEBUG)", and every macOS/iOS preset
+// builds with RTS_BUILD_OPTION_DEBUG=OFF (-DRTS_RELEASE -DNDEBUG). The string literal was
+// therefore absent from the binary entirely - confirmed with `strings` on CommandLine.cpp.o,
+// which lists -nologo/-noshaders/-quickstart/-xres but no -fps - so parseCommandLine's
+// linear match never hit and the unknown-argument fallback silently dropped both "-fps"
+// and its value. m_framesPerSecondLimit kept its default of 0, GameEngine::init then
+// clamped it up to BaseFps (30), and the "[30]" the player sees is genuinely the render
+// cap (InGameUI::drawRenderFps), not the logic rate being misreported.
+//
+// Lifted out of the debug block rather than duplicated so there is one definition.
+//=============================================================================
+Int parseFPSLimit(char *args[], int num)
+{
+	if (num > 1)
+	{
+		TheWritableGlobalData->m_framesPerSecondLimit = atoi(args[1]);
+	}
+	return 2;
+}
+
 #if defined(RTS_DEBUG)
 //=============================================================================
 //=============================================================================
@@ -573,17 +594,6 @@ Int parseNoStaticLOD(char *args[], int num)
 	TheWritableGlobalData->m_enableStaticLOD = FALSE;
 
 	return 1;
-}
-
-//=============================================================================
-//=============================================================================
-Int parseFPSLimit(char *args[], int num)
-{
-	if (num > 1)
-	{
-		TheWritableGlobalData->m_framesPerSecondLimit = atoi(args[1]);
-	}
-	return 2;
 }
 
 //=============================================================================
@@ -1197,6 +1207,11 @@ static CommandLineParam paramsForEngineInit[] =
 	// TheSuperHackers @feature xezon 03/08/2025 Force full viewport for 'Control Bar Pro' Addons like GenTool did it.
 	{ "-forcefullviewport", parseFullViewport },
 
+	// GeneralsX @bugfix Render frame rate overrides must exist in release builds too;
+	// these two were registered only under RTS_DEBUG. See parseFPSLimit above.
+	{ "-fps", parseFPSLimit },
+	{ "-noFPSLimit", parseNoFPSLimit },
+
 #if defined(RTS_DEBUG)
 	{ "-noaudio", parseNoAudio },
 	{ "-map", parseMapName },
@@ -1278,7 +1293,6 @@ static CommandLineParam paramsForEngineInit[] =
 	{ "-lowDetail", parseLowDetail },
 	{ "-noDynamicLOD", parseNoDynamicLOD },
 	{ "-noStaticLOD", parseNoStaticLOD },
-	{ "-fps", parseFPSLimit },
 	{ "-wireframe", parseWireframe },
 	{ "-showCollision", parseShowCollision },
 	{ "-noShowClientPhysics", parseNoShowClientPhysics },
@@ -1313,7 +1327,6 @@ static CommandLineParam paramsForEngineInit[] =
 	{ "-constantDebug", parseConstantDebug },
 	{ "-seed", parseSeed },
 	{ "-noagpfix", parseIncrAGPBuf },
-	{ "-noFPSLimit", parseNoFPSLimit },
 	{ "-dumpAssetUsage", parseDumpAssetUsage },
 	{ "-jumpToFrame", parseJumpToFrame },
 	{ "-updateImages", parseUpdateImages },
