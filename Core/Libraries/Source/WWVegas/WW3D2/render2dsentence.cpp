@@ -1955,11 +1955,31 @@ FontCharsClass::Store_Freetype_Char (WCHAR ch)
 	//
 	//	Copy FreeType bitmap to our buffer (convert 8-bit gray → 16-bit format)
 	//
+	// Clip the blit to this character's cell.
+	//
+	// Cells are packed back to back in one linear buffer (CurrPixelOffset advances
+	// by char_width * CharHeight), and CharHeight is derived from the face's
+	// ascender/descender. A glyph whose rendered bitmap exceeds that — which
+	// happens with substitute fonts whose vertical metrics differ from the ones
+	// the layout assumed, e.g. the Liberation faces bundled on iOS standing in for
+	// Arial — used to run off the end of its cell and land in the top rows of the
+	// next character. That showed up in game as thin slivers of unrelated glyphs
+	// floating above menu button text. Only the top edge was ever guarded, and
+	// only against a negative offset.
 	for ( unsigned int row = 0; row < glyph->bitmap.rows; row++ ) {
+		const int dst_row = y_offset + (int)row;
+		if ( dst_row < 0 || dst_row >= CharHeight ) {
+			continue;
+		}
+
 		int src_index = row * glyph->bitmap.pitch;
-		int dst_index = (y_offset + row) * char_width;
+		int dst_index = dst_row * char_width;
 
 		for ( unsigned int col = 0; col < glyph->bitmap.width; col++ ) {
+			const int dst_col = x_offset + (int)col;
+			if ( dst_col < 0 || dst_col >= char_width ) {
+				continue;
+			}
 			//
 			//	Get 8-bit grayscale pixel
 			//
@@ -1975,7 +1995,7 @@ FontCharsClass::Store_Freetype_Char (WCHAR ch)
 			//	SAME FORMAT AS GDI IMPLEMENTATION
 			//
 			uint8 alpha_value = (pixel_value >> 4) & 0xF;
-			curr_buffer_p[dst_index + x_offset + col] = pixel_color | (alpha_value << 12);
+			curr_buffer_p[dst_index + dst_col] = pixel_color | (alpha_value << 12);
 		}
 	}
 
