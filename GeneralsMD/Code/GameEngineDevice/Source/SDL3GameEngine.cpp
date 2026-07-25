@@ -30,6 +30,7 @@
 
 #include "SDL3GameEngine.h"
 #include "OpenALAudioManager.h"
+#include "OpenALAudioDevice/OpenALAudioStream.h"   // AudioDebugDump()
 #include "SDL3Device/GameClient/SDL3Mouse.h"
 #include "SDL3Device/GameClient/SDL3Keyboard.h"
 #include "GameClient/Mouse.h"
@@ -164,7 +165,8 @@ struct TouchState {
 	Uint64 downTicks = 0;
 	float f1x = 0.0f, f1y = 0.0f, f2x = 0.0f, f2y = 0.0f; // normalized per finger
 	float f3x = 0.0f, f3y = 0.0f;
-	float anchorX = 0.0f, anchorY = 0.0f;  // mirror point for camera drags
+	float lastDist = 0.0f;                 // finger spread at the previous motion
+	float lastCx = 0.0f, lastCy = 0.0f;    // centroid at the previous motion
 };
 
 TouchState s_touch;
@@ -173,6 +175,7 @@ const Uint64 LONG_PRESS_MS = 600;
 const float PINCH_STEP_RATIO = 0.06f;  // 6% distance change per wheel tick
 const float TAP_DEAD_ZONE_PX = 8.0f;   // jitter below this keeps a tap a tap
 const float SCROLL_STEP_PX = 36.0f;    // vertical travel per wheel tick in menus
+const float PAN_DEAD_ZONE_PX = 3.0f;   // centroid jitter below this is not a pan
 
 void sendSyntheticMouse(SDL3Mouse *mouse, SDL_Window *window, Uint32 type,
                         float x, float y, Uint8 button = 0, float wheelY = 0.0f)
@@ -235,33 +238,24 @@ void beginTwoFinger(SDL3Mouse *mouse, SDL_Window *window, int winW, int winH)
 		return;
 	}
 
-	// Two fingers drive zoom and camera together. The right button is held so the
-	// engine's drag-scroll moves the view, and the cursor is mirrored about the
-	// anchor (see beginPan) so the terrain tracks the fingers instead of sliding
-	// the opposite way.
-	s_touch.anchorX = s_touch.panX;
-	s_touch.anchorY = s_touch.panY;
+	// Two fingers drive both zoom and camera, but never in the same event: see the
+	// PINCH motion handler, which picks whichever of the two actually moved.
+	s_touch.lastDist = s_touch.pinchDist;
+	s_touch.lastCx = s_touch.panX;
+	s_touch.lastCy = s_touch.panY;
 	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.panX, s_touch.panY);
 	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
 	                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
 	s_touch.phase = TouchState::PINCH;
 }
 
-// Third finger joins a pinch: start dragging the camera.
-//
-// The synthetic cursor is mirrored about the anchor rather than tracking the
-// fingers directly. The engine's right-drag scrolls the camera the way the mouse
-// moves, which on a touchscreen reads backwards — you expect to grab the terrain
-// and haul it, as the menus do. Reflecting the delta gives that: send
-// 2*anchor - centroid so the map follows the fingers.
+// Third finger joins a pinch: keep dragging the camera, now from the three-finger
+// centroid. The cursor tracks the centroid directly — the engine's right-drag
+// scroll direction is what players already expect.
 void beginPan(SDL3Mouse *mouse, SDL_Window *window, int winW, int winH)
 {
 	s_touch.panX = (s_touch.f1x + s_touch.f2x + s_touch.f3x) * (1.0f / 3.0f) * (float)winW;
 	s_touch.panY = (s_touch.f1y + s_touch.f2y + s_touch.f3y) * (1.0f / 3.0f) * (float)winH;
-	// Re-anchor on the three-finger centroid so promoting from two fingers to
-	// three does not jump the camera.
-	s_touch.anchorX = s_touch.panX;
-	s_touch.anchorY = s_touch.panY;
 	// The right button is already held from the pinch; just keep dragging.
 	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.panX, s_touch.panY);
 	s_touch.phase = TouchState::PAN;
@@ -322,6 +316,12 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 			s_touch.f3y = event.tfinger.y;
 			beginPan(mouse, window, winW, winH);
 		}
+		else if (s_touch.phase == TouchState::PAN) {
+			// A fourth finger during a pan dumps the audio diagnostic ring. Four
+			// because nothing else uses it, so it cannot be triggered by accident
+			// while playing. The pan itself is left running.
+			AudioDebugDump("four-finger tap");
+		}
 		// LONGPRESSED / PAN / SCROLL with extra fingers: ignored
 		break;
 
@@ -377,40 +377,57 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 			}
 		}
 		else if (s_touch.phase == TouchState::PINCH) {
-			// Pan and zoom together: sliding both fingers drags the terrain with
-			// them, spreading or closing them zooms.
+			// Two fingers can zoom or pan, but doing both from one event makes each
+			// ruin the other: spreading the fingers always drags the centroid a few
+			// pixels, which used to be fed straight in as camera motion and made the
+			// view lurch while zooming. Classify each event by whichever changed more
+			// — the spread between the fingers, or where their midpoint sits — and
+			// act on only that one.
 			const float cx = (s_touch.f1x + s_touch.f2x) * 0.5f * (float)winW;
 			const float cy = (s_touch.f1y + s_touch.f2y) * 0.5f * (float)winH;
-			const float mirroredX = 2.0f * s_touch.anchorX - cx;
-			const float mirroredY = 2.0f * s_touch.anchorY - cy;
-			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, mirroredX, mirroredY);
-			s_touch.panX = mirroredX;
-			s_touch.panY = mirroredY;
-
 			const float dx = (s_touch.f1x - s_touch.f2x) * (float)winW;
 			const float dy = (s_touch.f1y - s_touch.f2y) * (float)winH;
 			const float dist = SDL_sqrtf(dx * dx + dy * dy);
-			if (s_touch.pinchDist > 1.0f) {
-				const float ratio = dist / s_touch.pinchDist;
-				if (ratio > 1.0f + PINCH_STEP_RATIO) {
-					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_WHEEL, cx, cy, 0, 1.0f);
-					s_touch.pinchDist = dist;
-				} else if (ratio < 1.0f - PINCH_STEP_RATIO) {
-					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_WHEEL, cx, cy, 0, -1.0f);
-					s_touch.pinchDist = dist;
+
+			const float distDelta = SDL_fabsf(dist - s_touch.lastDist);
+			const float panDelta = SDL_fabsf(cx - s_touch.lastCx) + SDL_fabsf(cy - s_touch.lastCy);
+
+			// Fingers resting on the glass still jitter by a pixel or two, and while
+			// zooming the midpoint always wanders a little. Without a floor on the
+			// pan term that jitter wins the comparison the moment the spread stops
+			// changing, and the camera creeps while you hold a zoom.
+			if (distDelta > panDelta || panDelta < PAN_DEAD_ZONE_PX) {
+				// Spread dominates: pure zoom, camera untouched.
+				if (s_touch.pinchDist > 1.0f) {
+					const float ratio = dist / s_touch.pinchDist;
+					if (ratio > 1.0f + PINCH_STEP_RATIO) {
+						sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_WHEEL, cx, cy, 0, 1.0f);
+						s_touch.pinchDist = dist;
+					} else if (ratio < 1.0f - PINCH_STEP_RATIO) {
+						sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_WHEEL, cx, cy, 0, -1.0f);
+						s_touch.pinchDist = dist;
+					}
 				}
+			} else {
+				// Midpoint dominates: pan, tracking the centroid directly.
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, cx, cy);
+				s_touch.panX = cx;
+				s_touch.panY = cy;
+				// Keep the zoom reference current so releasing a pan does not fire a
+				// spurious wheel tick from drift accumulated while panning.
+				s_touch.pinchDist = dist;
 			}
+
+			s_touch.lastDist = dist;
+			s_touch.lastCx = cx;
+			s_touch.lastCy = cy;
 		}
 		else if (s_touch.phase == TouchState::PAN) {
-			// Mirror the centroid about the anchor so the terrain tracks the fingers
-			// instead of running away from them.
 			const float cx = (s_touch.f1x + s_touch.f2x + s_touch.f3x) * (1.0f / 3.0f) * (float)winW;
 			const float cy = (s_touch.f1y + s_touch.f2y + s_touch.f3y) * (1.0f / 3.0f) * (float)winH;
-			const float mirroredX = 2.0f * s_touch.downX - cx;
-			const float mirroredY = 2.0f * s_touch.downY - cy;
-			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, mirroredX, mirroredY);
-			s_touch.panX = mirroredX;
-			s_touch.panY = mirroredY;
+			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, cx, cy);
+			s_touch.panX = cx;
+			s_touch.panY = cy;
 		}
 		break;
 
@@ -762,6 +779,13 @@ void SDL3GameEngine::pollSDL3Events(void)
 
 			case SDL_EVENT_KEY_DOWN:
 			case SDL_EVENT_KEY_UP:
+				// F9 dumps the audio diagnostic ring. Handled here rather than through
+				// the game's keybinding layer so it works on any screen, including
+				// while a menu has focus.
+				if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F9 &&
+				    !event.key.repeat) {
+					AudioDebugDump("F9 pressed");
+				}
 				// Fighter19 pattern: direct addSDLEvent() call
 				// GeneralsX @refactor felipebraz 16/02/2026 Simplified event routing
 				if (TheKeyboard) {
