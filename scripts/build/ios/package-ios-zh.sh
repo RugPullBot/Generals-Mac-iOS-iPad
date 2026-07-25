@@ -48,13 +48,43 @@ if [[ ! -f "${GAME_BIN}" ]]; then
     exit 1
 fi
 
+# Hardware UDID of the first usable device, or empty. Note that devicectl reports
+# the state as "available" on current Xcode; older releases said "connected", so
+# accept both. Never let a failure here abort the script under `set -e` — an
+# absent device is only fatal when --install was requested.
+find_device_udid() {
+    xcrun devicectl list devices 2>/dev/null \
+        | awk '/(available|connected)/ { print $0 }' \
+        | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}' \
+        | head -1 || true
+}
+
+# Registering the device with the developer account requires xcodebuild to be
+# pointed at that specific device. With `-destination generic/platform=iOS` the
+# provisioning profile is generated (or reused) without the device in its
+# ProvisionedDevices list, and the install is then refused by the device.
+DEVICE_UDID="$(find_device_udid)"
+if [[ -n "${DEVICE_UDID}" ]]; then
+    DESTINATION="platform=iOS,id=${DEVICE_UDID}"
+    echo "==> Target device: ${DEVICE_UDID}"
+else
+    DESTINATION="generic/platform=iOS"
+    if [[ "${DO_INSTALL}" == "1" ]]; then
+        echo "ERROR: --install requested but no device found (xcrun devicectl list devices)."
+        echo "  Connect the device, unlock it, and trust this computer."
+        exit 1
+    fi
+    echo "==> No device connected; building against a generic destination."
+    echo "    NOTE: the resulting profile will not authorise any new device."
+fi
+
 echo "==> Generating Xcode project (xcodegen)"
 (cd "${IOS_DIR}" && xcodegen generate --quiet)
 
 echo "==> Building provisioning shell app"
 xcodebuild -project "${IOS_DIR}/${APP_NAME}.xcodeproj" \
     -scheme "${APP_NAME}" -configuration Release \
-    -destination 'generic/platform=iOS' \
+    -destination "${DESTINATION}" \
     -derivedDataPath "${DERIVED}" \
     DEVELOPMENT_TEAM="${TEAM_ID}" \
     PRODUCT_BUNDLE_IDENTIFIER="${BUNDLE_ID}" \
@@ -189,16 +219,16 @@ codesign --verify --deep "${APP}" && echo "    signature OK"
 echo "==> App ready: ${APP}"
 
 if [[ "${DO_INSTALL}" == "1" ]]; then
-    echo "==> Installing to connected device"
-    DEVICE_ID=$(xcrun devicectl list devices 2>/dev/null | awk '/connected/{print $(NF-2); exit}')
-    if [[ -z "${DEVICE_ID}" ]]; then
-        # fall back: parse the identifier column (3rd-from-last varies with model names)
-        DEVICE_ID=$(xcrun devicectl list devices 2>/dev/null | grep -i connected | grep -oE '[0-9A-F-]{36}' | head -1)
+    echo "==> Installing to device ${DEVICE_UDID}"
+    # devicectl accepts the hardware UDID directly, so reuse the one the shell
+    # app was provisioned against. Matching the two guarantees the profile in
+    # the bundle lists this device; a mismatch is refused at install time.
+    xcrun devicectl device install app --device "${DEVICE_UDID}" "${APP}"
+    if [[ "${DEV_MODE}" == "1" ]]; then
+        echo "==> Installed (--dev). Copy game assets, fonts/ and dxvk.conf into the"
+        echo "    app's Documents via Finder file sharing — a --dev bundle ships none"
+        echo "    of them, and without fonts/ the game renders no text."
+    else
+        echo "==> Installed. Assets are bundled; nothing further to copy."
     fi
-    if [[ -z "${DEVICE_ID}" ]]; then
-        echo "ERROR: no connected device found (xcrun devicectl list devices)"
-        exit 1
-    fi
-    xcrun devicectl device install app --device "${DEVICE_ID}" "${APP}"
-    echo "==> Installed. Copy game assets to the app's Documents via Finder/Files app."
 fi

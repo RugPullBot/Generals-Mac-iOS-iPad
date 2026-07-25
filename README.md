@@ -95,7 +95,10 @@ On top of the macOS prerequisites: full Xcode (signed into your Apple ID),
 
 ```sh
 cd GeneralsX
-git submodule update --init references/fbraz3-dxvk   # iOS DXVK is built from this + Patches/dxvk-ios.patch
+git submodule update --init --recursive references/fbraz3-dxvk   # iOS DXVK is built from this + Patches/dxvk-ios.patch
+# --recursive is required: DXVK vendors Vulkan-Headers, SPIRV-Headers and the
+# mingw-directx headers as its own submodules. Without them the meson cross
+# configure fails with 'Missing Vulkan-Headers'.
 ./scripts/build/ios/fetch-moltenvk.sh                # pinned MoltenVK.framework (checksummed)
 ./scripts/build/ios/stage-fonts.sh                   # Liberation fonts, renamed as the game expects
 cmake --preset ios-vulkan
