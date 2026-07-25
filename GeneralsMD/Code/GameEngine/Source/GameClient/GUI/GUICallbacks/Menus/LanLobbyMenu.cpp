@@ -432,11 +432,21 @@ void LanLobbyMenuInit( WindowLayout *layout, void *userData )
 		DEBUG_ASSERTCRASH(IPlist, ("No IP addresses found!"));
 		if (!IPlist)
 		{
-			/// @todo: display error and exit lan lobby if no IPs are found
+			// GeneralsX @bugfix The guard body was empty and execution fell straight
+			// through to IPlist->getIP(). Any machine with no usable network
+			// interface — an iPad with Wi-Fi off is the everyday case — crashed on
+			// opening this screen. DEBUG_ASSERTCRASH above compiles away in release,
+			// so it caught nothing where it mattered.
+			/// @todo: display an error to the user rather than silently backing out
+			DEBUG_LOG(("LanLobbyMenuInit: no local IP addresses; leaving IP unset.\n"));
+			IPSource = L"No network";
+			IP = 0;
 		}
-
-		IPSource = L"Local IP chosen";
-		IP = IPlist->getIP();
+		else
+		{
+			IPSource = L"Local IP chosen";
+			IP = IPlist->getIP();
+		}
 	}
 	else
 	{

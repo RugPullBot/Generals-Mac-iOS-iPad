@@ -86,7 +86,13 @@ void W3DOverlordTankDraw::doDrawModule(const Matrix3D* transformMtx)
 		)
 	{
 		Drawable *riderDraw = me->getContain()->friend_getRider()->getDrawable();
-		riderDraw->setColorTintEnvelope( *getDrawable()->getColorTintEnvelope() );
+		// GeneralsX @bugfix The tint envelope is lazily allocated and is null until
+		// something tints the drawable, so dereferencing it unconditionally formed a
+		// null reference every frame this unit was on screen. W3DOverlordAircraftDraw
+		// already guards it; this is that guard, copied.
+		TintEnvelope *env = getDrawable()->getColorTintEnvelope();
+		if ( env )
+			riderDraw->setColorTintEnvelope( *env );
 
 		riderDraw->notifyDrawableDependencyCleared();
 		riderDraw->draw();

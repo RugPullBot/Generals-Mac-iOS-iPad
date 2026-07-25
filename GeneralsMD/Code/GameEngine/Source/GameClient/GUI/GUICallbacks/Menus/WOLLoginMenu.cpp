@@ -122,8 +122,20 @@ static AsciiString obfuscate( AsciiString in )
 	{
 		if (!*c2)
 			c2 = xorWord;
+		// GeneralsX @bugfix Was: *c = *c++ ^ *c2++;
+		//
+		// C++17 sequences the right operand of an assignment before the left, and
+		// this project builds as C++20 — so `c` was already incremented by the time
+		// the store happened, writing the XOR result to the NEXT byte. That
+		// destroyed the terminator the loop condition was about to read, so the walk
+		// ran past the end of a password-sized heap buffer, and the transform lost
+		// the self-inverse property it needs to round-trip.
 		if (*c != *c2)
-			*c = *c++ ^ *c2++;
+		{
+			*c = *c ^ *c2;
+			++c;
+			++c2;
+		}
 		else
 			c++, c2++;
 	}

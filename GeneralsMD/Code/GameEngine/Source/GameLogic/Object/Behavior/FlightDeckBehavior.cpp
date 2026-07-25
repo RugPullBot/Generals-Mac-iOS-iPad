@@ -1701,7 +1701,9 @@ void FlightDeckBehavior::xfer( Xfer *xfer )
 			xfer->xferUnsignedInt( &m_rampUpFrame[ i ] );
 			xfer->xferUnsignedInt( &m_catapultSystemFrame[ i ] );
 			xfer->xferUnsignedInt( &m_lowerRampFrame[ i ] );
-			xfer->xferBool( &m_rampUp[ MAX_RUNWAYS ] );
+			// GeneralsX @bugfix was [ MAX_RUNWAYS ] — one past the end of the array,
+			// written on every iteration instead of the element being serialized.
+			xfer->xferBool( &m_rampUp[ i ] );
 		}
 		else
 		{

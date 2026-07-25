@@ -504,7 +504,11 @@ void AIGuardOuterState::xfer( Xfer *xfer )
 /** Load post process */
 // ------------------------------------------------------------------------------------------------
 void AIGuardOuterState::loadPostProcess()
-{						 AIGuardOuterState
+{
+	// GeneralsX @bugfix A stray 'AIGuardOuterState' sat here, which made the next line
+	// parse as a declaration — 'AIGuardOuterState onEnter();' — rather than a call. The
+	// state was therefore never re-entered after loading a save, so guarding
+	// units abandoned their guard orders on load.
 	onEnter();
 }
 

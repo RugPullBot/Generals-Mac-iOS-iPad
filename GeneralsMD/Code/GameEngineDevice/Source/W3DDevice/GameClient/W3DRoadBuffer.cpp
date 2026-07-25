@@ -700,7 +700,7 @@ void W3DRoadBuffer::loadFloat4PtSection(RoadSegment *pRoad, Vector2 loc,
 			// Write out the vertices.
 			for (j=0; j<vCount; j++) {
 				Real U, V;
-				if (numRoadVertices >= MAX_SEG_INDEX) {
+				if (numRoadVertices >= MAX_SEG_VERTEX) {
 					break;
 				}
 				curVector.Set(curColumn.vtx[j].X - loc.X, curColumn.vtx[j].Y - loc.Y);
@@ -722,7 +722,7 @@ void W3DRoadBuffer::loadFloat4PtSection(RoadSegment *pRoad, Vector2 loc,
 					break;
 				}
 			}
-			if (numRoadVertices >= MAX_SEG_INDEX) {
+			if (numRoadVertices >= MAX_SEG_VERTEX) {
 				break;
 			}
 			if (i>1) {
@@ -730,7 +730,10 @@ void W3DRoadBuffer::loadFloat4PtSection(RoadSegment *pRoad, Vector2 loc,
 				j = 0;
 				k = 0;
 				while (j<vCount-1 && k<vCount-1) {
-					if (numRoadIndices >= MAX_SEG_INDEX) {
+					// GeneralsX @bugfix Up to six indices are written below, so a bare
+					// ">= MAX_SEG_INDEX" test still let the last iteration write past
+					// the end of ib[].
+					if (numRoadIndices + 6 > MAX_SEG_INDEX) {
 						break;
 					}
 					UnsignedShort *curIb = ib+numRoadIndices;
@@ -922,6 +925,11 @@ void W3DRoadBuffer::loadLit4PtSection(RoadSegment *pRoad, UnsignedShort *ib, Ver
 		if (!curColumn.deleted && i!=1) {
 			// Write out the vertices.
 			for (j=0; j<vCount; j++) {
+							// GeneralsX @bugfix No per-iteration bound existed here; only a check
+							// after the loop, so a wide column could still overrun vb[].
+							if (m_curNumRoadVertices >= MAX_SEG_VERTEX) {
+								break;
+							}
 				Real U, V;
 				if (m_curNumRoadVertices >= m_maxRoadVertex) {
 					break;
@@ -1004,7 +1012,7 @@ void W3DRoadBuffer::loadLit4PtSection(RoadSegment *pRoad, UnsignedShort *ib, Ver
 					break;
 				}
 			}
-			if (m_curNumRoadVertices >= MAX_SEG_INDEX) {
+			if (m_curNumRoadVertices >= MAX_SEG_VERTEX) {
 				break;
 			}
 			if (i>1 && (!prevColumn.collapsed || !curColumn.collapsed)) {

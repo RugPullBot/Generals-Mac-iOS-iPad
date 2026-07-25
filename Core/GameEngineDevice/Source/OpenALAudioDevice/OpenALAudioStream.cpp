@@ -171,12 +171,19 @@ bool OpenALAudioStream::bufferData(uint8_t *data, size_t data_size, ALenum forma
             }
             peak = (peak * 100) / 32768;   // percent of full scale
         }
+        // Log the source's ACTUAL gain next to the peak. Loudness heard by the
+        // player is peak * gain, so the two together separate "the sample itself
+        // is hot" from "this is playing louder than it should". Also flag the
+        // source's own reported volume so a mis-set gain is visible directly.
+        ALfloat gain = -1.0f;
+        alGetSourcef(m_source, AL_GAIN, &gain);
         static int s_bufSeq = 0;
-        // Only the loud ones, and a periodic heartbeat for context.
-        if (peak >= 97 || (++s_bufSeq % 64) == 0) {
-            AudioDebugRecord("src=%u buffered size=%zu fmt=0x%x rate=%d peak=%d%%%s",
-                             m_source, data_size, (unsigned int)format, samplerate, peak,
-                             (peak >= 97) ? "  <-- CLIPPING" : "");
+        const bool loudOnset = (peak >= 90 && gain >= 0.85f);
+        if (loudOnset || peak >= 97 || (++s_bufSeq % 64) == 0) {
+            AudioDebugRecord("src=%u buffered size=%zu fmt=0x%x rate=%d peak=%d%% gain=%.2f%s",
+                             m_source, data_size, (unsigned int)format, samplerate, peak, gain,
+                             loudOnset ? "  <-- LOUD (peak*gain high)" :
+                             (peak >= 97 ? "  <-- CLIPPING" : ""));
         }
     }
 

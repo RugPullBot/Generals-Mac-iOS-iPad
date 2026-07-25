@@ -495,7 +495,7 @@ WWINLINE float Vector3::Quick_Length() const
 
 	if (max < mid) { tmp = max; max = mid; mid = tmp; }
 	if (max < min) { tmp = max; max = min; min = tmp; }
-	if (mid < min) { tmp = mid; mid = min; min = mid; }
+	if (mid < min) { tmp = mid; mid = min; min = tmp; }   // GeneralsX @bugfix was min = mid, losing the swapped value
 
 	return max + (11.0f / 32.0f)*mid + (1.0f / 4.0f)*min;
 }

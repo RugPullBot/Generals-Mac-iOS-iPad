@@ -314,7 +314,8 @@ void NetworkDirectConnectInit( WindowLayout *layout, void *userData )
 			DEBUG_ASSERTCRASH(IPlist, ("No IP addresses found!"));
 			if (!IPlist)
 			{
-				/// @todo: display error and exit lan lobby if no IPs are found
+				/// @todo: display an error to the user rather than continuing silently
+				DEBUG_LOG(("NetworkDirectConnectInit: no local IP addresses found.\n"));
 			}
 
 			Bool foundIP = FALSE;
@@ -326,10 +327,15 @@ void NetworkDirectConnectInit( WindowLayout *layout, void *userData )
 				tempIP = tempIP->getNext();
 			}
 
-			if (foundIP == FALSE) {
+			if (foundIP == FALSE && IPlist != nullptr) {
 				// The IP that we had no longer exists, we need to pick a new one.
 				IP = IPlist->getIP();
 			}
+			// GeneralsX @bugfix IPlist can be null when the machine has no usable
+			// network interface (an iPad with Wi-Fi off). The empty `if (!IPlist)`
+			// guard above let execution reach here, and the while loop's own null
+			// test meant foundIP stayed FALSE — so this branch dereferenced the
+			// null every time. DEBUG_ASSERTCRASH compiles away in release.
 
 //			IP = IPlist->getIP();
 //		}

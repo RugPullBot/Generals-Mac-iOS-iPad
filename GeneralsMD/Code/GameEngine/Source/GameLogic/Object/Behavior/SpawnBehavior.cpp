@@ -579,7 +579,11 @@ Object *SpawnBehavior::reclaimOrphanSpawn()
 			tempName != md->m_spawnTemplateNameData.end();
 			++tempName)
 	{
-		if (prevName.compare(*tempName)) // the list may have redundancy, this will skip some of it
+		// GeneralsX @bugfix compare() returns 0 when the strings are EQUAL, so the
+		// test was inverted: it skipped every entry that differed from the previous
+		// one and processed only consecutive duplicates — the exact opposite of the
+		// stated intent.
+		if (prevName.compare(*tempName) == 0) // the list may have redundancy, this will skip some of it
 			continue;
 		orphanData.m_matchTemplate = TheThingFactory->findTemplate( *tempName );
 		orphanData.m_source = getObject();

@@ -48,25 +48,44 @@ if [[ ! -f "${GAME_BIN}" ]]; then
     exit 1
 fi
 
-# Hardware UDID of the first usable device, or empty. Note that devicectl reports
-# the state as "available" on current Xcode; older releases said "connected", so
-# accept both. Never let a failure here abort the script under `set -e` — an
-# absent device is only fatal when --install was requested.
-find_device_udid() {
+# Two different identifiers are in play and they are NOT interchangeable:
+#   * CoreDevice UUID (8-4-4-4-12), which is what `devicectl list devices` prints
+#     and what `devicectl device install` expects.
+#   * Hardware UDID (8-16), which is what `xcodebuild -destination id=` expects
+#     and what appears in a provisioning profile's ProvisionedDevices.
+# Resolve the UUID from the listing, then ask devicectl for the hardware UDID.
+#
+# Note the state filter: current Xcode reports "available (paired)" while older
+# releases said "connected" — but a plain match on "available" also matches
+# "unavailable", so offline devices must be excluded first.
+#
+# Never let a failure here abort the script under `set -e`; an absent device is
+# only fatal when --install was requested.
+find_device_uuid() {
     xcrun devicectl list devices 2>/dev/null \
-        | awk '/(available|connected)/ { print $0 }' \
-        | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}' \
+        | grep -vi 'unavailable' \
+        | grep -iE 'available|connected' \
+        | grep -oE '[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}' \
         | head -1 || true
+}
+
+find_device_udid() {
+    local uuid="$1"
+    [[ -n "${uuid}" ]] || return 0
+    xcrun devicectl device info details --device "${uuid}" 2>/dev/null \
+        | awk -F': *' '/[^A-Za-z]udid:/ { print $2; exit }' \
+        | tr -d '[:space:]' || true
 }
 
 # Registering the device with the developer account requires xcodebuild to be
 # pointed at that specific device. With `-destination generic/platform=iOS` the
 # provisioning profile is generated (or reused) without the device in its
 # ProvisionedDevices list, and the install is then refused by the device.
-DEVICE_UDID="$(find_device_udid)"
+DEVICE_UUID="$(find_device_uuid)"
+DEVICE_UDID="$(find_device_udid "${DEVICE_UUID}")"
 if [[ -n "${DEVICE_UDID}" ]]; then
     DESTINATION="platform=iOS,id=${DEVICE_UDID}"
-    echo "==> Target device: ${DEVICE_UDID}"
+    echo "==> Target device: ${DEVICE_UDID} (CoreDevice ${DEVICE_UUID})"
 else
     DESTINATION="generic/platform=iOS"
     if [[ "${DO_INSTALL}" == "1" ]]; then
@@ -220,10 +239,9 @@ echo "==> App ready: ${APP}"
 
 if [[ "${DO_INSTALL}" == "1" ]]; then
     echo "==> Installing to device ${DEVICE_UDID}"
-    # devicectl accepts the hardware UDID directly, so reuse the one the shell
-    # app was provisioned against. Matching the two guarantees the profile in
-    # the bundle lists this device; a mismatch is refused at install time.
-    xcrun devicectl device install app --device "${DEVICE_UDID}" "${APP}"
+    # Install by CoreDevice UUID — the hardware UDID above is what xcodebuild
+    # provisioned against, so the profile in the bundle lists this same device.
+    xcrun devicectl device install app --device "${DEVICE_UUID}" "${APP}"
     if [[ "${DEV_MODE}" == "1" ]]; then
         echo "==> Installed (--dev). Copy game assets, fonts/ and dxvk.conf into the"
         echo "    app's Documents via Finder file sharing — a --dev bundle ships none"

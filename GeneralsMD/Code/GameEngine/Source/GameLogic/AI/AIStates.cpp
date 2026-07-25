@@ -129,7 +129,9 @@ void AICommandParmsStorage::reconstitute(AICommandParms& parms) const
 void AICommandParmsStorage::doXfer(Xfer *xfer)
 {
 	xfer->xferUser(&m_cmd, sizeof(m_cmd));
-	xfer->xferUser(&m_cmd, sizeof(m_cmdSource));
+	// GeneralsX @bugfix was &m_cmd — m_cmd was written twice and m_cmdSource never
+	// serialized at all, so the command source was lost across save/load.
+	xfer->xferUser(&m_cmdSource, sizeof(m_cmdSource));
 	xfer->xferCoord3D(&m_pos);
 	xfer->xferObjectID(&m_obj);
 	xfer->xferObjectID(&m_otherObj);
