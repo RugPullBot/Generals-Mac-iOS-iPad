@@ -548,6 +548,29 @@ void MainMenuInit( WindowLayout *layout, void *userData )
 	buttonLoad = TheWindowManager->winGetWindowFromId( parentMainMenu, buttonLoadID );
 	buttonCredits = TheWindowManager->winGetWindowFromId( parentMainMenu, buttonCreditsID );
 
+	// GeneralsX @bugfix Hide the Steam re-release's "Custom Mission" button.
+	//
+	// The Steam depot adds it in PatchWindow.big (MainMenu.wnd) with its strings
+	// in PatchData.big (Data/Patch.str), and Steam's own executable implements the
+	// feature. This engine descends from EA's 2003 GPL source, which predates it:
+	// there is no handler for the control anywhere in the codebase, and the string
+	// table loader never reads Patch.str, so the button renders as
+	// MISSING:'GUI:CustomMission' and does nothing when pressed. Reproduced on
+	// GeneralsOnline for Windows as well, so this is not port-specific.
+	//
+	// Hide it rather than label it: a correctly-labelled button that silently does
+	// nothing is worse than no button. Should the feature ever be implemented,
+	// delete this block and load Patch.str alongside the main string table.
+	{
+		GameWindow *buttonCustomMission = TheWindowManager->winGetWindowFromId(
+			parentMainMenu,
+			TheNameKeyGenerator->nameToKey( "MainMenu.wnd:ButtonCustomMission" ) );
+		if( buttonCustomMission )
+		{
+			buttonCustomMission->winHide( TRUE );
+		}
+	}
+
 	buttonEasy = TheWindowManager->winGetWindowFromId( parentMainMenu, buttonEasyID );
 	buttonMedium = TheWindowManager->winGetWindowFromId( parentMainMenu, buttonMediumID );
 	buttonHard = TheWindowManager->winGetWindowFromId( parentMainMenu, buttonHardID );
