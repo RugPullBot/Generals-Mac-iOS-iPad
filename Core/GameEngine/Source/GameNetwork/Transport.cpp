@@ -238,9 +238,26 @@ Bool Transport::doSend() {
 			}
 			else
 			{
-				//DEBUG_LOG(("Could not write to socket!!!  Not discarding message!"));
+				// GeneralsX @bugfix "Not discarding message" is right only for a transient
+				// failure. A hard one - EHOSTUNREACH (what Darwin returns for a limited
+				// broadcast to 255.255.255.255, i.e. every LAN discovery send), EACCES,
+				// ENETUNREACH, EADDRNOTAVAIL - will never succeed on retry, so retaining the
+				// message pinned one of MAX_MESSAGES slots for the rest of the process. Enough
+				// of those and the send queue is full of corpses and real traffic is dropped.
+				// Retain only when the socket is genuinely just busy.
+				const UDP::sockStat sockStatus = m_udpsock->GetStatus();
+				const Bool transient = (sockStatus == UDP::OK)         // no error recorded
+				                    || (sockStatus == UDP::WOULDBLOCK)
+				                    || (sockStatus == UDP::AGAIN)
+				                    || (sockStatus == UDP::INTR)
+				                    || (sockStatus == UDP::INPROGRESS);
+				if (!transient)
+				{
+					DEBUG_LOG(("Transport::doSend - dropping undeliverable message to %d.%d.%d.%d:%d (status %d)",
+						PRINTF_IP_AS_4_INTS(m_outBuffer[i].addr), m_outBuffer[i].port, (Int)sockStatus));
+					m_outBuffer[i].length = 0;  // Remove from queue; retrying cannot help
+				}
 				retval = FALSE;
-				//DEBUG_LOG(("Transport::doSend returning FALSE"));
 			}
 		}
 	}

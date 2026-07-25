@@ -161,6 +161,14 @@ Int UDP::Bind(UnsignedInt IP,UnsignedShort Port)
   if (fd==-1)
     return(UNKNOWN);
 
+  // GeneralsX @bugfix Put the socket in non-blocking mode BEFORE the bind rather than after.
+  // The old order returned on bind failure at the line below, skipping SetBlocking entirely,
+  // so a socket that failed to bind stayed blocking - and because GetStatus() was pinned to OK
+  // on POSIX (see mapPosixReadError above) the caller took it as a working socket and later
+  // parked the main thread in recvfrom(). bind() does not block, so hoisting this is free.
+  if (SetBlocking(FALSE)==UNKNOWN)
+    fprintf(stderr,"Couldn't set nonblocking mode!\n");
+
   retval=bind(fd,(struct sockaddr *)&addr,sizeof(addr));
 
   #ifdef _WIN32
@@ -169,19 +177,28 @@ Int UDP::Bind(UnsignedInt IP,UnsignedShort Port)
     retval=-1;
 		m_lastError = WSAGetLastError();
 	}
+  #else
+  // GeneralsX @bugfix Record errno so GetStatus() can report the real failure. Without this
+  // it returned OK and a failed bind looked like a successful one.
+  if (retval==-1)
+		m_lastError = errno;
   #endif
   if (retval==-1)
   {
     status=GetStatus();
-    //CERR("Bind failure (" << status << ") IP " << IP << " PORT " << Port )
+    // GeneralsX @bugfix GetStatus() maps 0 to OK, so an errno this switch does not know
+    // (EADDRNOTAVAIL is the common one - a stale Options.ini IPAddress naming an interface
+    // that no longer exists) must still surface as a failure rather than as OK.
+    if (status==OK)
+      status=UNKNOWN;
+    fprintf(stderr,"UDP::Bind failed (status %d) for IP %u.%u.%u.%u port %u\n",
+            (int)status,
+            (unsigned)((ntohl(IP)>>24)&0xff), (unsigned)((ntohl(IP)>>16)&0xff),
+            (unsigned)((ntohl(IP)>>8)&0xff),  (unsigned)(ntohl(IP)&0xff),
+            (unsigned)ntohs(Port));
+    fflush(stderr);
     return(status);
   }
-
-// GeneralsX @bugfix BenderAI 13/02/2026 Use socklen_t for POSIX socket functions (fighter19 pattern)
-socklen_t namelen=sizeof(addr);
-  retval=SetBlocking(FALSE);
-  if (retval==-1)
-    fprintf(stderr,"Couldn't set nonblocking mode!\n");
 
   return(OK);
 }
@@ -250,10 +267,42 @@ Int UDP::Write(const unsigned char *msg,UnsignedInt len,UnsignedInt IP,UnsignedS
 #endif
 		DEBUG_ASSERTLOG(errCount++ > 100, ("UDP::Write() - WSA error is %s", GetWSAErrorString(WSAGetLastError()).str()));
 	}
+  #else
+  // GeneralsX @bugfix Record errno on POSIX so Transport::doSend can distinguish a transient
+  // EWOULDBLOCK (retry) from a hard EHOSTUNREACH/EACCES (drop). It previously saw OK for both
+  // and retained the failed message forever, leaking one of MAX_MESSAGES slots per failure.
+  if (retval==-1)
+		m_lastError = errno;
   #endif
 
   return(retval);
 }
+
+#ifndef _WIN32
+// GeneralsX @bugfix Every write to m_lastError in this file sat inside #ifdef _WIN32, so on
+// POSIX GetStatus() read a permanently-zero field and reported OK no matter what the socket
+// did. UDP::Bind then returned "success" after a failed bind - and returned before
+// SetBlocking(FALSE), handing Transport a BLOCKING socket it believed was fine, so
+// Transport::doRecv's read loop parked the main thread in recvfrom(). The symptom is the game
+// freezing when you open the LAN screen, which reads like a renderer stall, not a network
+// fault. Everything downstream was equally blind: Transport::init left its retry loop
+// immediately and returned true, LANAPI::SetLocalIP returned TRUE, LanLobbyMenuInit never set
+// LANSocketErrorDetected, and the GUI:SocketError dialog was unreachable.
+//
+// Ordering matters here: the Windows Read path already remaps WSAEWOULDBLOCK to a 0 return,
+// but POSIX recvfrom reports an idle non-blocking socket as -1/EAGAIN. Recording errno without
+// special-casing that would make Transport::doRecv return FALSE on every idle tick and trip
+// LANSocketErrorDetected every frame - harmless only while GetStatus() was pinned to OK. So
+// the drain case is filtered here, before any error is recorded.
+Int UDP::mapPosixReadError()
+{
+	const int err = errno;
+	if (err == EAGAIN || err == EWOULDBLOCK || err == EINTR)
+		return 0;			// nothing queued (or interrupted); not an error
+	m_lastError = err;
+	return -1;
+}
+#endif
 
 Int UDP::Read(unsigned char *msg,UnsignedInt len,sockaddr_in *from)
 {
@@ -280,6 +329,9 @@ Int UDP::Read(unsigned char *msg,UnsignedInt len,sockaddr_in *from)
 				retval = 0;
 			}
 		}
+    #else
+		if (retval < 0)
+			retval = mapPosixReadError();
     #endif
   }
   else
@@ -301,6 +353,9 @@ Int UDP::Read(unsigned char *msg,UnsignedInt len,sockaddr_in *from)
 				retval = 0;
 			}
 		}
+    #else
+		if (retval < 0)
+			retval = mapPosixReadError();
     #endif
   }
   return(retval);
@@ -377,6 +432,16 @@ UDP::sockStat UDP::GetStatus()
     #endif
     case EBADF:
       return BADF;
+    // GeneralsX @bugfix Map the errnos this port actually hits. EADDRNOTAVAIL is a stale
+    // Options.ini IPAddress naming an interface that no longer exists; EADDRINUSE is a
+    // second instance already holding 8086; EHOSTUNREACH is what Darwin returns for a
+    // limited broadcast to 255.255.255.255, which is how LAN discovery fails here.
+    case EADDRNOTAVAIL:
+      return ADDRNOTAVAIL;
+    case EADDRINUSE:
+      return ADDRINUSE;
+    case EPIPE:
+      return PIPE;
     default:
       return UNKNOWN;
   }

@@ -39,6 +39,7 @@ here**.
 | [DATA_AND_ASSETS.md](DATA_AND_ASSETS.md) | How the game finds and overrides data: the BIG format, the one flat VFS namespace and its load-order/override rules, INI parsing and override chains, `.csf`/`.str` string tables, the map cache, and save games. |
 | [BUILD_AND_PACKAGING.md](BUILD_AND_PACKAGING.md) | The four parallel dependency mechanisms (vcpkg, FetchContent, meson `ExternalProject`, pre-installed SDKs), both CMake presets, how DXVK and MoltenVK are obtained, and the macOS and iOS packaging scripts end to end. |
 | [COMPRESSION.md](COMPRESSION.md) | The five codecs behind `CompressionManager`, how a four-byte magic alone selects the decoder, which call sites take untrusted input (map enumeration, peer packets), and the destination-bounding work on RefPack with its verification evidence. |
+| [NETWORKING.md](NETWORKING.md) | The LAN stack: why cross-architecture lockstep against a retail x86 binary cannot work, this fork's own ungated sim divergences, the POSIX socket defects that turned a failed bind into a main-thread hang, and how to actually set up an iPad↔macOS Direct Connect game. |
 
 **Suggested reading order** if you are new: `BUILD_AND_PACKAGING` (get it building) →
 `INPUT_AND_PLATFORM` (how the process starts) → `GAME_LOGIC` (how a frame works) →
