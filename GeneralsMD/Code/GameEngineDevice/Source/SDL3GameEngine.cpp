@@ -131,8 +131,9 @@ static bool SDLCALL iosLifecycleWatcher(void *userdata, SDL_Event *event)
 // Gestures (matching the game's stock control scheme, which is LMB-centric):
 //   1 finger tap/drag     -> left button click / drag (select, command, drag-box)
 //   1 finger long-press   -> right button click (deselect), if finger stays put
-//   2 finger drag         -> right-button drag at the centroid (camera scroll)
-//   2 finger pinch        -> mouse wheel (camera zoom)
+//   2 finger pinch        -> mouse wheel (camera zoom), camera stays put
+//   3 finger drag         -> right-button drag (camera scroll), terrain follows
+//                            the fingers rather than running from them
 //
 // While a shell menu is up there is no camera to move, and the useful gesture is
 // scrolling a list (map selection, replays, saves). Two fingers there emit wheel
@@ -146,13 +147,15 @@ struct TouchState {
 		PENDING,     // finger1 down, gesture identity not yet known, nothing sent
 		DRAGGING,    // finger1 drag in progress, LMB held
 		LONGPRESSED, // long-press fired (RMB click sent), swallow until lift
-		PAN,         // two-finger camera pan, RMB held
+		PINCH,       // two-finger zoom, camera anchored, no button held
+		PAN,         // three-finger camera pan, RMB held
 		SCROLL       // two-finger list scroll in a shell menu, no button held
 	};
 
 	Phase phase = IDLE;
 	SDL_FingerID finger1 = 0;
 	SDL_FingerID finger2 = 0;
+	SDL_FingerID finger3 = 0;
 	float downX = 0.0f, downY = 0.0f;   // finger1 down position (window points)
 	float lastX = 0.0f, lastY = 0.0f;   // finger1 latest position
 	float panX = 0.0f, panY = 0.0f;     // pan centroid
@@ -160,6 +163,8 @@ struct TouchState {
 	float scrollAccum = 0.0f;           // unspent vertical travel while SCROLLing
 	Uint64 downTicks = 0;
 	float f1x = 0.0f, f1y = 0.0f, f2x = 0.0f, f2y = 0.0f; // normalized per finger
+	float f3x = 0.0f, f3y = 0.0f;
+	float anchorX = 0.0f, anchorY = 0.0f;  // mirror point for camera drags
 };
 
 TouchState s_touch;
@@ -206,7 +211,13 @@ void sendSyntheticMouse(SDL3Mouse *mouse, SDL_Window *window, Uint32 type,
 	mouse->addSDLEvent(&ev);
 }
 
-void beginPan(SDL3Mouse *mouse, SDL_Window *window, int winW, int winH)
+// Two fingers land: a shell menu scrolls its list, otherwise we zoom.
+//
+// Zoom deliberately holds no button and emits no motion. Driving the camera and
+// the zoom from the same two fingers meant every pinch also dragged the view,
+// which makes precise zooming impossible — the anchor slides out from under you.
+// Panning now needs a third finger (beginPan below).
+void beginTwoFinger(SDL3Mouse *mouse, SDL_Window *window, int winW, int winH)
 {
 	s_touch.panX = (s_touch.f1x + s_touch.f2x) * 0.5f * (float)winW;
 	s_touch.panY = (s_touch.f1y + s_touch.f2y) * 0.5f * (float)winH;
@@ -214,7 +225,7 @@ void beginPan(SDL3Mouse *mouse, SDL_Window *window, int winW, int winH)
 	const float dy = (s_touch.f1y - s_touch.f2y) * (float)winH;
 	s_touch.pinchDist = SDL_sqrtf(dx * dx + dy * dy);
 
-	// In a shell menu two fingers mean "scroll this list", not "pan the camera".
+	// In a shell menu two fingers mean "scroll this list", not "zoom the camera".
 	// Hold no button: an RMB press on a listbox is at best meaningless and the
 	// wheel is what the gadgets actually listen for.
 	if (TheShell != nullptr && TheShell->isShellActive()) {
@@ -224,9 +235,35 @@ void beginPan(SDL3Mouse *mouse, SDL_Window *window, int winW, int winH)
 		return;
 	}
 
+	// Two fingers drive zoom and camera together. The right button is held so the
+	// engine's drag-scroll moves the view, and the cursor is mirrored about the
+	// anchor (see beginPan) so the terrain tracks the fingers instead of sliding
+	// the opposite way.
+	s_touch.anchorX = s_touch.panX;
+	s_touch.anchorY = s_touch.panY;
 	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.panX, s_touch.panY);
 	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
 	                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
+	s_touch.phase = TouchState::PINCH;
+}
+
+// Third finger joins a pinch: start dragging the camera.
+//
+// The synthetic cursor is mirrored about the anchor rather than tracking the
+// fingers directly. The engine's right-drag scrolls the camera the way the mouse
+// moves, which on a touchscreen reads backwards — you expect to grab the terrain
+// and haul it, as the menus do. Reflecting the delta gives that: send
+// 2*anchor - centroid so the map follows the fingers.
+void beginPan(SDL3Mouse *mouse, SDL_Window *window, int winW, int winH)
+{
+	s_touch.panX = (s_touch.f1x + s_touch.f2x + s_touch.f3x) * (1.0f / 3.0f) * (float)winW;
+	s_touch.panY = (s_touch.f1y + s_touch.f2y + s_touch.f3y) * (1.0f / 3.0f) * (float)winH;
+	// Re-anchor on the three-finger centroid so promoting from two fingers to
+	// three does not jump the camera.
+	s_touch.anchorX = s_touch.panX;
+	s_touch.anchorY = s_touch.panY;
+	// The right button is already held from the pinch; just keep dragging.
+	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.panX, s_touch.panY);
 	s_touch.phase = TouchState::PAN;
 }
 
@@ -262,23 +299,30 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
 		}
 		else if (s_touch.phase == TouchState::PENDING) {
-			// Second finger before the first committed to anything: pure pan,
-			// no left-click ever happened.
+			// Second finger before the first committed to anything: zoom (or list
+			// scroll in a menu), no left-click ever happened.
 			s_touch.finger2 = event.tfinger.fingerID;
 			s_touch.f2x = event.tfinger.x;
 			s_touch.f2y = event.tfinger.y;
-			beginPan(mouse, window, winW, winH);
+			beginTwoFinger(mouse, window, winW, winH);
 		}
 		else if (s_touch.phase == TouchState::DRAGGING) {
-			// Second finger during a live drag: finish the drag-box, then pan.
+			// Second finger during a live drag: finish the drag-box, then zoom.
 			s_touch.finger2 = event.tfinger.fingerID;
 			s_touch.f2x = event.tfinger.x;
 			s_touch.f2y = event.tfinger.y;
 			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
 			                   s_touch.lastX, s_touch.lastY, SDL_BUTTON_LEFT);
+			beginTwoFinger(mouse, window, winW, winH);
+		}
+		else if (s_touch.phase == TouchState::PINCH) {
+			// Third finger promotes the gesture to a camera pan.
+			s_touch.finger3 = event.tfinger.fingerID;
+			s_touch.f3x = event.tfinger.x;
+			s_touch.f3y = event.tfinger.y;
 			beginPan(mouse, window, winW, winH);
 		}
-		// LONGPRESSED / PAN with extra fingers: ignored
+		// LONGPRESSED / PAN / SCROLL with extra fingers: ignored
 		break;
 
 	case SDL_EVENT_FINGER_MOTION:
@@ -287,10 +331,14 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 			s_touch.f1y = event.tfinger.y;
 			s_touch.lastX = px;
 			s_touch.lastY = py;
-		} else if ((s_touch.phase == TouchState::PAN || s_touch.phase == TouchState::SCROLL) &&
+		} else if ((s_touch.phase == TouchState::PINCH || s_touch.phase == TouchState::PAN ||
+		            s_touch.phase == TouchState::SCROLL) &&
 		           event.tfinger.fingerID == s_touch.finger2) {
 			s_touch.f2x = event.tfinger.x;
 			s_touch.f2y = event.tfinger.y;
+		} else if (s_touch.phase == TouchState::PAN && event.tfinger.fingerID == s_touch.finger3) {
+			s_touch.f3x = event.tfinger.x;
+			s_touch.f3y = event.tfinger.y;
 		} else {
 			break;
 		}
@@ -328,12 +376,16 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				s_touch.scrollAccum += SCROLL_STEP_PX;
 			}
 		}
-		else if (s_touch.phase == TouchState::PAN) {
+		else if (s_touch.phase == TouchState::PINCH) {
+			// Pan and zoom together: sliding both fingers drags the terrain with
+			// them, spreading or closing them zooms.
 			const float cx = (s_touch.f1x + s_touch.f2x) * 0.5f * (float)winW;
 			const float cy = (s_touch.f1y + s_touch.f2y) * 0.5f * (float)winH;
-			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, cx, cy);
-			s_touch.panX = cx;
-			s_touch.panY = cy;
+			const float mirroredX = 2.0f * s_touch.anchorX - cx;
+			const float mirroredY = 2.0f * s_touch.anchorY - cy;
+			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, mirroredX, mirroredY);
+			s_touch.panX = mirroredX;
+			s_touch.panY = mirroredY;
 
 			const float dx = (s_touch.f1x - s_touch.f2x) * (float)winW;
 			const float dy = (s_touch.f1y - s_touch.f2y) * (float)winH;
@@ -349,13 +401,26 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				}
 			}
 		}
+		else if (s_touch.phase == TouchState::PAN) {
+			// Mirror the centroid about the anchor so the terrain tracks the fingers
+			// instead of running away from them.
+			const float cx = (s_touch.f1x + s_touch.f2x + s_touch.f3x) * (1.0f / 3.0f) * (float)winW;
+			const float cy = (s_touch.f1y + s_touch.f2y + s_touch.f3y) * (1.0f / 3.0f) * (float)winH;
+			const float mirroredX = 2.0f * s_touch.downX - cx;
+			const float mirroredY = 2.0f * s_touch.downY - cy;
+			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, mirroredX, mirroredY);
+			s_touch.panX = mirroredX;
+			s_touch.panY = mirroredY;
+		}
 		break;
 
 	case SDL_EVENT_FINGER_UP:
 	case SDL_EVENT_FINGER_CANCELED:
 		if (event.tfinger.fingerID != s_touch.finger1 &&
-		    !((s_touch.phase == TouchState::PAN || s_touch.phase == TouchState::SCROLL) &&
-		      event.tfinger.fingerID == s_touch.finger2)) {
+		    !((s_touch.phase == TouchState::PINCH || s_touch.phase == TouchState::PAN ||
+		       s_touch.phase == TouchState::SCROLL) &&
+		      event.tfinger.fingerID == s_touch.finger2) &&
+		    !(s_touch.phase == TouchState::PAN && event.tfinger.fingerID == s_touch.finger3)) {
 			break;
 		}
 		switch (s_touch.phase) {
@@ -377,6 +442,11 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, px, py, SDL_BUTTON_LEFT);
 				break;
 			case TouchState::PAN:
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+				                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
+				break;
+			case TouchState::PINCH:
+				// Holds the right button for the camera drag, same as PAN.
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
 				                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
 				break;
