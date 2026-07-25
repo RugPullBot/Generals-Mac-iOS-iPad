@@ -37,6 +37,7 @@
 #include "GameClient/GameWindow.h"
 #include "GameClient/GameWindowManager.h"
 #include "GameClient/Gadget.h"
+#include "GameClient/Shell.h"
 #include "W3DDevice/GameLogic/W3DGameLogic.h"
 #include "W3DDevice/GameClient/W3DGameClient.h"
 #include "W3DDevice/Common/W3DModuleFactory.h"
@@ -132,6 +133,10 @@ static bool SDLCALL iosLifecycleWatcher(void *userdata, SDL_Event *event)
 //   1 finger long-press   -> right button click (deselect), if finger stays put
 //   2 finger drag         -> right-button drag at the centroid (camera scroll)
 //   2 finger pinch        -> mouse wheel (camera zoom)
+//
+// While a shell menu is up there is no camera to move, and the useful gesture is
+// scrolling a list (map selection, replays, saves). Two fingers there emit wheel
+// ticks from vertical movement instead, and never press the right button.
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -141,7 +146,8 @@ struct TouchState {
 		PENDING,     // finger1 down, gesture identity not yet known, nothing sent
 		DRAGGING,    // finger1 drag in progress, LMB held
 		LONGPRESSED, // long-press fired (RMB click sent), swallow until lift
-		PAN          // two-finger camera pan, RMB held
+		PAN,         // two-finger camera pan, RMB held
+		SCROLL       // two-finger list scroll in a shell menu, no button held
 	};
 
 	Phase phase = IDLE;
@@ -151,6 +157,7 @@ struct TouchState {
 	float lastX = 0.0f, lastY = 0.0f;   // finger1 latest position
 	float panX = 0.0f, panY = 0.0f;     // pan centroid
 	float pinchDist = 0.0f;             // finger distance at last wheel step
+	float scrollAccum = 0.0f;           // unspent vertical travel while SCROLLing
 	Uint64 downTicks = 0;
 	float f1x = 0.0f, f1y = 0.0f, f2x = 0.0f, f2y = 0.0f; // normalized per finger
 };
@@ -160,6 +167,7 @@ TouchState s_touch;
 const Uint64 LONG_PRESS_MS = 600;
 const float PINCH_STEP_RATIO = 0.06f;  // 6% distance change per wheel tick
 const float TAP_DEAD_ZONE_PX = 8.0f;   // jitter below this keeps a tap a tap
+const float SCROLL_STEP_PX = 36.0f;    // vertical travel per wheel tick in menus
 
 void sendSyntheticMouse(SDL3Mouse *mouse, SDL_Window *window, Uint32 type,
                         float x, float y, Uint8 button = 0, float wheelY = 0.0f)
@@ -205,6 +213,17 @@ void beginPan(SDL3Mouse *mouse, SDL_Window *window, int winW, int winH)
 	const float dx = (s_touch.f1x - s_touch.f2x) * (float)winW;
 	const float dy = (s_touch.f1y - s_touch.f2y) * (float)winH;
 	s_touch.pinchDist = SDL_sqrtf(dx * dx + dy * dy);
+
+	// In a shell menu two fingers mean "scroll this list", not "pan the camera".
+	// Hold no button: an RMB press on a listbox is at best meaningless and the
+	// wheel is what the gadgets actually listen for.
+	if (TheShell != nullptr && TheShell->isShellActive()) {
+		s_touch.scrollAccum = 0.0f;
+		s_touch.phase = TouchState::SCROLL;
+		sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.panX, s_touch.panY);
+		return;
+	}
+
 	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.panX, s_touch.panY);
 	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
 	                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
@@ -268,7 +287,8 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 			s_touch.f1y = event.tfinger.y;
 			s_touch.lastX = px;
 			s_touch.lastY = py;
-		} else if (s_touch.phase == TouchState::PAN && event.tfinger.fingerID == s_touch.finger2) {
+		} else if ((s_touch.phase == TouchState::PAN || s_touch.phase == TouchState::SCROLL) &&
+		           event.tfinger.fingerID == s_touch.finger2) {
 			s_touch.f2x = event.tfinger.x;
 			s_touch.f2y = event.tfinger.y;
 		} else {
@@ -289,6 +309,24 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 		}
 		else if (s_touch.phase == TouchState::DRAGGING && event.tfinger.fingerID == s_touch.finger1) {
 			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
+		}
+		else if (s_touch.phase == TouchState::SCROLL) {
+			// Content follows the fingers, as everywhere else on the platform:
+			// dragging down reveals earlier entries, i.e. a wheel-up tick.
+			const float cy = (s_touch.f1y + s_touch.f2y) * 0.5f * (float)winH;
+			s_touch.scrollAccum += (cy - s_touch.panY);
+			s_touch.panY = cy;
+			s_touch.panX = (s_touch.f1x + s_touch.f2x) * 0.5f * (float)winW;
+			while (s_touch.scrollAccum >= SCROLL_STEP_PX) {
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_WHEEL,
+				                   s_touch.panX, s_touch.panY, 0, 1.0f);
+				s_touch.scrollAccum -= SCROLL_STEP_PX;
+			}
+			while (s_touch.scrollAccum <= -SCROLL_STEP_PX) {
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_WHEEL,
+				                   s_touch.panX, s_touch.panY, 0, -1.0f);
+				s_touch.scrollAccum += SCROLL_STEP_PX;
+			}
 		}
 		else if (s_touch.phase == TouchState::PAN) {
 			const float cx = (s_touch.f1x + s_touch.f2x) * 0.5f * (float)winW;
@@ -316,7 +354,8 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 	case SDL_EVENT_FINGER_UP:
 	case SDL_EVENT_FINGER_CANCELED:
 		if (event.tfinger.fingerID != s_touch.finger1 &&
-		    !(s_touch.phase == TouchState::PAN && event.tfinger.fingerID == s_touch.finger2)) {
+		    !((s_touch.phase == TouchState::PAN || s_touch.phase == TouchState::SCROLL) &&
+		      event.tfinger.fingerID == s_touch.finger2)) {
 			break;
 		}
 		switch (s_touch.phase) {
@@ -340,6 +379,9 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 			case TouchState::PAN:
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
 				                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
+				break;
+			case TouchState::SCROLL:
+				// No button was ever pressed, so nothing to release.
 				break;
 			default:
 				break;
