@@ -27,7 +27,10 @@
 // Author: Michael S. Booth, March 2001
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-#include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
+#include "PreRTS.h"
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif	// This must go first in EVERY cpp file in the GameEngine
 
 #include <stdio.h>
 
@@ -962,8 +965,16 @@ void INI::parseInGameUIDefinition( INI* ini )
 namespace
 {
 	// helpers for inline counters
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+	// iPad screens have rounded corners, and at native resolution a 3px inset puts
+	// the first digit of the fps counter underneath the curve. Inset far enough to
+	// clear it. Tune here if a future device has a larger radius.
+	constexpr const Int kHudAnchorX = 32;
+	constexpr const Int kHudAnchorY = 10;
+#else
 	constexpr const Int kHudAnchorX = 3;
 	constexpr const Int kHudAnchorY = -1;
+#endif
 	constexpr const Int kHudGapPx = 6;
 	inline Bool isAtHudAnchorPos(const Coord2D &p) { return p.x == kHudAnchorX && p.y == kHudAnchorY; }
 }
