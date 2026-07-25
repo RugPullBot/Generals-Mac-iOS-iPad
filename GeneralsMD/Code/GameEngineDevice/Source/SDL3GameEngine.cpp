@@ -170,6 +170,8 @@ struct TouchState {
 	bool  suppressRightButton = false;     // placement mode: RMB would cancel
 	bool  rightButtonHeld = false;         // have we actually pressed RMB?
 	bool  placementAnchored = false;       // LMB held to set a building's facing
+	float cursorX = 0.0f, cursorY = 0.0f;  // where the synthetic cursor actually is
+	bool  relativeDrag = false;            // move the cursor by deltas, not absolutely
 	int   activeFingers = 0;               // fingers currently down, any phase
 	Uint64 pinchTicks = 0;                 // when the two-finger gesture started
 
@@ -202,6 +204,13 @@ void sendSyntheticMouse(SDL3Mouse *mouse, SDL_Window *window, Uint32 type,
 	// window up by id to map window points into the game's internal resolution,
 	// and silently skips scaling when the lookup fails.
 	const SDL_WindowID windowID = SDL_GetWindowID(window);
+
+	// Remember where the synthetic cursor is. Placement dragging moves it by a
+	// delta rather than jumping it to the finger midpoint, and needs this anchor.
+	if (type == SDL_EVENT_MOUSE_MOTION) {
+		s_touch.cursorX = x;
+		s_touch.cursorY = y;
+	}
 
 	SDL_Event ev;
 	SDL_zero(ev);
@@ -289,13 +298,20 @@ void beginTwoFinger(SDL3Mouse *mouse, SDL_Window *window, int winW, int winH)
 	s_touch.startDist = s_touch.pinchDist;
 	s_touch.startCx = s_touch.panX;
 	s_touch.startCy = s_touch.panY;
-	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.panX, s_touch.panY);
-
 	// While a building is waiting to be placed, the right button means "cancel", so
 	// it must never be pressed during placement — two fingers there only move the
 	// cursor, which drags the ghost where you want it.
 	s_touch.suppressRightButton =
 		(TheInGameUI != nullptr && TheInGameUI->getPendingPlaceType() != nullptr);
+
+	// During placement, do not teleport the cursor to the midpoint between the two
+	// fingers. The ghost building follows the cursor, so jumping it to the centroid
+	// the instant the second finger lands moves the building away from where the
+	// player was actually pointing — and that is where it then gets placed. Anchor
+	// on the current cursor position and apply finger movement as a delta instead.
+	if (s_touch.suppressRightButton) {
+		s_touch.relativeDrag = true;
+	}
 
 	// Do NOT press the right button yet, even outside placement.
 	//
@@ -514,9 +530,19 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				}
 			}
 			else if (s_touch.intent == TouchState::PANNING) {
-				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, cx, cy);
-				s_touch.panX = cx;
-				s_touch.panY = cy;
+				if (s_touch.relativeDrag) {
+					// Placement: shift the ghost by how far the fingers moved, keeping
+					// it under where the player was already pointing.
+					const float nx = s_touch.cursorX + (cx - s_touch.lastCx);
+					const float ny = s_touch.cursorY + (cy - s_touch.lastCy);
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, nx, ny);
+					s_touch.panX = nx;
+					s_touch.panY = ny;
+				} else {
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, cx, cy);
+					s_touch.panX = cx;
+					s_touch.panY = cy;
+				}
 				s_touch.pinchDist = dist;
 			}
 			// UNDECIDED: emit nothing. A gesture below the threshold is indistinguishable
@@ -546,6 +572,34 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 	case SDL_EVENT_FINGER_CANCELED:
 		if (s_touch.activeFingers > 0) {
 			--s_touch.activeFingers;
+		}
+		// Once the screen is clear the machine MUST return to IDLE, whichever finger
+		// happened to lift last. This is checked before the "not a finger we track"
+		// early-out below: that early-out used to skip the reset, so lifting finger1
+		// first left the phase parked at LONGPRESSED and the lift of the remaining
+		// finger returned here and broke out — stranding the machine in an inert
+		// state with no way back. Every subsequent touch was swallowed: the game kept
+		// rendering but accepted no input at all.
+		if (s_touch.activeFingers <= 0) {
+			s_touch.activeFingers = 0;
+			s_touch.relativeDrag = false;
+			if (s_touch.rightButtonHeld) {
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+				                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
+				s_touch.rightButtonHeld = false;
+			}
+			if (s_touch.placementAnchored) {
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+				                   s_touch.panX, s_touch.panY, SDL_BUTTON_LEFT);
+				s_touch.placementAnchored = false;
+			}
+			// Set it here as well as at the bottom: the early-out below can skip the
+			// bottom entirely, and leaving the phase non-IDLE with no fingers down is
+			// exactly what killed input.
+			if (s_touch.phase != TouchState::PENDING &&
+			    s_touch.phase != TouchState::DRAGGING) {
+				s_touch.phase = TouchState::IDLE;
+			}
 		}
 		if (event.tfinger.fingerID != s_touch.finger1 &&
 		    !((s_touch.phase == TouchState::PINCH || s_touch.phase == TouchState::PAN ||
@@ -645,18 +699,13 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 			default:
 				break;
 		}
-		// Only return to IDLE once the screen is actually clear.
-		//
-		// This used to reset unconditionally on the first lift, while other fingers
-		// were still down. The next finger to move or land was then treated as the
-		// start of a brand new gesture — which for a one-finger tap means a
-		// committed left click wherever that finger happened to be. In placement
-		// mode that reads as the building jumping to the last finger position.
-		//
-		// With fingers remaining, drop back to a phase that emits nothing until the
-		// hand is lifted, so the leftovers cannot be misread as a fresh gesture.
+		// Resetting on the first lift while other fingers are still down would let
+		// the leftovers read as a fresh gesture — a one-finger tap commits a click
+		// wherever it happens to be, which in placement mode looks like the building
+		// jumping. So stay inert until the hand actually leaves the glass; the
+		// unconditional check at the top of this handler guarantees we get back to
+		// IDLE even if the last finger to lift is not one we were tracking.
 		if (s_touch.activeFingers <= 0) {
-			s_touch.activeFingers = 0;
 			s_touch.phase = TouchState::IDLE;
 		} else {
 			s_touch.phase = TouchState::LONGPRESSED;  // inert: swallows input until release
@@ -670,6 +719,47 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 // polled from the frame loop or it would never fire.
 void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 {
+	// Watchdog against a stranded gesture.
+	//
+	// The state machine tracks fingers by counting DOWN and UP events, and if that
+	// count ever drifts — a lost event across an app suspend, a cancel the OS never
+	// pairs, a finger that lands during a modal — the machine can sit in a
+	// non-IDLE phase forever and silently swallow every touch. The symptom is
+	// brutal and non-obvious: the game keeps rendering and simulating but accepts
+	// no input. Ask SDL what is genuinely on the glass and recover.
+	if (s_touch.phase != TouchState::IDLE) {
+		int liveFingers = 0;
+		int numDevices = 0;
+		if (SDL_TouchID *devices = SDL_GetTouchDevices(&numDevices)) {
+			for (int d = 0; d < numDevices; ++d) {
+				int n = 0;
+				if (SDL_Finger **f = SDL_GetTouchFingers(devices[d], &n)) {
+					liveFingers += n;
+					SDL_free(f);
+				}
+			}
+			SDL_free(devices);
+		}
+		if (liveFingers == 0) {
+			if (s_touch.rightButtonHeld) {
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+				                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
+				s_touch.rightButtonHeld = false;
+			}
+			if (s_touch.placementAnchored) {
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+				                   s_touch.panX, s_touch.panY, SDL_BUTTON_LEFT);
+				s_touch.placementAnchored = false;
+			}
+			if (s_touch.phase == TouchState::DRAGGING) {
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+				                   s_touch.lastX, s_touch.lastY, SDL_BUTTON_LEFT);
+			}
+			s_touch.activeFingers = 0;
+			s_touch.phase = TouchState::IDLE;
+		}
+	}
+
 	if (s_touch.phase == TouchState::PENDING &&
 	    (SDL_GetTicks() - s_touch.downTicks) >= LONG_PRESS_MS) {
 		// No LMB was sent yet (deferred), so this is a pure right-click.

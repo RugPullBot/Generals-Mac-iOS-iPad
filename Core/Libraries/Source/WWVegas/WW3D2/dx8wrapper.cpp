@@ -580,7 +580,40 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 		// load from the embedded Frameworks directory explicitly. macOS keeps the
 		// bare name (resolved via DYLD_LIBRARY_PATH set by run.sh).
 		#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
-		D3D8Lib = LoadLibrary("@executable_path/Frameworks/libdxvk_d3d8.0.dylib");
+		// Resolve Frameworks/ from where THIS code actually lives, not from
+		// @executable_path.
+		//
+		// @executable_path is the process's main executable. That is the app itself
+		// when launched normally, but not when the app is hosted inside another
+		// process — LiveContainer and similar containers dlopen the target binary,
+		// so the main executable is the host and @executable_path points at the
+		// host's bundle. DXVK was then never found and the game exited immediately
+		// after launch. dladdr() on a symbol in our own image reports the path of
+		// the binary that actually contains this code, which is correct in both
+		// cases.
+		{
+			char frameworkPath[1024] = {0};
+			Dl_info dlInfo;
+			if (dladdr((const void *)&DX8Wrapper::Init, &dlInfo) != 0 && dlInfo.dli_fname != nullptr) {
+				const char *slash = strrchr(dlInfo.dli_fname, '/');
+				if (slash != nullptr) {
+					const size_t dirLen = (size_t)(slash - dlInfo.dli_fname);
+					if (dirLen < sizeof(frameworkPath) - 64) {
+						memcpy(frameworkPath, dlInfo.dli_fname, dirLen);
+						snprintf(frameworkPath + dirLen, sizeof(frameworkPath) - dirLen,
+						         "/Frameworks/libdxvk_d3d8.0.dylib");
+					}
+				}
+			}
+			if (frameworkPath[0] != '\0') {
+				fprintf(stderr, "DEBUG: DX8Wrapper::Init() - resolved DXVK path: %s\n", frameworkPath);
+				D3D8Lib = LoadLibrary(frameworkPath);
+			}
+			// Fall back to the historical literal if resolution failed for any reason.
+			if (D3D8Lib == nullptr) {
+				D3D8Lib = LoadLibrary("@executable_path/Frameworks/libdxvk_d3d8.0.dylib");
+			}
+		}
 		#else
 		D3D8Lib = LoadLibrary("libdxvk_d3d8.dylib");
 		#endif

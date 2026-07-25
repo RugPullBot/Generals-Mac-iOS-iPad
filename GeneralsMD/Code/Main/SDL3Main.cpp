@@ -49,6 +49,7 @@
 #include <cstring>
 #include <cstdio>
 #include <unistd.h>   // _exit()
+#include <dlfcn.h>
 #include <dirent.h>
 #include <strings.h>  // strcasecmp
 #include <glob.h>     // glob() for Vulkan ICD discovery
@@ -423,14 +424,31 @@ int main(int argc, char* argv[])
 	{
 		const char *home = getenv("HOME");
 
-		// <bundle>/GameData, derived from the executable path (argv[0])
+		// <bundle>/GameData, derived from where this code actually lives.
+		//
+		// argv[0] is the process's main executable, which is NOT this app when it is
+		// hosted inside another process — LiveContainer and similar containers
+		// dlopen the target binary, so argv[0] names the host. GameData was then
+		// never found and the game silently fell back to the host's Documents.
+		// dladdr() reports the binary containing this function, which is right in
+		// both the normal and the hosted case; argv[0] remains the fallback.
 		char bundleData[1024] = {0};
-		if (argc > 0 && argv[0] != nullptr) {
-			const char *slash = strrchr(argv[0], '/');
+		const char *imagePath = nullptr;
+		{
+			Dl_info dlInfo;
+			if (dladdr((const void *)&main, &dlInfo) != 0 && dlInfo.dli_fname != nullptr) {
+				imagePath = dlInfo.dli_fname;
+			}
+		}
+		if (imagePath == nullptr && argc > 0) {
+			imagePath = argv[0];
+		}
+		if (imagePath != nullptr) {
+			const char *slash = strrchr(imagePath, '/');
 			if (slash != nullptr) {
-				const size_t dirLen = (size_t)(slash - argv[0]);
+				const size_t dirLen = (size_t)(slash - imagePath);
 				if (dirLen < sizeof(bundleData) - 16) {
-					memcpy(bundleData, argv[0], dirLen);
+					memcpy(bundleData, imagePath, dirLen);
 					snprintf(bundleData + dirLen, sizeof(bundleData) - dirLen, "/GameData");
 				}
 			}
