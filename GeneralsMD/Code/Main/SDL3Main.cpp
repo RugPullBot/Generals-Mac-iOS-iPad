@@ -67,6 +67,85 @@
 #include <wsi/native_wsi.h>
 
 // CRITICAL SECTIONS (Linux needs these too)
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#include <csignal>
+#include <execinfo.h>
+#include <exception>
+
+// Fatal-signal reporting.
+//
+// A crash on device used to leave nothing behind: the log simply stopped
+// mid-line and the cause had to be inferred from whatever happened to be the
+// last thing written. These handlers make every fatal signal announce itself,
+// with a backtrace, into the same session log Documents already exposes.
+//
+// This does not prevent crashes — nothing can, in a codebase this size — it
+// guarantees you are never left guessing about one.
+//
+// Everything here must be async-signal-safe: raw write(), no printf, no malloc.
+// backtrace()/backtrace_symbols_fd() are safe on Darwin by design.
+static int s_crashLogFd = -1;
+
+static void crashWrite(const char *s)
+{
+	if (s_crashLogFd >= 0) { (void)!write(s_crashLogFd, s, strlen(s)); }
+	(void)!write(STDERR_FILENO, s, strlen(s));
+}
+
+static void crashSignalHandler(int sig)
+{
+	const char *name = "UNKNOWN";
+	switch (sig) {
+		case SIGSEGV: name = "SIGSEGV (invalid memory access)";      break;
+		case SIGBUS:  name = "SIGBUS (bad memory alignment/access)"; break;
+		case SIGABRT: name = "SIGABRT (abort / failed assertion)";   break;
+		case SIGILL:  name = "SIGILL (illegal instruction)";         break;
+		case SIGFPE:  name = "SIGFPE (arithmetic error)";            break;
+		case SIGTRAP: name = "SIGTRAP (trap)";                       break;
+		default: break;
+	}
+	crashWrite("\nFATAL: caught ");
+	crashWrite(name);
+	crashWrite("\nFATAL: backtrace follows\n");
+
+	void *frames[64];
+	const int n = backtrace(frames, 64);
+	if (s_crashLogFd >= 0) backtrace_symbols_fd(frames, n, s_crashLogFd);
+	backtrace_symbols_fd(frames, n, STDERR_FILENO);
+	crashWrite("FATAL: end of backtrace\n");
+
+	// Restore the default action and re-raise so the OS still records its own
+	// crash report (Settings > Privacy & Security > Analytics Data).
+	signal(sig, SIG_DFL);
+	raise(sig);
+}
+
+static void crashTerminateHandler()
+{
+	crashWrite("\nFATAL: std::terminate (unhandled C++ exception)\n");
+	void *frames[64];
+	const int n = backtrace(frames, 64);
+	if (s_crashLogFd >= 0) backtrace_symbols_fd(frames, n, s_crashLogFd);
+	backtrace_symbols_fd(frames, n, STDERR_FILENO);
+	crashWrite("FATAL: end of backtrace\n");
+	_exit(1);
+}
+
+static void installCrashHandlers()
+{
+	const int sigs[] = { SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE, SIGTRAP };
+	for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); ++i) {
+		struct sigaction sa;
+		memset(&sa, 0, sizeof(sa));
+		sa.sa_handler = crashSignalHandler;
+		sa.sa_flags = SA_RESETHAND | SA_NODEFER;
+		sigemptyset(&sa.sa_mask);
+		sigaction(sigs[i], &sa, nullptr);
+	}
+	std::set_terminate(crashTerminateHandler);
+}
+#endif // TARGET_OS_IPHONE
+
 static CriticalSection critSec1;
 static CriticalSection critSec2;
 static CriticalSection critSec3;
@@ -324,8 +403,12 @@ int main(int argc, char* argv[])
 					*stderr = *sink;  // classic Darwin stderr swap; stderr is a FILE, not a macro here
 					setvbuf(stderr, nullptr, _IOLBF, 0);  // line-buffered so a crash still flushes recent lines
 				}
+				// Hand the raw fd to the fatal-signal handlers: inside a signal handler
+				// only write() is safe, so they cannot go through the FILE* sink.
+				s_crashLogFd = s_logFd;
 			}
 		}
+		installCrashHandlers();
 	}
 
 	// The engine resolves all game data relative to the working directory.

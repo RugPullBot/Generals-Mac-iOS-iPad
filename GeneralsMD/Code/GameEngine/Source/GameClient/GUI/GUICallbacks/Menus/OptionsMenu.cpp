@@ -33,6 +33,7 @@
 #include "gamespy/ghttp/ghttp.h"
 
 #include "Common/AudioAffect.h"
+#include "Common/FileSystem.h"
 #include "Common/AudioSettings.h"
 #include "Common/GameAudio.h"
 #include "Common/GameEngine.h"
@@ -1545,6 +1546,14 @@ WindowMsgHandledType OptionsMenuSystem( GameWindow *window, UnsignedInt msg,
 
 			// GeneralsX @feature fbraz3 08/06/2026 Create Extras button dynamically
 			// (OptionsMenu.wnd in WindowZH.big has no ButtonExtras, so we add it at runtime)
+			//
+			// GeneralsX @bugfix Only offer the button when the menu it opens actually
+			// exists. Zero Hour ships no Menus/ExtrasMenu.wnd in any .big, so on a
+			// stock install this button led straight to a null layout and killed the
+			// process. Gating on the file keeps the feature working for data that does
+			// provide the layout, without presenting a dead end to everyone else.
+			if (TheFileSystem != nullptr &&
+			    TheFileSystem->doesFileExist("Window\\Menus\\ExtrasMenu.wnd"))
 			{
 				GameWindow *backBtn = TheWindowManager->winGetWindowFromId(window, buttonBack);
 				if (backBtn) {

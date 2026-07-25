@@ -697,6 +697,20 @@ void Shell::doPush( AsciiString layoutFile )
 	
 	DEBUG_ASSERTCRASH( newScreen != nullptr, ("Shell unable to load pending push layout") );
 
+	// GeneralsX @bugfix A missing layout used to be caught only by the debug
+	// assert above, which compiles away in release builds — linkScreen() then
+	// dereferenced the null and took the process down with no diagnostic. Any
+	// menu referencing a .wnd absent from the shipped data (Zero Hour has no
+	// Menus/ExtrasMenu.wnd, for instance) was an instant crash. Refuse the push
+	// and say why instead.
+	if( newScreen == nullptr )
+	{
+		fprintf(stderr, "ERROR: Shell::doPush() - layout '%s' failed to load "
+		        "(not present in the game data?); ignoring this push.\n", layoutFile.str());
+		fflush(stderr);
+		return;
+	}
+
 	// link screen to the top
 	linkScreen( newScreen );
 
