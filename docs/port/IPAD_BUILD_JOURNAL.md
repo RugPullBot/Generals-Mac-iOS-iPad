@@ -349,14 +349,109 @@ only the `.big` archives external, and would ungate the options seeding.
 
 ---
 
+## Runtime defects found on device
+
+### Options > Extras crashed the process
+
+**Severity: hard crash on a stock install. Platform-independent.**
+
+Captured in the session log:
+
+```
+Shell::doPush() called with layoutFile='Menus/ExtrasMenu.wnd'
+About to call TheWindowManager->winCreateLayout('Menus/ExtrasMenu.wnd')
+winCreateLayout returned: 0x0
+<log ends — process gone>
+```
+
+A successful push always logs `Shell::doPush() completed successfully` afterwards.
+This one does not.
+
+Three compounding causes:
+
+1. `Shell::doPush` checked the layout for null with `DEBUG_ASSERTCRASH`, which
+   compiles away in release builds. `linkScreen()` then dereferenced the null.
+   *Every* push of an absent `.wnd` was an unexplained crash.
+2. The Extras button is created unconditionally at runtime, but
+   `Window\Menus\ExtrasMenu.wnd` exists in **none** of the 36 archives of a stock
+   Steam install — base-game `ZH_Generals/` set included.
+3. Nothing reported the fatal signal, so the log simply stopped mid-line.
+
+Fixed: `doPush` refuses a null layout and names it; the button is created only
+when the layout exists; fatal signals now self-report (below).
+
+### Credits screen could not be exited
+
+**Severity: soft-lock on touch platforms.**
+
+`CreditsMenuInput` handled exactly one input — `GWM_CHAR` with `KEY_ESC`. There is
+no on-screen back button, and iOS has no ESC key, so the only escape was killing
+the app. Now `GWM_LEFT_UP`/`GWM_RIGHT_UP` dismiss it too. Verified on device.
+
+### Fatal errors left no trace
+
+Async-signal-safe handlers for `SIGSEGV`, `SIGBUS`, `SIGABRT`, `SIGILL`, `SIGFPE`,
+`SIGTRAP` and `std::terminate` now write the cause plus a backtrace to the session
+log, then restore the default action and re-raise so the OS still files its own
+crash report. Handlers use raw `write()` only — no `printf`, no allocation.
+
+Pull the log from a device with:
+
+```sh
+xcrun devicectl device copy from --device <core-device-uuid> \
+  --domain-type appDataContainer --domain-identifier <bundle-id> \
+  --source Documents --destination ./logs
+```
+
+### UNSOLVED — thin white slivers above menu button text
+
+Small fragments of unrelated glyphs appear a few pixels above the text on menu
+buttons (`MULTIPLAYER`, `CREDITS`, `EXIT GAME`, `CREATE GAME`, `DIRECT CONNECT`).
+They appear only above *some* letters.
+
+**Three theories investigated and disproven.** Recorded so they are not re-run:
+
+| Theory | Why it is wrong |
+|---|---|
+| `d3d9.samplerAnisotropy = 16` in `dxvk.conf` forcing filtering on the font sampler | DXVK guards it: `if (samplerAnisotropy != -1 && cState.minFilter > D3DTEXF_POINT)` — point samplers are excluded (`d3d9_device.cpp:7112`) |
+| Font atlas sampled with bilinear filtering | The engine requests point sampling (`render2dsentence.cpp:366-368`) and `FILTER_TYPE_NONE` maps to `D3DTEXF_POINT` (`texturefilter.cpp:126`) |
+| Atlas rows packed with no vertical gutter, so a strip samples the row above | Added a gutter matching the existing horizontal `TEXTURE_OFFSET`; **the artifact was unchanged**. Reverted. |
+
+Remaining lead: the half-texel UV inset, still commented out at
+`render2dsentence.cpp:539` (`//uv_rect.Bottom += 0.5f;`), combined with UVs
+normalised by `desc.Width` on both axes.
+
+**Recommended next step: build the macOS target first.** It gives a seconds-long
+iteration loop instead of a ~5 minute device cycle, and immediately settles
+whether this is iOS-specific at all.
+
+---
+
 ## Open items
 
-- [ ] Fix Defect 1 — `--recursive` in README, plus a configure-time guard
-- [ ] Fix Defect 2 — target the connected device by UDID
-- [ ] Fix Defect 3 — accept `available`; make the error branch reachable
-- [ ] Fix Defect 4 — reject source paths containing whitespace at configure time
-- [ ] Fix `Patch.str` loading so `GUI:CustomMission` resolves
-- [ ] Proper external-assets packaging mode (bundle fonts + config, externalise `.big`)
+- [x] Defect 1 — `--recursive` in README
+- [x] Defect 2 — target the connected device by UDID
+- [x] Defect 3 — accept `available`; make the error branch reachable
+- [x] Missing-layout crash guard in `Shell::doPush`
+- [x] Gate the Extras button on its layout existing
+- [x] Fatal-signal reporting with backtrace
+- [x] Credits dismissable by tap
+- [x] Two-finger scroll in shell menus
+- [ ] Defect 4 — reject source paths containing whitespace at configure time
+- [ ] Menu text slivers (see above — build macOS first)
+- [ ] `Patch.str` loading so `GUI:CustomMission` resolves. Needs a fourth string
+      table in `GameText` (the existing three are fixed-size arrays behind sorted
+      `bsearch` LUTs) *and* a decision on the button itself: `CustomMission` has
+      zero handlers in the codebase, so fixing only the label yields a
+      legitimate-looking button that silently does nothing
+- [ ] Proper external-assets packaging mode (bundle fonts + config, externalise
+      `.big`) — would cut update downloads from ~3 GB to ~100 MB
+- [ ] HD asset mods. GenPatcher itself is a Windows deployment fixer and mostly
+      irrelevant; the wanted pieces are data-only community packs (Control Bar Pro
+      HD, AI Graphics & Lighting Remake, 4X Upscale). All are `.big`/textures/
+      `.wnd`/INI and portable as-is. Sequence: UI and control bar first (small,
+      high impact), measure resident memory, then decide on full 4x textures
+      against the ~3 GB termination ceiling
 - [ ] Investigate the two documented runtime issues: >3 GB memory termination, and
       backgrounding crashes mid-game
 - [ ] Measure in-match frame rate (menu showed 28 fps against a 30 cap)
