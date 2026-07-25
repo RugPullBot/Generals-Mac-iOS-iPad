@@ -862,6 +862,15 @@ void OpenALAudioManager::playAudioEvent(AudioEventRTS* event)
 				setDisallowSpeech(TRUE);
 				s_disallowSpeechSetFrame = TheGameLogic ? TheGameLogic->getFrame() : 0;
 			}
+			// GeneralsX @bugfix Apply the real volume BEFORE the stream starts.
+			//
+			// OpenALAudioStream's constructor sets AL_GAIN to 1.0, and
+			// adjustPlayingVolume() was only ever reached from the update loop — so
+			// every music track and every speech line began playing at full volume
+			// and was corrected a frame later. Audibly that is a short blast of
+			// whatever just started (an EVA line, a taunt, a music intro), which is
+			// why it sounded loud, sudden, and different every time.
+			adjustPlayingVolume(audio);
 			// AIL_set_stream_volume_pan(stream, curVolume, 0.5f);
 			playStream(event, stream);
 			m_playingStreams.push_back(audio);

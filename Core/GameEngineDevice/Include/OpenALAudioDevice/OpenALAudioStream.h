@@ -28,6 +28,23 @@
 
 #define AL_STREAM_BUFFER_COUNT 32
 
+// ---------------------------------------------------------------------------
+// Audio diagnostics
+//
+// Intermittent audio faults (a sudden blast of noise, the stalled-speech chirp)
+// are hard to catch because by the time a human reacts the state that caused it
+// is gone. So streams continuously record their interesting transitions into a
+// small ring buffer, costing nothing until something asks for it, and the player
+// triggers a dump the moment they hear the fault. The dump prints the recent
+// history plus every live stream's current state, which is what actually
+// distinguishes "restarted with stale buffers still queued" from "decoder handed
+// us garbage".
+//
+// Trigger: F9 on desktop, a four-finger tap on iOS.
+// ---------------------------------------------------------------------------
+void AudioDebugRecord(const char *fmt, ...);
+void AudioDebugDump(const char *reason);
+
 class OpenALAudioStream final
 {
 public:

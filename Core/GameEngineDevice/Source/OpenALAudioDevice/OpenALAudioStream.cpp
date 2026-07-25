@@ -1,9 +1,105 @@
 #include "OpenALAudioDevice/OpenALAudioStream.h"
 #include "OpenALAudioDevice/OpenALAudioManager.h"
 #include <AL/alext.h>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <ctime>
+#include <set>
+
+// ---------------------------------------------------------------------------
+// Audio diagnostics (see the header for why this exists).
+// ---------------------------------------------------------------------------
+namespace {
+
+const int AUDIO_DEBUG_RING = 192;
+
+struct AudioDebugEntry {
+	double  when = 0.0;
+	char    text[168] = {0};
+};
+
+AudioDebugEntry s_ring[AUDIO_DEBUG_RING];
+int  s_ringNext  = 0;
+long s_ringTotal = 0;
+
+// Every live stream, so a dump can report instantaneous state and not just
+// history. Streams are created and destroyed on the audio path only.
+std::set<const OpenALAudioStream *> &liveStreams()
+{
+	static std::set<const OpenALAudioStream *> s_live;
+	return s_live;
+}
+
+double nowSeconds()
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+} // namespace
+
+void AudioDebugRecord(const char *fmt, ...)
+{
+	AudioDebugEntry &e = s_ring[s_ringNext];
+	e.when = nowSeconds();
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(e.text, sizeof(e.text), fmt, ap);
+	va_end(ap);
+	s_ringNext = (s_ringNext + 1) % AUDIO_DEBUG_RING;
+	++s_ringTotal;
+
+	// GX_AUDIO_TRACE=1 mirrors every event to stderr as it happens, so a fault can
+	// be studied from the log alone without anyone being present to hear it and
+	// trigger a dump. Off by default: these fire often enough to be noise.
+	static const int traceEnabled = (getenv("GX_AUDIO_TRACE") != nullptr) ? 1 : 0;
+	if (traceEnabled) {
+		fprintf(stderr, "[audio] %s\n", e.text);
+	}
+}
+
+void AudioDebugDump(const char *reason)
+{
+	const double now = nowSeconds();
+	fprintf(stderr, "\n===== AUDIO MARKER: %s =====\n", reason ? reason : "(none)");
+	fprintf(stderr, "recorded %ld event(s); showing the most recent %d, oldest first\n",
+	        s_ringTotal, (int)(s_ringTotal < AUDIO_DEBUG_RING ? s_ringTotal : AUDIO_DEBUG_RING));
+
+	const int count = (int)(s_ringTotal < AUDIO_DEBUG_RING ? s_ringTotal : AUDIO_DEBUG_RING);
+	const int start = (int)((s_ringTotal < AUDIO_DEBUG_RING) ? 0
+	                        : (s_ringNext % AUDIO_DEBUG_RING));
+	for (int i = 0; i < count; ++i) {
+		const AudioDebugEntry &e = s_ring[(start + i) % AUDIO_DEBUG_RING];
+		// Negative age = how long before the marker this happened. That relative
+		// figure is the useful one: a fault heard "just now" is a few hundred ms back.
+		fprintf(stderr, "  [%8.3fs] %s\n", e.when - now, e.text);
+	}
+
+	fprintf(stderr, "--- live streams: %d ---\n", (int)liveStreams().size());
+	for (const OpenALAudioStream *s : liveStreams()) {
+		if (s == nullptr) continue;
+		const ALuint src = s->getSource();
+		ALint state = 0, queued = 0, processed = 0;
+		alGetSourcei(src, AL_SOURCE_STATE, &state);
+		alGetSourcei(src, AL_BUFFERS_QUEUED, &queued);
+		alGetSourcei(src, AL_BUFFERS_PROCESSED, &processed);
+		const char *stateName =
+			state == AL_PLAYING ? "PLAYING" :
+			state == AL_PAUSED  ? "PAUSED"  :
+			state == AL_STOPPED ? "STOPPED" :
+			state == AL_INITIAL ? "INITIAL" : "?";
+		fprintf(stderr, "  src=%u state=%-7s queued=%2d processed=%2d atEof=%d\n",
+		        src, stateName, (int)queued, (int)processed, s->isAtEnd() ? 1 : 0);
+	}
+	fprintf(stderr, "===== END AUDIO MARKER =====\n\n");
+	fflush(stderr);
+}
 
 OpenALAudioStream::OpenALAudioStream()
-{ 
+{
+    liveStreams().insert(this);
     alGenSources(1, &m_source);
     alGenBuffers(AL_STREAM_BUFFER_COUNT, m_buffers);
 
@@ -26,6 +122,7 @@ OpenALAudioStream::OpenALAudioStream()
 
 OpenALAudioStream::~OpenALAudioStream()
 {
+    liveStreams().erase(this);
     DEBUG_LOG(("OpenALAudioStream freed: %i\n", m_source));
     // Unbind the buffers first
     alSourceStop(m_source);
@@ -53,7 +150,34 @@ bool OpenALAudioStream::bufferData(uint8_t *data, size_t data_size, ALenum forma
     if (err != AL_NO_ERROR) {
         DEBUG_LOG(("OpenALAudioStream::bufferData alBufferData failed: err=0x%x format=0x%x size=%zu rate=%d\n",
             (unsigned int)err, (unsigned int)format, data_size, samplerate));
+        AudioDebugRecord("src=%u alBufferData FAILED err=0x%x format=0x%x size=%zu rate=%d",
+                         m_source, (unsigned int)err, (unsigned int)format, data_size, samplerate);
         return false;
+    }
+
+    // Record what actually reaches the device. A burst of noise is either stale
+    // audio replayed (handled above) or a buffer whose contents/parameters are
+    // wrong, and the two are indistinguishable from restart events alone. Peak
+    // amplitude is the discriminator: normal speech and music sit well below full
+    // scale, so a buffer pinned at the rail is garbage or a format mismatch.
+    {
+        int peak = 0;
+        if (format == AL_FORMAT_MONO16 || format == AL_FORMAT_STEREO16) {
+            const int16_t *s = reinterpret_cast<const int16_t *>(data);
+            const size_t n = data_size / sizeof(int16_t);
+            for (size_t i = 0; i < n; ++i) {
+                int v = s[i] < 0 ? -s[i] : s[i];
+                if (v > peak) peak = v;
+            }
+            peak = (peak * 100) / 32768;   // percent of full scale
+        }
+        static int s_bufSeq = 0;
+        // Only the loud ones, and a periodic heartbeat for context.
+        if (peak >= 97 || (++s_bufSeq % 64) == 0) {
+            AudioDebugRecord("src=%u buffered size=%zu fmt=0x%x rate=%d peak=%d%%%s",
+                             m_source, data_size, (unsigned int)format, samplerate, peak,
+                             (peak >= 97) ? "  <-- CLIPPING" : "");
+        }
     }
 
     alSourceQueueBuffers(m_source, 1, &current_buffer);
@@ -122,8 +246,22 @@ void OpenALAudioStream::update()
     // GeneralsX @bugfix 14/06/2026 ...but NOT once the stream is at true EOF: a finished one-shot
     // speech (taunt) must be allowed to reach a stable AL_STOPPED so its disallowSpeech flag clears.
     if ((sourceState == AL_STOPPED || sourceState == AL_INITIAL || sourceState == AL_PAUSED) && num_queued > 0 && !m_endOfData) {
-        play();
-        alGetSourcei(m_source, AL_SOURCE_STATE, &sourceState);
+        // Only restart if some queued buffer has NOT been played yet.
+        //
+        // num_queued > 0 is not enough: a drained source still reports its spent
+        // buffers as queued until they are unqueued, so this fired with
+        // processed == queued and OpenAL replayed the whole queue from the start.
+        // Traced on macOS as "queued=16 processed=16" — sixteen buffers of
+        // already-played audio dumped out at once, heard as a burst of noise.
+        ALint alreadyProcessed = 0;
+        alGetSourcei(m_source, AL_BUFFERS_PROCESSED, &alreadyProcessed);
+        AudioDebugRecord("src=%u restart-on-stopped (pre-unqueue) state=%d queued=%d processed=%d%s",
+                         m_source, (int)sourceState, (int)num_queued, (int)alreadyProcessed,
+                         (alreadyProcessed >= num_queued) ? " SKIPPED(all-spent)" : "");
+        if (alreadyProcessed < num_queued) {
+            play();
+            alGetSourcei(m_source, AL_SOURCE_STATE, &sourceState);
+        }
     }
 
     ALint processedBeforeUnqueue = 0;
@@ -132,6 +270,23 @@ void OpenALAudioStream::update()
 
     // GeneralsX @bugfix BenderAI 22/04/2026 Only unqueue processed data in active playback states.
     ALint processedToUnqueue = ((sourceState == AL_PLAYING || sourceState == AL_PAUSED) ? processedBeforeUnqueue : 0);
+
+    // GeneralsX @bugfix Also reap a stopped source whose queue is entirely spent.
+    //
+    // The state gate above assumed a stopped source would be restarted into
+    // AL_PLAYING moments later and reaped on the next pass. Now that an all-spent
+    // queue is deliberately NOT restarted (it would replay old audio), nothing ever
+    // put such a source back into an active state, so its buffers accumulated —
+    // observed climbing queued=13,14,15,…  Unqueueing here is safe precisely
+    // because every buffer has been played: there is no fresh data to discard.
+    if (processedToUnqueue == 0 && processedBeforeUnqueue > 0) {
+        ALint queuedNow = 0;
+        alGetSourcei(m_source, AL_BUFFERS_QUEUED, &queuedNow);
+        if (processedBeforeUnqueue >= queuedNow) {
+            processedToUnqueue = processedBeforeUnqueue;
+        }
+    }
+
     while (processedToUnqueue > 0) {
         ALuint buffer;
         alSourceUnqueueBuffers(m_source, 1, &buffer);
@@ -186,7 +341,23 @@ void OpenALAudioStream::update()
     // GeneralsX @bugfix 14/06/2026 As above, do not restart a source that has reached true EOF.
     alGetSourcei(m_source, AL_SOURCE_STATE, &sourceState);
     if ((sourceState == AL_STOPPED || sourceState == AL_INITIAL || sourceState == AL_PAUSED) && num_queued > 0 && !m_endOfData) {
-        play();
+        // Same guard as the pre-unqueue restart above: a queue whose buffers have
+        // all been played holds nothing new to hear, and restarting it replays the
+        // lot. This site was observed doing exactly that with queued=16 processed=16.
+        // Re-read the queue depth here. num_queued was sampled before the refill
+        // above, so comparing it against a freshly-read processed count made a
+        // source that had just been handed new data look "all spent" — the restart
+        // was skipped and the new audio never played.
+        ALint processedNow = 0;
+        ALint queuedNowAfterRefill = 0;
+        alGetSourcei(m_source, AL_BUFFERS_PROCESSED, &processedNow);
+        alGetSourcei(m_source, AL_BUFFERS_QUEUED, &queuedNowAfterRefill);
+        AudioDebugRecord("src=%u restart-after-refill state=%d queued=%d processed=%d%s",
+                         m_source, (int)sourceState, (int)queuedNowAfterRefill, (int)processedNow,
+                         (processedNow >= queuedNowAfterRefill) ? " SKIPPED(all-spent)" : "");
+        if (processedNow < queuedNowAfterRefill) {
+            play();
+        }
     }
 }
 
