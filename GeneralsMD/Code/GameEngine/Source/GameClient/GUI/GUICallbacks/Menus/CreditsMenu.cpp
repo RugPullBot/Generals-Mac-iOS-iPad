@@ -155,6 +155,19 @@ WindowMsgHandledType CreditsMenuInput( GameWindow *window, UnsignedInt msg,
 	{
 
 		// --------------------------------------------------------------------------------------------
+		// The credits screen has no on-screen back button: ESC was historically the
+		// only way out. Touch platforms have no ESC key, which left the screen
+		// unescapable short of killing the app. Treat a tap/click as dismiss too.
+		case GWM_LEFT_UP:
+		case GWM_RIGHT_UP:
+		{
+
+			TheShell->pop();
+			return MSG_HANDLED;
+
+		}
+
+		// --------------------------------------------------------------------------------------------
 		case GWM_CHAR:
 		{
 			UnsignedByte key = mData1;
