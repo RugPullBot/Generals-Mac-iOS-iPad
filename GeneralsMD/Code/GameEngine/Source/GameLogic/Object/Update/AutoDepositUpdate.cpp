@@ -214,7 +214,16 @@ Int AutoDepositUpdate::getUpgradedSupplyBoost() const
 		upgradePair info = *it;
 
 		// Check if the player has the desired upgrade. If so return the boost
-		static const UpgradeTemplate *upgradeTemplate = TheUpgradeCenter->findUpgrade( info.type.c_str() );
+		// GeneralsX @bugfix: this lookup used to be a function-local 'static', which is initialised
+		// exactly once per process - for whichever UpgradedBoost entry this loop happened to reach
+		// first - and then reused for every later iteration, every AutoDepositUpdate instance and
+		// every object template. That decoupled the (upgrade, amount) pairing from the INI data:
+		// the second and later UpgradedBoost entries could never pay out, and once a second
+		// template with a different UpgradeType was in play a structure would hand out a boost for
+		// an upgrade its owner never bought. 'info.type' comes from data and changes every
+		// iteration, so the lookup must not be cached. The 'static' idiom is correct in the sibling
+		// getUpgradedSupplyBoost() implementations only because those pass compile-time literals.
+		const UpgradeTemplate *upgradeTemplate = TheUpgradeCenter->findUpgrade( info.type.c_str() );
 		if (player && upgradeTemplate && player->hasUpgradeComplete(upgradeTemplate))
 		{
 			return info.amount;

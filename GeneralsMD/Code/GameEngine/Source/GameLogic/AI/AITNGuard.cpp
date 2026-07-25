@@ -406,7 +406,16 @@ StateReturnType AITNGuardInnerState::update()
 			m_scanForEnemy = false; // we just do 1 scan.
 			nemesis = TunnelNetworkScan(owner);
 			if (nemesis) {
-				m_attackState->onExit(EXIT_RESET);
+				// GeneralsX @bugfix m_attackState is only ever built by onEnter(), and this state can be
+				// resident with a null one (see the guard at the end of this function), so resetting it
+				// here could dereference null. Build the sub-state when it is missing instead of
+				// resetting it, which leaves the re-target below working on a valid object either way.
+				if (m_attackState == nullptr) {
+					m_exitConditions.m_attackGiveUpFrame = TheGameLogic->getFrame() + TheAI->getAiData()->m_guardChaseUnitFrames;
+					m_attackState = newInstance(AIAttackState)(getMachine(), false, true, false, &m_exitConditions);
+				} else {
+					m_attackState->onExit(EXIT_RESET);
+				}
 				m_attackState->getMachine()->setGoalObject(nemesis);
 				if (tunnels) {
 					tunnels->updateNemesis(nemesis);
@@ -421,6 +430,29 @@ StateReturnType AITNGuardInnerState::update()
 			getGuardMachine()->setNemesisID(teamVictim->getID());
 		}
 	}
+
+	// GeneralsX @bugfix m_attackState is only created by onEnter(), which bails out early when the
+	// nemesis ID no longer resolves to a live object. loadPostProcess() calls onEnter() and throws the
+	// return value away, so unlike a normal state entry - where STATE_SUCCESS would immediately
+	// transition us out - the machine can sit in AI_TN_GUARD_INNER after a load with no sub-state at
+	// all; the save only has to have been taken while the guard's nemesis was already dead. The
+	// unguarded update() below then dereferenced null (EXC_BAD_ACCESS); the sibling guard states all
+	// check first. Rebuild the sub-state when we still have something to attack, the same way
+	// AITNGuardOuterState::update() does, and otherwise report success - which is exactly what
+	// onEnter() returns when there is no nemesis, so the machine advances to the outer state.
+	if (m_attackState == nullptr)
+	{
+		if (nemesis == nullptr)
+		{
+			return STATE_SUCCESS;
+		}
+
+		m_exitConditions.m_attackGiveUpFrame = TheGameLogic->getFrame() + TheAI->getAiData()->m_guardChaseUnitFrames;
+		m_attackState = newInstance(AIAttackState)(getMachine(), false, true, false, &m_exitConditions);
+		m_attackState->getMachine()->setGoalObject(nemesis);
+		return m_attackState->onEnter();
+	}
+
 	return m_attackState->update();
 }
 

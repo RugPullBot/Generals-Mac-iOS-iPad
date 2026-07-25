@@ -989,8 +989,30 @@ void SpawnBehavior::computeAggregateStates()
 
 	// HEALTH BOX POSITION *****************************
 	// pick a centered, average spot to draw the health box
-	avgSpawnPos.scale(1.0f / spawnCount);
-	avgSpawnPos.sub(obj->getPosition());
+	// GeneralsX @bugfix spawnCount is zero on the first update of every AggregateHealth
+	// spawner -- the spawns are not created until further down in this same update -- and
+	// again any frame in which every entry of m_spawnIDs has gone stale. 1.0f/0 is +inf and
+	// avgSpawnPos is still exactly (0,0,0) at that point, so the scale evaluated 0*inf = NaN
+	// and the NaN went straight into m_healthBoxOffset, which is read back by
+	// Object::getHealthBoxPosition, written to the save file, and folded into the per-frame
+	// logic CRC by Object::xfer. The quiet NaN that 0*inf yields differs in sign between
+	// arm64 (0x7FC00000) and x86 SSE/x87 (0xFFC00000), so an Apple Silicon peer CRC-desynced
+	// against an Intel one. The HEALTH STATE block below already guards this same divisor;
+	// only this one was missed. With no live spawns the correct offset is zero -- draw the
+	// box on the nexus itself, which is what Object's constructor initializes it to.
+	// Note this is deliberately not gated behind RETAIL_COMPATIBLE_CRC: m_healthBoxOffset is
+	// a draw-only quantity that merely happens to sit in the CRC walk, and the retail value
+	// here is an unreproducible NaN rather than a number, so gating would leave the NaN in
+	// the shipping iOS/macOS builds while preserving no compatibility on arm64 at all.
+	if ( spawnCount )
+	{
+		avgSpawnPos.scale(1.0f / spawnCount);
+		avgSpawnPos.sub(obj->getPosition());
+	}
+	else
+	{
+		avgSpawnPos.zero();
+	}
 	obj->setHealthBoxOffset(avgSpawnPos);
 
 

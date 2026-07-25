@@ -112,8 +112,28 @@ void PowerPlantUpgrade::upgradeImplementation()
 
 	Player *player = getObject()->getControllingPlayer();
 
+	Bool bookPowerBonus = TRUE;
+
+#if !RETAIL_COMPATIBLE_CRC
+	// GeneralsX @bugfix Do not book the power bonus while this plant is disabled.
+	// Object::updateUpgradeModules() only skips objects that are under construction, destroyed or
+	// ownerless, so a reactor that is EMP'd / hacked / Microwaved at the instant the upgrade lands
+	// still ran upgradeImplementation() and added the bonus - even though onDisabledEdge(TRUE) had
+	// already subtracted this plant's whole contribution, because a disabled producer must count
+	// for nothing. Worse, giveSelfUpgrade() sets the executed flag regardless, so the re-enable
+	// edge saw isAlreadyUpgraded() and added base+bonus again: the bonus was booked twice, which
+	// is permanent phantom power (and dying while still disabled orphaned it forever).
+	// Energy::addPowerBonus only DEBUG_ASSERTCRASHes on this, which compiles out of release, so
+	// the real check has to be here. Skipping the add loses nothing: onDisabledEdge(FALSE) re-adds
+	// base+bonus off isAlreadyUpgraded() when the plant comes back up.
+	// Gated like the matching disabled guard on the remove side in Energy::removePowerBonus - this
+	// changes logic-frame state, and enabling only one half of the pair would let onDelete() on a
+	// still-disabled plant subtract a bonus that was never added.
+	bookPowerBonus = !getObject()->isDisabled();
+#endif
+
 	// add the new power production to the object
-	if( player )
+	if( player && bookPowerBonus )
 		player->addPowerBonus(getObject());
 
 

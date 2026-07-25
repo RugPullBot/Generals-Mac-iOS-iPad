@@ -219,11 +219,19 @@ static Int getListboxBottomEntry( ListboxData *list )
 //=============================================================================
 static void removeSelection( ListboxData *list, Int i )
 {
-	memcpy( &list->selections[i], &list->selections[(i+1)],
+	//
+	// GeneralsX @bugfix The selection array is allocated with listLength+1 entries (up to
+	// listLength row indices followed by the -1 terminator), so shifting the whole tail down
+	// by one moves (listLength - i) entries out of [i+1 .. listLength] and every one of them
+	// is now in bounds. Before the terminator slot was added this exact count read 4 bytes
+	// past the end of the heap block on *every* deselect. Source and destination overlap by
+	// construction, which is undefined behaviour for memcpy, so this must be memmove.
+	//
+	memmove( &list->selections[i], &list->selections[(i+1)],
 						((list->listLength - i) * sizeof(Int)) );
 
 	// put -1 at end of list just for safety
-	list->selections[(list->listLength - 1)] = -1;
+	list->selections[ list->listLength ] = -1;
 }
 
 // adjustDisplay ==============================================================
@@ -1068,8 +1076,20 @@ WindowMsgHandledType GadgetListBoxMultiInput( GameWindow *window, UnsignedInt ms
 
 			if( removed == FALSE )
 			{
-				list->selections[ i] = selectPos;
-				list->selections[ i + 1 ] = -1;
+				//
+				// GeneralsX @bugfix The scan above stops on the terminator, so when every row is
+				// already selected i lands on listLength - the terminator slot itself. Appending
+				// there would write selections[listLength+1], one past even that slot, and would
+				// leave the array with no negative entry at all, so the next scan would walk off
+				// into the heap looking for one. A full array has nothing left to select (and
+				// selectPos == -1, the "clicked past the last row" case, has nothing to add
+				// either), so simply do not append in that case.
+				//
+				if( i < list->listLength )
+				{
+					list->selections[ i] = selectPos;
+					list->selections[ i + 1 ] = -1;
+				}
 			}
 
 			TheWindowManager->winSendSystemMsg( window->winGetOwner(),
@@ -1375,8 +1395,9 @@ WindowMsgHandledType GadgetListBoxSystem( GameWindow *window, UnsignedInt msg,
 				list->displayPos = 0;
 			}
 
+			// GeneralsX @bugfix Clear the terminator slot too - the array is listLength+1 entries.
 			if( list->multiSelect )
-				memset( list->selections, -1, list->listLength * sizeof( Int ) );
+				memset( list->selections, -1, (list->listLength + 1) * sizeof( Int ) );
 			else
 				list->selectPos = -1;
 
@@ -1557,8 +1578,9 @@ WindowMsgHandledType GadgetListBoxSystem( GameWindow *window, UnsignedInt msg,
 			if( (Int)mData1 < 0 )
 			{
 				// a negative number will purge the entire list.
+				// GeneralsX @bugfix Clear the terminator slot too - the array is listLength+1 entries.
 				if( list->multiSelect )
-					memset( list->selections, -1, list->listLength * sizeof(Int) );
+					memset( list->selections, -1, (list->listLength + 1) * sizeof(Int) );
 				else
 				{
 					// this message has no effect in a non-multi listbox
@@ -1590,8 +1612,17 @@ WindowMsgHandledType GadgetListBoxSystem( GameWindow *window, UnsignedInt msg,
 
 				if( removed == FALSE )
 				{
-					list->selections[i] = (Int)mData1;
-					list->selections[i+1] = -1;
+					//
+					// GeneralsX @bugfix Same one-past-the-terminator append as GWM_LEFT_UP: when the
+					// array is full the scan leaves i == listLength, and selections[i+1] would be
+					// written past the terminator slot. A full array cannot gain a selection - the
+					// row named by mData1 would already have been found and removed above.
+					//
+					if( i < list->listLength )
+					{
+						list->selections[i] = (Int)mData1;
+						list->selections[i+1] = -1;
+					}
 				}
 			}
 			else
@@ -1613,8 +1644,9 @@ WindowMsgHandledType GadgetListBoxSystem( GameWindow *window, UnsignedInt msg,
 			if( selectList[0] < 0 || list->listLength <= selectList[0] )
 			{
 
+				// GeneralsX @bugfix Clear the terminator slot too - the array is listLength+1 entries.
 				if( list->multiSelect )
-					memset( list->selections, -1, list->listLength * sizeof(Int) );
+					memset( list->selections, -1, (list->listLength + 1) * sizeof(Int) );
 				else
 					list->selectPos = -1;
 
@@ -1791,11 +1823,21 @@ WindowMsgHandledType GadgetListBoxSystem( GameWindow *window, UnsignedInt msg,
 		case GLM_GET_SELECTION:
 		{
 
+			//
+			// GeneralsX @bugfix The multi-select contract is "hand back a pointer to our internal
+			// selection array"; on 32-bit Windows that pointer fitted in an Int, so the original
+			// code stored it with *(Int*)mData2. Narrowing it through intptr_t did not make that
+			// 64-bit safe - it still wrote only the low 4 bytes into the caller's 8-byte pointer
+			// variable, leaving the high half as whatever stack garbage was there. arm64/x86-64
+			// heap addresses always have nonzero high bits, so the reconstructed pointer was
+			// deterministically wrong and every consumer dereferenced it (WOLLobbyMenu on each
+			// lobby-list repopulate, GameSpy/Chat on each private message). Store the whole
+			// pointer: the pointer-style call sites already pass the address of an Int* variable,
+			// so the destination really is 8 bytes wide. The single-select branch below still
+			// writes an Int, which is what its ~30 callers pass the address of.
+			//
 			if( list->multiSelect )
-				// GeneralsX @bugfix BenderAI 12/02/2026 - Cast via intptr_t for 64-bit compatibility
-				// list->selections is a pointer being stored as Int (common pattern for GUI message passing).
-				// On 64-bit Linux, pointers are 8 bytes but Int is 4 bytes. Cast through intptr_t first.
-				*(Int*)mData2 = static_cast<Int>(reinterpret_cast<intptr_t>(list->selections));
+				*(Int**)mData2 = list->selections;
 			else
 				*(Int*)mData2 = list->selectPos;
 
@@ -2428,10 +2470,19 @@ void GadgetListBoxAddMultiSelect( GameWindow *listbox )
 	ListboxData *listboxData = (ListboxData *)listbox->winGetUserData();
 
 	DEBUG_ASSERTCRASH(listboxData && listboxData->selections == nullptr, ("selections is not null"));
-	listboxData->selections = NEW Int [listboxData->listLength];
+	//
+	// GeneralsX @bugfix The selection array holds up to listLength row indices *plus* a -1
+	// terminator, and every consumer walks it until it sees that terminator (here, in
+	// W3DListBox's draw loop, and in the lobby/chat callers). Allocating only listLength
+	// entries meant selecting the last unselected row wrote the terminator one past the end of
+	// the block; the array was then all non-negative, so the next scan ran off into the heap
+	// hunting for a negative int and wrote two Ints wherever it happened to stop. Allocating
+	// the extra slot also gives a valid, terminated array when listLength is 0.
+	//
+	listboxData->selections = NEW Int [listboxData->listLength + 1];
 	DEBUG_LOG(( "Enable list box multi select: listLength (select) = %d * %d = %d bytes;",
-					 listboxData->listLength, sizeof(Int),
-					 listboxData->listLength *sizeof(Int) ));
+					 listboxData->listLength + 1, sizeof(Int),
+					 (listboxData->listLength + 1) *sizeof(Int) ));
 
 	if( listboxData->selections == nullptr )
 	{
@@ -2443,7 +2494,7 @@ void GadgetListBoxAddMultiSelect( GameWindow *listbox )
 	}
 
 	memset( listboxData->selections, -1,
-		      listboxData->listLength * sizeof(Int) );
+		      (listboxData->listLength + 1) * sizeof(Int) );
 
 	// set mutliselect flag
 	listboxData->multiSelect = TRUE;

@@ -30,6 +30,7 @@
 
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
+#include "Common/GameState.h"	// GeneralsX @bugfix: for SC_INVALID_DATA, thrown by the member count validation in xfer()
 #include "Common/Player.h"
 #include "Common/ThingFactory.h"
 #include "GameClient/Drawable.h"
@@ -505,6 +506,21 @@ void AssaultTransportAIUpdate::xfer( Xfer *xfer )
 	AIUpdateInterface::xfer(xfer);
 
 	xfer->xferInt( &m_currentMembers );
+
+	// GeneralsX @bugfix: m_currentMembers came straight off the save stream with no validation and was
+	// then used as the loop bound into m_memberIDs[]/m_memberHealing[], which are only MAX_TRANSPORT_SLOTS
+	// entries long. A corrupt or hand-edited save with a count above 10 (or a negative value that later
+	// gets used unsigned) made the loop write past the end of those arrays and over the members that
+	// follow them in the object - one of which is m_currentMembers itself, so the bound became
+	// stream-controlled mid-loop and the writes ran off the end of the memory pool block. The runtime
+	// never produces a count outside [0, MAX_TRANSPORT_SLOTS] (update() only adds a passenger while
+	// m_currentMembers < MAX_TRANSPORT_SLOTS), so rejecting the save is correct in both directions.
+	// Matches how RailedTransportAIUpdate::xfer validates m_numPaths.
+	if( m_currentMembers < 0 || m_currentMembers > MAX_TRANSPORT_SLOTS )
+	{
+		DEBUG_CRASH(( "AssaultTransportAIUpdate::xfer - m_currentMembers %d is outside [0,%d].", m_currentMembers, MAX_TRANSPORT_SLOTS ));
+		throw SC_INVALID_DATA;
+	}
 
 	for( int i = 0; i < m_currentMembers; i++ )
 	{

@@ -164,7 +164,23 @@ static void parseCommonStuff(
 	}
 	else
 	{
-		damageFirst = (DamageType)DamageTypeFlags::getSingleBitFromName(damageName);
+		// GeneralsX @bugfix getSingleBitFromName() returns -1 for a token that is not in the
+		// DamageType name list -- a typo, or an RTS_GENERALS-only name such as FLESHY_SNIPER
+		// appearing in a Zero Hour DamageFX block. That -1 used to be cast straight to DamageType,
+		// which is a signed enum, so damageFirst == damageLast == -1 and every caller below still
+		// ran one pass of its "for (dt = damageFirst; dt <= damageLast)" loop, storing through
+		// m_dfx[-1][v]. m_dfx is the first (and only) member of DamageFX and DamageFX lives inside
+		// a std::map node, so those stores landed in the 128 bytes immediately *before* the object:
+		// allocator metadata or the preceding heap block, corrupted silently at INI load time and
+		// crashing arbitrarily later. Validate the index and fail the parse, which is what the
+		// veterancy half of this function already does via INI::scanIndexList().
+		const Int damageIndex = DamageTypeFlags::getSingleBitFromName(damageName);
+		if (damageIndex < 0 || damageIndex >= DAMAGE_NUM_TYPES)
+		{
+			DEBUG_CRASH(("'%s' is not a valid DamageType name", damageName));
+			throw INI_INVALID_DATA;
+		}
+		damageFirst = (DamageType)damageIndex;
 		damageLast = damageFirst;
 	}
 }

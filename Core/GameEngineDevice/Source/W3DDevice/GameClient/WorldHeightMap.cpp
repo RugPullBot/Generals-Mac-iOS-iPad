@@ -986,6 +986,24 @@ Bool WorldHeightMap::ParseBlendTileDataChunk(DataChunkInput &file, DataChunkInfo
 	return pThis->ParseBlendTileData(file, info, userData);
 }
 
+/** GeneralsX @bugfix A texture class describes its tiles with two raw ints out of the .map file,
+	firstTile and width, and both were used verbatim: firstTile as the base of a write into the
+	fixed m_sourceTiles / m_edgeTiles arrays (NUM_SOURCE_TILES pointers each) and width as the
+	stride/extent. A hand-edited or corrupt map could therefore place up to width*width TileData
+	pointers - and the 16KB of pixel data written through each of them - at an arbitrary offset
+	from the array, and make updateTileTexturePositions() index just as far out afterwards.
+	WorldBuilder already guarantees firstTile + width*width <= NUM_SOURCE_TILES when it writes the
+	file (WHeightMapEdit.cpp allocateTiles/allocateEdgeTiles both bail out otherwise), so enforcing
+	it on load rejects nothing the editor has ever produced. width is range-checked before it is
+	squared so the multiply itself cannot overflow Int. */
+static Bool tileRangeFitsSourceTiles(Int firstTile, Int width)
+{
+	if (firstTile < 0 || width < 0 || width > NUM_SOURCE_TILES) {
+		return false;
+	}
+	return (firstTile <= NUM_SOURCE_TILES - width*width);
+}
+
 /** Function to read in the tiles for a texture class. */
 void WorldHeightMap::readTexClass(TXTextureClass *texClass, TileData **tileData)
 {
@@ -1022,7 +1040,19 @@ void WorldHeightMap::readTexClass(TXTextureClass *texClass, TileData **tileData)
 					break;
 				}
 			}
-			WorldHeightMap::readTiles(pStr, tileData+texClass->firstTile, width);
+			// GeneralsX @bugfix readTiles() writes width*width TileData pointers starting at
+			// tileData + firstTile. width here is derived from the .tga, not from the (already
+			// validated) width field of the texture class, so the two need not agree - a map that
+			// declares width 1 but numTiles 100 against a 10x10 .tga lands 100 slots past
+			// firstTile. Re-check the range that is actually about to be written. Skipping the
+			// read leaves the tiles null, which is the same state as a missing texture file and is
+			// handled downstream (getSourceTile/getUVForNdx).
+			if (tileRangeFitsSourceTiles(texClass->firstTile, width)) {
+				WorldHeightMap::readTiles(pStr, tileData+texClass->firstTile, width);
+			} else {
+				DEBUG_CRASH(("Texture class '%s' tile range (firstTile %d, width %d) does not fit in %d source tiles - skipping.",
+					texClass->name.str(), texClass->firstTile, width, NUM_SOURCE_TILES));
+			}
 		}
 		theFile->close();
 	}
@@ -1089,21 +1119,57 @@ Bool WorldHeightMap::ParseBlendTileData(DataChunkInput &file, DataChunkInfo *inf
 	}
 	m_numBitmapTiles = file.readInt();
 	DEBUG_ASSERTCRASH(m_numBitmapTiles>0 && m_numBitmapTiles<2048, ("Unlikely numBitmapTiles."));
+	// GeneralsX @bugfix m_numBitmapTiles is the loop bound for the m_sourceTiles / m_edgeTiles
+	// walks in updateTileTexturePositions(), and those arrays hold NUM_SOURCE_TILES (1024)
+	// pointers. The assert above lets 2047 through and compiles out entirely in release, so a
+	// corrupt map made those loops load pointers from past the end of the object and then write
+	// m_tileLocationInTexture through whatever they found. Reject the file, as the chunk-length
+	// and blend-flag checks in this function already do.
+	if (m_numBitmapTiles < 0 || m_numBitmapTiles > NUM_SOURCE_TILES) {
+		throw ERROR_CORRUPT_FILE_FORMAT;
+	}
 	m_numBlendedTiles = file.readInt();
 	DEBUG_ASSERTCRASH(m_numBlendedTiles>0 && m_numBlendedTiles<NUM_BLEND_TILES+1, ("Unlikely numBlendedTiles."));
+	// GeneralsX @bugfix The blend loop below writes m_blendedTiles[1 .. m_numBlendedTiles-1] into a
+	// NUM_BLEND_TILES array with only the (release-compiled-out) assert above as a bound. It is
+	// also the clamp limit applied to m_blendTileNdxes / m_extraBlendTileNdxes by the constructor,
+	// so an oversized value would additionally let those indices run past m_blendedTiles later.
+	if (m_numBlendedTiles < 0 || m_numBlendedTiles > NUM_BLEND_TILES) {
+		throw ERROR_CORRUPT_FILE_FORMAT;
+	}
 	if (info->version >= K_BLEND_TILE_VERSION_5) {
 		m_numCliffInfo = file.readInt();
+		// GeneralsX @bugfix Same problem with no assert at all: the cliff loop below writes a
+		// TCliffInfo per iteration into m_cliffInfo[NUM_CLIFF_INFO], and the count is also the
+		// clamp limit for m_cliffInfoNdxes in the constructor.
+		if (m_numCliffInfo < 0 || m_numCliffInfo > NUM_CLIFF_INFO) {
+			throw ERROR_CORRUPT_FILE_FORMAT;
+		}
 	} else {
 		m_numCliffInfo = 1;	// cliffInfo[0] is the default info.
 	}
 // --> file loading here
 	m_numTextureClasses	= file.readInt();
 	DEBUG_ASSERTCRASH(m_numTextureClasses>0 && m_numTextureClasses<200, ("Unlikely m_numTextureClasses."));
+	// GeneralsX @bugfix m_textureClasses holds NUM_TEXTURE_CLASSES entries and the loop below fills
+	// m_numTextureClasses of them; the assert is debug-only, so in release the file decided how far
+	// past the array to write (each entry contains an AsciiString, so this also ran assignment
+	// operators over whatever followed).
+	if (m_numTextureClasses < 0 || m_numTextureClasses > NUM_TEXTURE_CLASSES) {
+		throw ERROR_CORRUPT_FILE_FORMAT;
+	}
 	for (i=0; i<m_numTextureClasses; i++) {
 		m_textureClasses[i].globalTextureClass = -1;
 		m_textureClasses[i].firstTile = file.readInt();
 		m_textureClasses[i].numTiles = file.readInt();
 		m_textureClasses[i].width = file.readInt();
+		// GeneralsX @bugfix firstTile is the base of the m_sourceTiles writes in readTexClass()
+		// below and, together with width, of the m_sourceTiles indexing in
+		// updateTileTexturePositions(); neither was validated. A negative width would also send
+		// the layout search loop in updateTileTexturePositions() past availableGrid[].
+		if (!tileRangeFitsSourceTiles(m_textureClasses[i].firstTile, m_textureClasses[i].width)) {
+			throw ERROR_CORRUPT_FILE_FORMAT;
+		}
 
 		// legacy GDF data
 		// used to read "m_textureClasses[i].isGDF = file.readInt();"
@@ -1117,11 +1183,22 @@ Bool WorldHeightMap::ParseBlendTileData(DataChunkInput &file, DataChunkInfo *inf
 	if (info->version >= K_BLEND_TILE_VERSION_4) {
 		m_numEdgeTiles	= file.readInt();
 		m_numEdgeTextureClasses	= file.readInt();
+		// GeneralsX @bugfix m_edgeTextureClasses is NUM_TEXTURE_CLASSES entries and this count had
+		// no check of any kind - not even a debug assert - before it was used as the fill bound.
+		if (m_numEdgeTextureClasses < 0 || m_numEdgeTextureClasses > NUM_TEXTURE_CLASSES) {
+			throw ERROR_CORRUPT_FILE_FORMAT;
+		}
 		for (i=0; i<m_numEdgeTextureClasses; i++) {
 			m_edgeTextureClasses[i].globalTextureClass = -1;
 			m_edgeTextureClasses[i].firstTile = file.readInt();
 			m_edgeTextureClasses[i].numTiles = file.readInt();
 			m_edgeTextureClasses[i].width = file.readInt();
+			// GeneralsX @bugfix As above, but for m_edgeTiles: firstTile/width base the writes in
+			// readTexClass() and the indexing in the edge pass of updateTileTexturePositions().
+			// m_edgeTiles is NUM_SOURCE_TILES entries too, so the same range check applies.
+			if (!tileRangeFitsSourceTiles(m_edgeTextureClasses[i].firstTile, m_edgeTextureClasses[i].width)) {
+				throw ERROR_CORRUPT_FILE_FORMAT;
+			}
 			m_edgeTextureClasses[i].name = file.readAsciiString();
 			readTexClass(&m_edgeTextureClasses[i], m_edgeTiles);
 		}

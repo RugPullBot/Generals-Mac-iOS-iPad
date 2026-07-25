@@ -81,7 +81,14 @@ Int MoneyCrateCollide::getUpgradedSupplyBoost( Object *other ) const
 		upgradePair info = *it;
 
 		// Check if the player has the desired upgrade. If so return the boost
-		static const UpgradeTemplate *upgradeTemplate = TheUpgradeCenter->findUpgrade( info.type.c_str() );
+		// GeneralsX @bugfix: this lookup used to be a function-local 'static', so it was
+		// evaluated exactly once per process - for whichever UpgradedBoost entry happened to be
+		// examined first - and then reused for every later iteration, every crate instance and
+		// every crate template. That decoupled the (upgrade, amount) pairing from the INI data:
+		// the second and later UpgradedBoost entries could never pay out, and once a second crate
+		// template was in play a player could be paid a bonus for an upgrade they never bought.
+		// The name comes from data, not a compile-time literal, so the cache must not persist.
+		const UpgradeTemplate *upgradeTemplate = TheUpgradeCenter->findUpgrade( info.type.c_str() );
 		if (player && upgradeTemplate && player->hasUpgradeComplete(upgradeTemplate))
 		{
 			return info.amount;

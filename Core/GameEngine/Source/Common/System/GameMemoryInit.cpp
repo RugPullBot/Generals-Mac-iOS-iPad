@@ -41,6 +41,9 @@
 // Desc:      Memory manager
 //
 // ----------------------------------------------------------------------------
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
 // SYSTEM INCLUDES
@@ -111,13 +114,53 @@ void userMemoryManagerInitPools()
 
 	// since we're called prior to main, the cur dir might not be what
 	// we expect. so do it the hard way.
-	char buf[_MAX_PATH];
+	// GeneralsX @bugfix Claude 25/07/2026 buf was uninitialized and the result of
+	// GetModuleFileName() was ignored. The Apple implementation (module_compat.cpp, via
+	// _NSGetExecutablePath) leaves the buffer untouched when it fails, so the code below
+	// would parse and concatenate onto stack garbage. Nothing else happens in this function,
+	// so bailing out here only skips the optional override, exactly as a missing file does.
+	// Note: no diagnostic here on purpose -- we run before DEBUG_INIT (see initMemoryManager
+	// in GameMemory.cpp), so DEBUG_LOG/DEBUG_CRASH are not usable at this point.
+	char buf[_MAX_PATH] = { 0 };
 	::GetModuleFileName(nullptr, buf, sizeof(buf));
-	if (char* pEnd = strrchr(buf, '\\'))
+	if (buf[0] == 0)
+		return;
+
+	// GeneralsX @bugfix Claude 25/07/2026 this split only on '\\'. On macOS/iOS the executable
+	// path is a POSIX path, so strrchr() returned null, the executable filename was never
+	// stripped, and the Windows-style "\\Data\\INI\\MemoryPools.ini" was appended to the *file*
+	// name. fopen() then failed silently, which made MemoryPools.ini inert on every Apple
+	// build -- the one data-side knob for shrinking pools on a memory-constrained iPad, where
+	// an undersized pool otherwise aborts with ERROR_OUT_OF_MEMORY. Split on whichever
+	// separator comes last, mirroring getExecutableDirectory() in StdBIGFileSystem.cpp, and
+	// append with the platform's own separator.
+	char* pSlash = strrchr(buf, '/');
+	char* pBackslash = strrchr(buf, '\\');
+	char* pEnd = pSlash;
+	if (pEnd == nullptr || (pBackslash != nullptr && pBackslash > pEnd))
+	{
+		pEnd = pBackslash;
+	}
+	if (pEnd != nullptr)
 	{
 		*pEnd = 0;
 	}
+#ifdef _WIN32
 	strlcat(buf, "\\Data\\INI\\MemoryPools.ini", ARRAY_SIZE(buf));
+#elif defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+	// GeneralsX @bugfix On iOS the game data does not sit beside the executable —
+	// the packaging script rsyncs the whole install into <bundle>/GameData (see
+	// scripts/build/ios/package-ios-zh.sh), and SDL3Main derives exactly that path.
+	// Appending Data/INI directly to the executable directory therefore still
+	// missed the file and left MemoryPools.ini inert on the one platform whose
+	// memory limits make it matter.
+	//
+	// The working directory cannot be relied on here: this runs pre-main from
+	// preMainInitMemoryManager, before SDL3Main chdir()s into the data directory.
+	strlcat(buf, "/GameData/Data/INI/MemoryPools.ini", ARRAY_SIZE(buf));
+#else
+	strlcat(buf, "/Data/INI/MemoryPools.ini", ARRAY_SIZE(buf));
+#endif
 
 	FILE* fp = fopen(buf, "r");
 	if (fp)
@@ -128,7 +171,10 @@ void userMemoryManagerInitPools()
 		{
 			if (buf[0] == ';')
 				continue;
-			if (sscanf(buf, "%s %d %d", poolName, &initial, &overflow ) == 3)
+			// GeneralsX @bugfix Claude 25/07/2026 unbounded "%s" wrote into poolName[256] from a
+			// line of up to _MAX_PATH (1024) bytes, so any long token in MemoryPools.ini smashed
+			// the stack. Bound the conversion to the buffer size (255 chars + terminator).
+			if (sscanf(buf, "%255s %d %d", poolName, &initial, &overflow ) == 3)
 			{
 				for (PoolSizeRec* p = PoolSizes; p->name != nullptr; ++p)
 				{

@@ -61,7 +61,13 @@ public:
 
 	NetCommandList *getCommandList();
 
-	static NetCommandRef * ConstructNetCommandMsgFromRawData(UnsignedByte *data, UnsignedShort dataLength);
+	// GeneralsX @bugfix Widened from UnsignedShort. The only caller passes
+	// NetCommandWrapperListNode::getRawDataLength(), which is an UnsignedInt, so a
+	// reassembled payload larger than 65535 bytes was silently truncated — and a
+	// 5 MiB transfer truncates to exactly 0, skipping the parse loop entirely.
+	// Carrying the real length also lets the file-message reader bound its copy
+	// against the actual buffer instead of trusting a wire-supplied size.
+	static NetCommandRef * ConstructNetCommandMsgFromRawData(UnsignedByte *data, UnsignedInt dataLength);
 	static NetPacketList ConstructBigCommandPacketList(NetCommandRef *ref);
 
 	UnsignedByte *getData();
@@ -101,7 +107,7 @@ protected:
 	static NetCommandMsg * readLoadCompleteMessage(UnsignedByte *data, Int &i);
 	static NetCommandMsg * readTimeOutGameStartMessage(UnsignedByte *data, Int &i);
 	static NetCommandMsg * readWrapperMessage(UnsignedByte *data, Int &i);
-	static NetCommandMsg * readFileMessage(UnsignedByte *data, Int &i);
+	static NetCommandMsg * readFileMessage(UnsignedByte *data, Int &i, Int bytesAvailable);
 	static NetCommandMsg * readFileAnnounceMessage(UnsignedByte *data, Int &i);
 	static NetCommandMsg * readFileProgressMessage(UnsignedByte *data, Int &i);
 	static NetCommandMsg * readDisconnectFrameMessage(UnsignedByte *data, Int &i);

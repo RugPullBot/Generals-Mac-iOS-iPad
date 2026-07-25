@@ -301,7 +301,18 @@ void AcademyStats::update()
 
 	UnsignedInt now = TheGameLogic->getFrame();
 
-	if( m_nextUpdateFrame >= now )
+	// GeneralsX @bugfix The throttle test was inverted: `m_nextUpdateFrame >= now`.
+	// m_nextUpdateFrame is only ever assigned `now + FRAMES_BETWEEN_UPDATES`, so it is
+	// always in the future and the test was a tautology: FRAMES_BETWEEN_UPDATES was dead
+	// and this entire block, including a full iterateObjects() sweep, ran on every logic
+	// frame for every player instead of once per second (8 players x ~200 objects is on the
+	// order of 48k wasted object visits per second on the logic thread, which hurts most on
+	// the iOS target). The `|| isFirstUpdate()` keeps the one-shot startup sweep on the very
+	// first call exactly as before rather than pushing it 30 frames out: that sweep exists to
+	// count pre-placed and script-spawned objects that never pass through recordProduction(),
+	// and delaying it would let anything actually produced during those 30 frames be counted
+	// twice (once by ProductionUpdate/DozerAIUpdate, once by the sweep).
+	if( now >= m_nextUpdateFrame || isFirstUpdate() )
 	{
 		m_nextUpdateFrame = now + FRAMES_BETWEEN_UPDATES;
 		m_player->iterateObjects( updateAcademyStats, (void*)this );
@@ -486,7 +497,14 @@ void AcademyStats::recordIncome()
 {
 	UnsignedInt now = TheGameLogic->getFrame();
 
-	UnsignedInt delta = m_lastIncomeFrame - now;
+	// GeneralsX @bugfix Operands were reversed: `m_lastIncomeFrame - now`. Both are
+	// UnsignedInt and m_lastIncomeFrame is never in the future, so the subtraction underflowed
+	// on the very first deposit (m_lastIncomeFrame starts at 0) and latched
+	// m_maxFramesBetweenIncome at ~4.29e9 for the rest of the match. That permanently qualified
+	// the "no income for 2 minutes" score-screen tip, which then randomly displaced the one tip
+	// that genuinely applied (MAX_ADVICE_TIPS is 1). This is the same idiom already used
+	// correctly for m_lastUnitBuiltFrame in recordProduction().
+	UnsignedInt delta = now - m_lastIncomeFrame;
 	if( delta > m_maxFramesBetweenIncome )
 	{
 		m_maxFramesBetweenIncome = delta;
@@ -955,7 +973,12 @@ void AcademyStats::evaluateTier3Advice( AcademyAdviceInfo *info, Int numAvailabl
 	}
 
 	//30) No income for 2 minutes?
-	UnsignedInt delta = m_lastIncomeFrame - now;
+	// GeneralsX @bugfix Same reversed subtraction as recordIncome(): `m_lastIncomeFrame - now`
+	// underflowed on UnsignedInt and wrote ~4.29e9 into m_maxFramesBetweenIncome right here,
+	// making the test below unconditionally true even for a player with steady income. Keeps
+	// the trailing-gap accounting (income may have stopped long before the game ended) and the
+	// `!m_lastIncomeFrame` never-had-any-income guard below intact.
+	UnsignedInt delta = now - m_lastIncomeFrame;
 	if( delta > m_maxFramesBetweenIncome )
 	{
 		m_maxFramesBetweenIncome = delta;

@@ -37,6 +37,12 @@
 // If verbose, lots of debug logging.
 #define not_VERBOSE
 
+// GeneralsX @bugfix claude 25/07/2026 Sanity ceiling for the uncompressed size a compressed
+// chunk file claims in its wrapper header. The biggest shipped .map is a couple of MB, so this
+// is ~40x headroom for legitimate content while still rejecting nonsense sizes. See the use
+// site in CachedFileInputStream::open() for why an unbounded value was dangerous.
+static const Int MAX_UNCOMPRESSED_CHUNK_FILE_SIZE = 128 * 1024 * 1024;
+
 CachedFileInputStream::CachedFileInputStream():m_buffer(nullptr),m_size(0)
 {
 }
@@ -70,20 +76,39 @@ Bool CachedFileInputStream::open(AsciiString path)
 		Int uncompLen = CompressionManager::getUncompressedSize(m_buffer, m_size);
 		//DEBUG_LOG(("CachedFileInputStream::open() - file %s is compressed!  It should go from %d to %d", path.str(),
 		//	m_size, uncompLen));
-		char *uncompBuffer = NEW char[uncompLen];
-		Int actualLen = CompressionManager::decompressData(m_buffer, m_size, uncompBuffer, uncompLen);
-		if (actualLen == uncompLen)
+		// GeneralsX @bugfix claude 25/07/2026 uncompLen is read verbatim out of bytes 4-7 of the
+		// file's compression wrapper, so it is entirely file-controlled and was passed straight to
+		// NEW char[]. A negative value became a ~4GB size_t; a large positive one made map
+		// enumeration - which walks every .map on disk at startup, including peer-transferred maps
+		// the user never chose to open - allocate hundreds of MB per candidate file and get the app
+		// jetsammed on iOS. An implausible size is now handled the same way a failed decompress
+		// already is: keep the compressed bytes and let the chunk parser reject the file.
+		// NOTE: this bounds the *allocation* only. REF_decode/BTREE_decode/HUFF_decode discard the
+		// destination length entirely and write until their own stream's EOF opcode, so a crafted
+		// stream can still run past uncompBuffer. Closing that hole needs a real destination bound
+		// threaded from CompressionManager::decompressData into the three EAC decoders, which is
+		// outside this file.
+		if (uncompLen <= 0 || uncompLen > MAX_UNCOMPRESSED_CHUNK_FILE_SIZE)
 		{
-			//DEBUG_LOG(("Using uncompressed data"));
-			delete[] m_buffer;
-			m_buffer = uncompBuffer;
-			m_size = uncompLen;
+			DEBUG_LOG(("CachedFileInputStream::open() - file %s declares an implausible uncompressed size of %d bytes - using the raw data", path.str(), uncompLen));
 		}
 		else
 		{
-			//DEBUG_LOG(("Decompression failed - using compressed data"));
-			// decompression failed.  Maybe we invalidly thought it was compressed?
-			delete[] uncompBuffer;
+			char *uncompBuffer = NEW char[uncompLen];
+			Int actualLen = CompressionManager::decompressData(m_buffer, m_size, uncompBuffer, uncompLen);
+			if (actualLen == uncompLen)
+			{
+				//DEBUG_LOG(("Using uncompressed data"));
+				delete[] m_buffer;
+				m_buffer = uncompBuffer;
+				m_size = uncompLen;
+			}
+			else
+			{
+				//DEBUG_LOG(("Decompression failed - using compressed data"));
+				// decompression failed.  Maybe we invalidly thought it was compressed?
+				delete[] uncompBuffer;
+			}
 		}
 	}
 	//if (m_size >= 4)
@@ -538,9 +563,16 @@ void DataChunkTableOfContents::write( OutputStream &s )
 // Append symbols to table
 void DataChunkTableOfContents::read( ChunkInputStream &s)
 {
-	Int count, i;
+	// GeneralsX @bugfix claude 25/07/2026 count and len used to be left uninitialized here.
+	// ChunkInputStream::read() returns 0 and does NOT touch the caller's buffer once the stream
+	// is exhausted, so a truncated file (e.g. one containing nothing but the "CkMp" tag) left
+	// count as stack garbage and the loop below allocated that many pooled Mappings - a jetsam
+	// kill during map enumeration, and deterministic with a crafted count of 0x7FFFFFFF. This
+	// runs from the DataChunkInput constructor, before any parser is registered, so the caller's
+	// ERROR_CORRUPT_FILE_FORMAT path never got the chance to reject the file.
+	Int count = 0, i;
 	UnsignedInt maxID = 0;
-	unsigned char len;
+	unsigned char len = 0;
 	Mapping *m;
 
 	Byte tag[4]={'x','x', 'x', 'x'};	// Chunky height map. jba.
@@ -550,25 +582,39 @@ void DataChunkTableOfContents::read( ChunkInputStream &s)
 	}
 
 	// get number of symbols in table
-	s.read( (char *)&count, sizeof(Int) );
+	if (s.read( (char *)&count, sizeof(Int) ) != (Int)sizeof(Int)) {
+		count = 0;	// short read - buffer was not written, don't trust it
+	}
 
+	// GeneralsX @bugfix claude 25/07/2026 Every read below is now checked, which bounds the loop
+	// by what the file actually contains (each entry costs at least 5 bytes) instead of by the
+	// declared count. Bail out on the first short read and free the half-built mapping.
 	for( i=0; i<count; i++ )
 	{
 		// allocate new id mapping
 		m = newInstance(Mapping);
 
 		// read string length
-		s.read( (char *)&len, sizeof(unsigned char) );
+		if (s.read( (char *)&len, sizeof(unsigned char) ) != (Int)sizeof(unsigned char)) {
+			deleteInstance(m);
+			break;
+		}
 
 		// allocate and read in string
 		if (len>0) {
 			char *str = m->name.getBufferForRead(len);
-			s.read( str, len );
+			if (s.read( str, len ) != (Int)len) {
+				deleteInstance(m);
+				break;
+			}
 			str[len] = '\000';
 		}
 
 		// read id
-		s.read( (char *)&m->id, sizeof(UnsignedInt) );
+		if (s.read( (char *)&m->id, sizeof(UnsignedInt) ) != (Int)sizeof(UnsignedInt)) {
+			deleteInstance(m);
+			break;
+		}
 
 		// prepend to list
 		m->next = this->m_list;
@@ -580,7 +626,11 @@ void DataChunkTableOfContents::read( ChunkInputStream &s)
 		if (m->id > maxID)
 			maxID = m->id;
 	}
-	m_headerOpened = count > 0 && !s.eof();
+	// GeneralsX @bugfix claude 25/07/2026 A truncated table must not report itself as opened for
+	// read; i < count means we broke out above, so the symbol table is incomplete and any chunk
+	// ids that follow cannot be resolved. Without this, a partially read table would still let
+	// DataChunkInput::parse() run against a half-populated symbol list.
+	m_headerOpened = count > 0 && i == count && !s.eof();
 
 	// adjust next ID so no ID's are reused
 	this->m_nextID = max( this->m_nextID, maxID+1 );

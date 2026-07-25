@@ -126,8 +126,16 @@ void MissingTexture::_Init()
 			//*buffer++=missing_image_palette[*pixels++];
 			*buffer++=0x7FFF00FF;
 		}
+		// GeneralsX @bugfix The rebase at the end of pass y has to position the write
+		// pointer at the START OF THE NEXT ROW, so it must scale the pitch by y+1, not y.
+		// With the old *y the pointer was reset to the row just written: row 0 was filled
+		// twice and the last row (y = missing_image_height-1) was never filled at all.
+		// It never smashed memory - the walk stays one row short - but it left the bottom
+		// scanline of the fallback texture at whatever LockRect handed back (deterministic
+		// black under DXVK, which zeroes non-DEFAULT-pool textures), and the box filter
+		// below propagated that black row into every mip level.
 		buffer=(unsigned*)locked_rect.pBits;
-		buffer+=locked_rect.Pitch/sizeof(unsigned)*y;
+		buffer+=locked_rect.Pitch/sizeof(unsigned)*(y+1);
 	}
 
 	DX8_ErrorCode(tex->UnlockRect(0));

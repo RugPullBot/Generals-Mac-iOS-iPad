@@ -34,9 +34,16 @@
 #include "GameNetwork/NetPacketStructs.h"
 
 
+// GeneralsX @bugfix Bounded implementation behind NetPacket::readFileMessage. The read*
+// helpers are only handed (data, i) and so have no idea how many bytes of the buffer
+// they are parsing actually exist; the packet path knows and passes it in here. See the
+// definition further down for what the missing bound allowed a remote peer to do.
+static NetCommandMsg * readFileMessageBounded(UnsignedByte *data, Int &i, Int bytesAvailable);
+
+
 // This function assumes that all of the fields are either of default value or are
 // present in the raw data.
-NetCommandRef * NetPacket::ConstructNetCommandMsgFromRawData(UnsignedByte *data, UnsignedShort dataLength) {
+NetCommandRef * NetPacket::ConstructNetCommandMsgFromRawData(UnsignedByte *data, UnsignedInt dataLength) {
 	NetCommandType commandType = NETCOMMANDTYPE_GAMECOMMAND;
 	UnsignedByte commandTypeByte = static_cast<UnsignedByte>(commandType);
 	UnsignedShort commandID = 0;
@@ -152,7 +159,7 @@ NetCommandRef * NetPacket::ConstructNetCommandMsgFromRawData(UnsignedByte *data,
 				msg = readWrapperMessage(data, offset);
 				break;
 			case NETCOMMANDTYPE_FILE:
-				msg = readFileMessage(data, offset);
+				msg = readFileMessage(data, offset, (Int)dataLength);
 				break;
 			case NETCOMMANDTYPE_FILEANNOUNCE:
 				msg = readFileAnnounceMessage(data, offset);
@@ -671,7 +678,12 @@ NetCommandList * NetPacket::getCommandList() {
 				break;
 			case NETCOMMANDTYPE_FILE:
 				DEBUG_LOG_LEVEL(DEBUG_LEVEL_NET, ("read file message from player %d", playerID));
-				msg = readFileMessage(m_packet, i);
+				// GeneralsX @bugfix Hand the reader the number of bytes we actually received.
+				// Without it the file payload length taken from the packet was believed
+				// verbatim and copied out of m_packet, which is only MAX_PACKET_SIZE bytes.
+				// m_packetLen is the length the sender claimed and the constructor never
+				// clamps it, so bound it by the array as well.
+				msg = readFileMessageBounded(m_packet, i, min(m_packetLen, MAX_PACKET_SIZE));
 				break;
 			case NETCOMMANDTYPE_FILEANNOUNCE:
 				DEBUG_LOG_LEVEL(DEBUG_LEVEL_NET, ("read file announce message from player %d", playerID));
@@ -1349,26 +1361,67 @@ NetCommandMsg * NetPacket::readWrapperMessage(UnsignedByte *data, Int &i) {
 	return msg;
 }
 
-NetCommandMsg * NetPacket::readFileMessage(UnsignedByte *data, Int &i) {
-	NetFileCommandMsg *msg = newInstance(NetFileCommandMsg);
+// GeneralsX @bugfix Largest payload a file command can carry. ConnectionManager rejects
+// anything bigger on the way to disk (the biggest transferFileRules entry, .map, is 5 MiB),
+// so a claim above this can never turn into an accepted transfer and is refused up front.
+// This is the only bound available on the reassembled-wrapper path, where the real extent
+// of the buffer is not known here.
+static const UnsignedInt MAX_NET_FILE_TRANSFER_BYTES = 5 * 1024 * 1024;
+
+// GeneralsX @bugfix The payload length is a raw 32-bit value straight off the wire and was
+// used verbatim both to size the allocation and as the memcpy count, with nothing checking
+// it against the bytes actually present. A peer sending 0xFFFFFFFF asked for a 4 GiB
+// allocation and a 4 GiB read off the end of m_packet, which is only MAX_PACKET_SIZE bytes
+// (476 in a retail compatible build); a smaller bogus value quietly copied adjacent heap
+// into a file that then gets written to disk. The adjacent filename read was hardened with
+// strlcpy but the payload length was not.
+// bytesAvailable is how much of the buffer really exists; pass a negative value when the
+// caller cannot know (the reassembled wrapper path, where the payload is legitimately far
+// larger than one packet), in which case only the absolute cap above can be applied.
+static NetCommandMsg * readFileMessageBounded(UnsignedByte *data, Int &i, Int bytesAvailable) {
 	char filename[_MAX_PATH];
 
 	// TheSuperHackers @security Mauller/Jbremer/SkyAero 11/12/2025 Prevent buffer overflow when copying filepath string
 	i += strlcpy(filename, reinterpret_cast<const char*>(data + i), ARRAY_SIZE(filename));
 	++i; //Increment for null terminator
-	msg->setPortableFilename(AsciiString(filename));	// it's transferred as a portable filename
 
 	UnsignedInt dataLength = 0;
 	memcpy(&dataLength, data + i, sizeof(dataLength));
 	i += sizeof(dataLength);
 
-	UnsignedByte *buf = NEW UnsignedByte[dataLength];
-	memcpy(buf, data + i, dataLength);
+	// GeneralsX @bugfix Validate the length before it is used to allocate or to copy.
+	Bool lengthIsValid = (dataLength <= MAX_NET_FILE_TRANSFER_BYTES);
+	if (lengthIsValid && (bytesAvailable >= 0)) {
+		lengthIsValid = (i >= 0) && (i <= bytesAvailable) && (dataLength <= (UnsignedInt)(bytesAvailable - i));
+	}
+	if (!lengthIsValid) {
+		DEBUG_CRASH(("NetPacket::readFileMessage - bogus file payload length, dropping the command."));
+		DEBUG_LOG(("NetPacket::readFileMessage - dropping file command '%s': claims %u bytes of payload at offset %d, %d bytes available.",
+			filename, dataLength, i, bytesAvailable));
+		// The command is dropped; both callers handle a null return.
+		return nullptr;
+	}
+
+	NetFileCommandMsg *msg = newInstance(NetFileCommandMsg);
+	msg->setPortableFilename(AsciiString(filename));	// it's transferred as a portable filename
+
+	// GeneralsX @bugfix setFileData makes its own copy, so the temporary buffer that used
+	// to be allocated here was both a second copy of the whole file and a straight leak -
+	// nothing ever deleted it. Copy from the packet directly.
+	msg->setFileData(data + i, dataLength);
 	i += dataLength;
 
-	msg->setFileData(buf, dataLength);
-
 	return msg;
+}
+
+NetCommandMsg * NetPacket::readFileMessage(UnsignedByte *data, Int &i, Int bytesAvailable) {
+	// GeneralsX @bugfix The wrapper payload's true extent is now carried through from
+	// ConstructNetCommandMsgFromRawData (its length parameter was widened from
+	// UnsignedShort to UnsignedInt), so the copy is bounded against the actual
+	// buffer rather than merely capped at the maximum legal transfer size. Without
+	// this a peer could declare a small wrapper, claim a multi-megabyte file payload
+	// inside it, and have the adjacent heap copied out and written to disk.
+	return readFileMessageBounded(data, i, bytesAvailable);
 }
 
 NetCommandMsg * NetPacket::readFileAnnounceMessage(UnsignedByte *data, Int &i) {

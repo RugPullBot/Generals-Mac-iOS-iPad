@@ -254,6 +254,13 @@ GameMessageDisposition LookAtTranslator::translateGameMessage(const GameMessage 
 		}
 
 		//-----------------------------------------------------------------------------
+		// GeneralsX @bugfix 25/07/2026 Treat the raw double click event identical to the raw button
+		// down event because it implicitly is a raw button down event as well. Mouse::processMouseEvent
+		// emits GWM_RIGHT_DOUBLE_CLICK *instead of* GWM_RIGHT_DOWN for a rapid second press (SDL3 reports
+		// clicks>=2 on the down event), so without this label the second press never set the scroll anchor
+		// and never started the RMB scroll - the whole drag silently did nothing. Same reasoning as the
+		// existing patch in CommandXlat.cpp.
+		case GameMessage::MSG_RAW_MOUSE_RIGHT_DOUBLE_CLICK:
 		case GameMessage::MSG_RAW_MOUSE_RIGHT_BUTTON_DOWN:
 		{
 			m_lastMouseMoveTimeMsec = timeGetTime();
@@ -281,6 +288,13 @@ GameMessageDisposition LookAtTranslator::translateGameMessage(const GameMessage 
 		}
 
 		//-----------------------------------------------------------------------------
+		// GeneralsX @bugfix 25/07/2026 Treat the raw double click event identical to the raw button
+		// down event because it implicitly is a raw button down event as well. A rapid second middle
+		// press arrives as GWM_MIDDLE_DOUBLE_CLICK instead of GWM_MIDDLE_DOWN, so without this label
+		// m_isRotating stayed false (no view rotation for the whole drag) and m_originalAnchor /
+		// m_middleButtonDownTimeMsec kept the values of the *first* press - the matching button up then
+		// measured the click duration from the earlier press and usually refused the camera reset.
+		case GameMessage::MSG_RAW_MOUSE_MIDDLE_DOUBLE_CLICK:
 		case GameMessage::MSG_RAW_MOUSE_MIDDLE_BUTTON_DOWN:
 		{
 			const UnsignedInt now = timeGetTime();

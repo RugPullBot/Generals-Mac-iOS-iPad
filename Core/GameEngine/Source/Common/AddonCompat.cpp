@@ -29,6 +29,13 @@ Bool HasFullviewportDat()
 	if (File* file = TheFileSystem->openFile("GenTool/fullviewport.dat", File::READ | File::BINARY))
 	{
 		file->read(&value, 1);
+		// GeneralsX @bugfix The File handed back by openFile was never released. File derives from
+		// MemoryPoolObject via MEMORY_POOL_GLUE_ABC, so its destructor is not publicly reachable and
+		// letting the pointer go out of scope frees nothing; close() is the only release path (the
+		// file systems hand out these objects with deleteOnClose set, so close() also deletes them).
+		// Every call therefore leaked one File object plus the OS handle / RAM buffer behind it, once
+		// per call site (GlobalData and GlobalLanguage), whenever GenTool/fullviewport.dat exists.
+		file->close(); // NOTE: deletes 'file' - do not touch it after this point
 	}
 	return value != '0';
 }

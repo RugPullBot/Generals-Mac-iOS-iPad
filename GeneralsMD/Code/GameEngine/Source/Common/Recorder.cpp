@@ -1312,6 +1312,7 @@ Bool RecorderClass::playbackFile(AsciiString filename)
  */
 UnicodeString RecorderClass::readUnicodeString() {
 	WideChar str[1024] = L"";
+	const Int maxChars = (Int)(sizeof(str) / sizeof(str[0]));
 	Int index = 0;
 
 	Int c = m_file->readWideChar();
@@ -1320,7 +1321,14 @@ UnicodeString RecorderClass::readUnicodeString() {
 	}
 	str[index] = c;
 
-	while (index < 1024 && str[index] != 0) {
+	// GeneralsX @bugfix Claude 25/07/2026 The bound was tested against the index just *stored*, but the body then
+	// incremented index and wrote to the new slot without re-testing. With a full 1024 non-zero chars the loop entered
+	// at index==1023 and wrote str[1024] - one element past the stack array - tripping __stack_chk_fail (or silently
+	// smashing the canary/frame on builds without it). readReplayHeader parses every .rep in the Replays folder when
+	// the replay list screen opens and only validates a 6-byte GENREP magic first, so any oversized or truncated
+	// replay name field crashed the game on entering that screen. Test index+1 so the slot about to be written is the
+	// one that is bounds-checked; the trailing terminator below then truncates as before.
+	while (index + 1 < maxChars && str[index] != 0) {
 		++index;
 		Int c = m_file->readWideChar();
 		if (c == EOF) {
@@ -1329,7 +1337,7 @@ UnicodeString RecorderClass::readUnicodeString() {
 		}
 		str[index] = c;
 	}
-	str[1023] = L'\0';
+	str[maxChars - 1] = L'\0';
 
 	UnicodeString retval(str);
 	return retval;
@@ -1340,6 +1348,7 @@ UnicodeString RecorderClass::readUnicodeString() {
  */
 AsciiString RecorderClass::readAsciiString() {
 	char str[1024] = "";
+	const Int maxChars = (Int)(sizeof(str) / sizeof(str[0]));
 	Int index = 0;
 
 	Int c =	m_file->readChar();
@@ -1348,7 +1357,11 @@ AsciiString RecorderClass::readAsciiString() {
 	}
 	str[index] = c;
 
-	while (index < 1024 && str[index] != 0) {
+	// GeneralsX @bugfix Claude 25/07/2026 Same one-past-the-end write as readUnicodeString above: the bound was checked
+	// against the index already stored, then index was incremented and the new slot written unchecked, so a 1024-char
+	// run wrote str[1024] on a 1024-byte stack array. Reached from readReplayHeader's gameOptions/playerIndex reads
+	// while enumerating untrusted .rep files. Test index+1 so the slot about to be written is the one bounds-checked.
+	while (index + 1 < maxChars && str[index] != 0) {
 		++index;
 		Int c = m_file->readChar();
 		if (c == EOF) {
@@ -1357,7 +1370,7 @@ AsciiString RecorderClass::readAsciiString() {
 		}
 		str[index] = c;
 	}
-	str[1023] = '\0';
+	str[maxChars - 1] = '\0';
 
 	AsciiString retval(str);
 	return retval;

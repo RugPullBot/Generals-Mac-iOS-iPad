@@ -1694,8 +1694,17 @@ GameSlot *lSlot = game->getSlot(game->getLocalSlotNum());
 		if (!isPreorder)
 			preorderImg = nullptr;
 		const Image *rankImg = LookupSmallRankImage(favSide, rankPoints);
-		m_playerOfficerMedal[i]->winSetEnabledImage(0, preorderImg);
-		m_playerRank[i]->winSetEnabledImage(0, rankImg);
+		// GeneralsX @bugfix: these two lines indexed the widget arrays with the raw slot
+		// index 'i', while every other widget populated in this loop uses the compacted
+		// 'netSlot' - including the isAI() block below, which hides m_playerRank[netSlot]
+		// and m_playerOfficerMedal[netSlot]. With a gap in the slot list (an empty/closed
+		// slot ahead of an occupied one) i != netSlot, so a player's name, side and W/L
+		// record landed in row netSlot while their rank badge and officer medal were
+		// painted into row i - a row belonging to someone else, or one of the trailing
+		// rows hidden after the loop. It also meant the AI hide covered a row that was
+		// never drawn into. Cosmetic, GameSpy/online only, but plainly unintended.
+		m_playerOfficerMedal[netSlot]->winSetEnabledImage(0, preorderImg);
+		m_playerRank[netSlot]->winSetEnabledImage(0, rankImg);
 
 		UnicodeString formatString;
 

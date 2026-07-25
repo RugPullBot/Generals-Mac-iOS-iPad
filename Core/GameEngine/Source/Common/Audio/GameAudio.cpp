@@ -185,6 +185,12 @@ AudioManager::AudioManager() :
 //-------------------------------------------------------------------------------------------------
 AudioManager::~AudioManager()
 {
+	// GeneralsX @bugfix - Nothing drained the request list on the way down: no device destructor
+	// touches it, so every request still queued when the manager dies (and, for AR_Play, the
+	// AudioEventRTS it owns) was leaked. removeAllAudioRequests() releases both, and it is safe here
+	// because the requests reference neither m_music nor m_sound, which are deleted below.
+	removeAllAudioRequests();
+
 	// cleanup all of the loaded AudioEventInfos
 	AudioEventInfoHashIt it;
 	for (it = m_allAudioEventInfo.begin(); it != m_allAudioEventInfo.end(); ++it) {
@@ -812,7 +818,25 @@ void AudioManager::removeAllAudioRequests()
 {
   std::list<AudioRequest*>::iterator it;
   for ( it = m_audioRequests.begin(); it != m_audioRequests.end(); it++ ) {
-    releaseAudioRequest( *it );
+    AudioRequest *req = (*it);
+    if ( req == nullptr ) {
+      continue;
+    }
+
+    // GeneralsX @bugfix - An AR_Play request is the sole owner of the AudioEventRTS that
+    // SoundManager/MusicManager handed to it: ~AudioRequest is empty and releaseAudioRequest() only
+    // frees the pool object, so throwing the queue away here leaked one AudioEventRTS per unprocessed
+    // play request. reset() calls this on every map load, restart and return to the shell, so the
+    // leak accumulated for the whole session. Guarded on m_usePendingEvent because m_pendingEvent
+    // shares a union with m_handleToInteractOn - on a Stop/Pause request those bytes are a handle,
+    // and freeing them as a pointer would corrupt the heap. This must NOT move into ~AudioRequest:
+    // processRequest() passes the event to playAudioEvent(), which takes ownership of it, so a
+    // destructor-side release would be a use-after-free on every sound that actually plays.
+    if ( req->m_usePendingEvent && req->m_pendingEvent != nullptr ) {
+      releaseAudioEventRTS( req->m_pendingEvent );
+    }
+
+    releaseAudioRequest( req );
   }
 
   m_audioRequests.clear();

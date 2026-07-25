@@ -46,34 +46,56 @@
 
 void CopyWcharToWindowsWideChar( WideCharWindows *dest, const WideChar *src, UnsignedInt len )
 {
-	for (UnsignedInt i = 0; i < len; ++i)
+	// GeneralsX @bugfix The copy loop used to run exactly `len` iterations no matter how long `src`
+	// actually was. Every caller passes ARRAY_SIZE(dest)-1, i.e. the *destination* capacity, so a
+	// short source was over-read by up to len-1 elements: UnicodeString::str() hands back a pointer
+	// to the single static &TheNullChr when the string is empty, and one caller passes a bare L""
+	// literal, so the 100-element chat field read ~400 bytes off the end of a 4-byte object. The low
+	// 16 bits of each stray word then went out on a UDP broadcast to the whole subnet. Stop at the
+	// source terminator, and zero the remainder of the field so no residue is put on the wire
+	// either. This writes dest[0..len] - exactly the range the old code wrote - so it stays in
+	// bounds at every call site.
+	UnsignedInt i = 0;
+	while (i < len && src[i] != 0)
 	{
 		dest[i] = src[i];
+		++i;
 	}
-	dest[len] = 0;
+	while (i <= len)
+	{
+		dest[i] = 0;
+		++i;
+	}
 }
 
 wchar_t *GetWindowsWideCharAsWchar( WideCharWindows *src )
 {
 	static wchar_t buf[MAX_COMPUTERNAME_LENGTH];
-	// Get the length of the string
-	UnsignedInt len = 0;
-	while (src[len] != 0)
-	{
-		++len;
-	}
 
-	if (len > MAX_COMPUTERNAME_LENGTH)
+	// GeneralsX @bugfix Three defects here, all reachable from a malformed or hostile LAN datagram,
+	// because `src` points straight into the received packet:
+	//  1. the length scan was unbounded, so a field the sender never terminated walked off the end
+	//     of the receive buffer;
+	//  2. the "too long" test used `>` when buf only has MAX_COMPUTERNAME_LENGTH slots, so a length
+	//     of exactly MAX_COMPUTERNAME_LENGTH slipped through and buf[MAX_COMPUTERNAME_LENGTH] wrote
+	//     one element past the end of the static array;
+	//  3. the NULL returned on that path is dereferenced unchecked by every caller - e.g.
+	//     ContainsInvalidChars() does `while (*playerName)`, which is a plain null deref in a
+	//     release build, where its DEBUG_ASSERTCRASH is compiled out.
+	// Scan and copy in a single pass bounded by the buffer, and always return a terminated string.
+	// Truncating is the safe answer for a malformed field: the longest field ever passed in here is
+	// the chat message at g_lanMaxChatLength+1 elements, far below the buffer size, so no legitimate
+	// value is ever shortened.
+	UnsignedInt i = 0;
+	if (src != nullptr)
 	{
-		return NULL; // too long
+		while (i < ARRAY_SIZE(buf) - 1 && src[i] != 0)
+		{
+			buf[i] = src[i];
+			++i;
+		}
 	}
-
-	// Copy the string
-	for (UnsignedInt i = 0; i < len; ++i)
-	{
-		buf[i] = src[i];
-	}
-	buf[len] = 0;
+	buf[i] = 0;
 	return buf;
 }
 

@@ -277,19 +277,41 @@ void PingThreadClass::Thread_Function()
 			}
 			else
 			{
-			hostent *hostStruct;
-			hostStruct = gethostbyname(hostnameBuffer);
-			if (hostStruct == nullptr)
-			{
-				DEBUG_LOG(("pinging %s - host lookup failed", hostnameBuffer));
+				hostent *hostStruct;
+				hostStruct = gethostbyname(hostnameBuffer);
+				if (hostStruct == nullptr)
+				{
+					DEBUG_LOG(("pinging %s - host lookup failed", hostnameBuffer));
 
-				// Even though this failed to resolve IP, still need to send a
-				//   callback.
-				IP = 0xFFFFFFFF;   // flag for IP resolve failed
-			}
-			else
-			{
-				in_addr *hostNode = (in_addr *) hostStruct->h_addr;
+					// Even though this failed to resolve IP, still need to send a
+					//   callback.
+					IP = 0xFFFFFFFF;   // flag for IP resolve failed
+				}
+				else
+				{
+					// GeneralsX @bugfix Store the resolved address back into IP. The
+					// HOSTENT->hostent reflow in 2bc1940ea dropped "IP = hostNode->s_addr;"
+					// here (the sibling in GameResultsThread.cpp kept it), so hostNode was
+					// resolved and then thrown away and IP stayed on the 0xFFFFFFFF
+					// resolve-failed sentinel. The ping loop below is gated on
+					// "IP != 0xFFFFFFFF", so every hostname-addressed server was never
+					// pinged at all and reported an average of -1, which getPingString()
+					// renders as the worst-possible "FF".
+					// h_addr is h_addr_list[0] and can be null on a degenerate reply; since
+					// this now dereferences it, fall back to the same sentinel the
+					// lookup-failure branch above already uses rather than crashing the
+					// worker thread.
+					in_addr *hostNode = (in_addr *) hostStruct->h_addr;
+					if (hostNode == nullptr)
+					{
+						DEBUG_LOG(("pinging %s - host lookup returned no address", hostnameBuffer));
+						IP = 0xFFFFFFFF;   // flag for IP resolve failed
+					}
+					else
+					{
+						IP = hostNode->s_addr;
+						DEBUG_LOG(("pinging %s IP = %s", hostnameBuffer, inet_ntoa(*hostNode) ));
+					}
 				}
 			}
 

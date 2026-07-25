@@ -760,7 +760,17 @@ void	Render2DSentenceClass::Build_Sentence_Centered (const WCHAR *text, int *hkX
 			//
 			int charWidth = 0;
 			while ((*word != 0) && (*word > L' ') && (*word != L'\n')) {
-				if( ParseHotKey && (*word == L'&') && (*word+1 != 0) && (*word+1 > L' ') && (*word+1 != L'\n'))
+				// GeneralsX @bugfix: this look-ahead used to read (*word)+1 -- the value of the
+				// '&' plus one -- instead of the character after the '&'. L'&'+1 is non-zero,
+				// greater than L' ' and not L'\n', so all three guards were constant-true and
+				// any '&' was consumed as a hot-key marker unconditionally. That disagreed with
+				// the blitting loop further down this function and with the one in
+				// Build_Sentence_Not_Centered, which test the character after the '&' correctly
+				// (they read it into 'ch' first): "Load & Save" was measured as if the
+				// '& ' were a marker, merging two words and yielding the wrong wrap width. With
+				// a trailing bare '&' the unconditional skip also walked the pointer onto the
+				// terminator, so the Get_Char_Spacing below read and stepped past the NUL.
+				if( ParseHotKey && (*word == L'&') && (*(word+1) != 0) && (*(word+1) > L' ') && (*(word+1) != L'\n'))
 				{
 					int offset = 0;
 					if (word_width != 0 )
@@ -773,7 +783,7 @@ void	Render2DSentenceClass::Build_Sentence_Centered (const WCHAR *text, int *hkX
 							offset =-1;
 						}
 					}
-					*word++;
+					word++;
 					calcHotKeyX = true;
 				}
 
@@ -1043,8 +1053,16 @@ Vector2	Render2DSentenceClass::Build_Sentence_Not_Centered (const WCHAR *text, i
 					const WCHAR *word	= text;
 					float word_width	= char_spacing;
 					while ((*word != 0) && (*word > L' ')) {
-						if(ParseHotKey && (*word == L'&') && (*word+1 != 0) && (*word+1 > L' ') && (*word+1 != L'\n'))
-							*word++;
+						// GeneralsX @bugfix: same (*word)+1 vs *(word+1) mistake as in
+						// Build_Sentence_Centered -- the guard was constant-true for every '&',
+						// so the marker skip below fired unconditionally. On a string ending in
+						// a bare '&' that stepped 'word' onto the terminator, and the
+						// Get_Char_Spacing call then consumed the NUL and advanced past it, so
+						// this loop kept measuring whatever followed the string in memory.
+						// It also mis-measured "&" used as a literal (e.g. "Load & Save"),
+						// disagreeing with the blitting pass above that tests the next character.
+						if(ParseHotKey && (*word == L'&') && (*(word+1) != 0) && (*(word+1) > L' ') && (*(word+1) != L'\n'))
+							word++;
 						word_width += Font->Get_Char_Spacing (*word++);
 					}
 
