@@ -316,12 +316,22 @@ GameMessageDisposition LookAtTranslator::translateGameMessage(const GameMessage 
 			m_lastMouseMoveTimeMsec = now;
 
 			const UnsignedInt CLICK_DURATION_MSEC = 167;
-			const UnsignedInt PIXEL_OFFSET = 5;
+			// GeneralsX @bugfix 25/07/2026 The absolute value was only taken for dx, and PIXEL_OFFSET
+			// was UnsignedInt, so a negative dy (mouse moved *up* from the anchor) was converted to a
+			// huge unsigned value by the usual arithmetic conversions and always compared greater than
+			// the threshold. The middle-click "reset camera to home" gesture therefore tolerated 5 px
+			// of downward slop but was cancelled by a single pixel of upward drift - on a trackpad or
+			// touch input that meant the reset usually did nothing. Take the absolute value of dy as
+			// well, and make the threshold a signed Int so the comparison stays a plain signed one.
+			// Both halves must stay together: making PIXEL_OFFSET signed *without* the abs() would
+			// make a large upward drag compare as "no movement" and snap the camera home instead.
+			const Int PIXEL_OFFSET = 5;
 
 			m_isRotating = false;
 			Int dx = m_currentPos.x-m_originalAnchor.x;
 			if (dx<0) dx = -dx;
 			Int dy = m_currentPos.y-m_originalAnchor.y;
+			if (dy<0) dy = -dy;
 			Bool didMove = dx>PIXEL_OFFSET || dy>PIXEL_OFFSET;
 
 			const UnsignedInt elapsedMsec = now - m_middleButtonDownTimeMsec;

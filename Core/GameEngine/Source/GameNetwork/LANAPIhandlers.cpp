@@ -68,7 +68,7 @@ void CopyWcharToWindowsWideChar( WideCharWindows *dest, const WideChar *src, Uns
 	}
 }
 
-wchar_t *GetWindowsWideCharAsWchar( WideCharWindows *src )
+static wchar_t *WindowsWideCharToWchar( const WideCharWindows *src, size_t srcCount )
 {
 	static wchar_t buf[MAX_COMPUTERNAME_LENGTH];
 
@@ -82,14 +82,18 @@ wchar_t *GetWindowsWideCharAsWchar( WideCharWindows *src )
 	//  3. the NULL returned on that path is dereferenced unchecked by every caller - e.g.
 	//     ContainsInvalidChars() does `while (*playerName)`, which is a plain null deref in a
 	//     release build, where its DEBUG_ASSERTCRASH is compiled out.
-	// Scan and copy in a single pass bounded by the buffer, and always return a terminated string.
-	// Truncating is the safe answer for a malformed field: the longest field ever passed in here is
-	// the chat message at g_lanMaxChatLength+1 elements, far below the buffer size, so no legitimate
-	// value is ever shortened.
-	UnsignedInt i = 0;
+	// Scan and copy in a single pass bounded by both the source field and the buffer, and always
+	// return a terminated string. Truncating is the safe answer for a malformed field: no legitimate
+	// value comes anywhere near either bound, so nothing valid is ever shortened.
+	if (srcCount > ARRAY_SIZE(buf) - 1)
+	{
+		srcCount = ARRAY_SIZE(buf) - 1;
+	}
+
+	size_t i = 0;
 	if (src != nullptr)
 	{
-		while (i < ARRAY_SIZE(buf) - 1 && src[i] != 0)
+		while (i < srcCount && src[i] != 0)
 		{
 			buf[i] = src[i];
 			++i;
@@ -97,6 +101,29 @@ wchar_t *GetWindowsWideCharAsWchar( WideCharWindows *src )
 	}
 	buf[i] = 0;
 	return buf;
+}
+
+// GeneralsX @bugfix Bounding the scan by the scratch buffer alone was not enough. The buffer holds
+// MAX_COMPUTERNAME_LENGTH elements, but no LANMessage field is remotely that big - name is 13
+// elements, gameName 17, the chat message 101 - and `src` points into
+// Transport::m_inBuffer[i].data, where doRecv() memcpy's only the bytes that actually arrived. So a
+// peer that sent a short datagram with an unterminated field had the scan run on past the field and
+// past the end of its own datagram into residue left by whatever packet last occupied that slot,
+// including unicast ones it never saw. That residue then became a player/game name or chat line
+// that is displayed in the lobby and folded back into the game options string we broadcast. Bounding
+// by the field also stops a peer injecting a 255-element string where the rest of the code assumes
+// the wire limit. This form deduces the element count from the field itself, so no call site can get
+// the bound wrong. Everything in this file goes through it; the plain pointer form below stays for
+// the signature LANAPI.h declares, which has no way to carry a length.
+template <size_t N>
+static wchar_t *GetWindowsWideCharFieldAsWchar( const WideCharWindows (&src)[N] )
+{
+	return WindowsWideCharToWchar( src, N );
+}
+
+wchar_t *GetWindowsWideCharAsWchar( WideCharWindows *src )
+{
+	return WindowsWideCharToWchar( src, MAX_COMPUTERNAME_LENGTH - 1 );
 }
 
 void LANAPI::handleRequestLocations( LANMessage *msg, UnsignedInt senderIP )
@@ -146,8 +173,8 @@ void LANAPI::handleRequestLocations( LANMessage *msg, UnsignedInt senderIP )
 	{
 		removePlayer(player);
 	}
-	// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-	player->setName(UnicodeString(GetWindowsWideCharAsWchar(msg->name)));
+	// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+	player->setName(UnicodeString(GetWindowsWideCharFieldAsWchar(msg->name)));
 	player->setHost(msg->hostName);
 	player->setLogin(msg->userName);
 	player->setLastHeard(timeGetTime());
@@ -172,13 +199,13 @@ void LANAPI::handleGameAnnounce( LANMessage *msg, UnsignedInt senderIP )
 
 		if (m_currentGame == nullptr)
 		{
-			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-			LANGameInfo *game = LookupGame(UnicodeString(GetWindowsWideCharAsWchar(msg->GameInfo.gameName)));
+			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+			LANGameInfo *game = LookupGame(UnicodeString(GetWindowsWideCharFieldAsWchar(msg->GameInfo.gameName)));
 			if (!game)
 			{
 				game = NEW LANGameInfo;
-				// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-				game->setName(UnicodeString(GetWindowsWideCharAsWchar(msg->GameInfo.gameName)));
+				// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+				game->setName(UnicodeString(GetWindowsWideCharFieldAsWchar(msg->GameInfo.gameName)));
 				addGame(game);
 			}
 			Bool success = ParseGameOptionsString(game,AsciiString(msg->GameInfo.options));
@@ -197,13 +224,13 @@ void LANAPI::handleGameAnnounce( LANMessage *msg, UnsignedInt senderIP )
 	}
 	else
 	{
-		// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-		LANGameInfo *game = LookupGame(UnicodeString(GetWindowsWideCharAsWchar(msg->GameInfo.gameName)));
+		// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+		LANGameInfo *game = LookupGame(UnicodeString(GetWindowsWideCharFieldAsWchar(msg->GameInfo.gameName)));
 		if (!game)
 		{
 			game = NEW LANGameInfo;
-			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-			game->setName(UnicodeString(GetWindowsWideCharAsWchar(msg->GameInfo.gameName)));
+			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+			game->setName(UnicodeString(GetWindowsWideCharFieldAsWchar(msg->GameInfo.gameName)));
 			addGame(game);
 		}
 		Bool success = ParseGameOptionsString(game,AsciiString(msg->GameInfo.options));
@@ -236,8 +263,8 @@ void LANAPI::handleLobbyAnnounce( LANMessage *msg, UnsignedInt senderIP )
 	{
 		removePlayer(player);
 	}
-	// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-	player->setName(UnicodeString(GetWindowsWideCharAsWchar(msg->name)));
+	// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+	player->setName(UnicodeString(GetWindowsWideCharFieldAsWchar(msg->name)));
 	player->setHost(msg->hostName);
 	player->setLogin(msg->userName);
 	player->setLastHeard(timeGetTime());
@@ -408,8 +435,8 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 			// should not be in a player name. It should also not consist of only space characters.
 			if (canJoin)
 			{
-				// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-				if (ContainsInvalidChars(GetWindowsWideCharAsWchar(msg->name)) || !ContainsAnyReadableChars(GetWindowsWideCharAsWchar(msg->name)))
+				// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+				if (ContainsInvalidChars(GetWindowsWideCharFieldAsWchar(msg->name)) || !ContainsAnyReadableChars(GetWindowsWideCharFieldAsWchar(msg->name)))
 				{
 					// Just deny with a duplicate name reason, for backwards compatibility with retail
 					reply.messageType = LANMessage::MSG_JOIN_DENY;
@@ -426,8 +453,8 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 			for (player = 0; canJoin && player<MAX_SLOTS; ++player)
 			{
 				LANGameSlot *slot = m_currentGame->getLANSlot(player);
-				// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-				if (slot->isHuman() && slot->getName().compare(GetWindowsWideCharAsWchar(msg->name)) == 0)
+				// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+				if (slot->isHuman() && slot->getName().compare(GetWindowsWideCharFieldAsWchar(msg->name)) == 0)
 				{
 					// just deny duplicates
 					reply.messageType = LANMessage::MSG_JOIN_DENY;
@@ -455,8 +482,8 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 					reply.GameJoined.playerIP = senderIP;
 
 					LANGameSlot newSlot;
-					// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-					newSlot.setState(SLOT_PLAYER, UnicodeString(GetWindowsWideCharAsWchar(msg->name)));
+					// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+					newSlot.setState(SLOT_PLAYER, UnicodeString(GetWindowsWideCharFieldAsWchar(msg->name)));
 					newSlot.setIP(senderIP);
 					newSlot.setPort(NETWORK_BASE_PORT_NUMBER);
 					newSlot.setLastHeard(timeGetTime());
@@ -464,8 +491,8 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 					m_currentGame->setSlot(player,newSlot);
 					DEBUG_LOG(("LANAPI::handleRequestJoin - added player %ls at ip 0x%08x to the game", msg->name, senderIP));
 
-					// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-					OnPlayerJoin(player, UnicodeString(GetWindowsWideCharAsWchar(msg->name)));
+					// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+					OnPlayerJoin(player, UnicodeString(GetWindowsWideCharFieldAsWchar(msg->name)));
 					responseIP = 0;
 
 					break;
@@ -501,8 +528,8 @@ void LANAPI::handleJoinAccept( LANMessage *msg, UnsignedInt senderIP )
 	{
 		if (m_pendingAction == ACT_JOIN) // Are we trying to join?
 		{
-			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-			m_currentGame = LookupGame(UnicodeString(GetWindowsWideCharAsWchar(msg->GameJoined.gameName)));
+			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+			m_currentGame = LookupGame(UnicodeString(GetWindowsWideCharFieldAsWchar(msg->GameJoined.gameName)));
 
 			if (!m_currentGame)
 			{
@@ -552,8 +579,8 @@ void LANAPI::handleJoinDeny( LANMessage *msg, UnsignedInt senderIP )
 	{
 		if (m_pendingAction == ACT_JOIN) // Are we trying to join?
 		{
-			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-			OnGameJoin(msg->GameNotJoined.reason, LookupGame(UnicodeString(GetWindowsWideCharAsWchar(msg->GameNotJoined.gameName))));
+			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+			OnGameJoin(msg->GameNotJoined.reason, LookupGame(UnicodeString(GetWindowsWideCharFieldAsWchar(msg->GameNotJoined.gameName))));
 			m_pendingAction = ACT_NONE;
 			m_expiration = 0;
 		}
@@ -603,8 +630,8 @@ void LANAPI::handleRequestGameLeave( LANMessage *msg, UnsignedInt senderIP )
 						slot.setState(SLOT_OPEN);
 						m_currentGame->setSlot( player, slot );
 					}
-					// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-					OnPlayerLeave(UnicodeString(GetWindowsWideCharAsWchar(msg->name)));
+					// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+					OnPlayerLeave(UnicodeString(GetWindowsWideCharFieldAsWchar(msg->name)));
 					m_currentGame->getLANSlot(player)->setState(SLOT_OPEN);
 					m_currentGame->resetAccepted();
 					RequestGameOptions(GenerateGameOptionsString(), false, senderIP);
@@ -621,8 +648,8 @@ void LANAPI::handleRequestGameLeave( LANMessage *msg, UnsignedInt senderIP )
 		LANGameInfo *game = m_games;
 		while (game)
 		{
-			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-			if (game->getName().compare(GetWindowsWideCharAsWchar(msg->GameToLeave.gameName)) == 0)
+			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+			if (game->getName().compare(GetWindowsWideCharFieldAsWchar(msg->GameToLeave.gameName)) == 0)
 			{
 				removeGame(game);
 				delete game;
@@ -700,15 +727,15 @@ void LANAPI::handleChat( LANMessage *msg, UnsignedInt senderIP )
 		LANPlayer *player;
 		if((player=LookupPlayer(senderIP)) != nullptr)
 		{
-			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-			OnChat(UnicodeString(player->getName()), player->getIP(), UnicodeString(GetWindowsWideCharAsWchar(msg->Chat.message)), msg->Chat.chatType);
+			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+			OnChat(UnicodeString(player->getName()), player->getIP(), UnicodeString(GetWindowsWideCharFieldAsWchar(msg->Chat.message)), msg->Chat.chatType);
 			player->setLastHeard(timeGetTime());
 		}
 	}
 	else
 	{
-		// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-		if (LookupGame(UnicodeString(GetWindowsWideCharAsWchar(msg->Chat.gameName))) != m_currentGame)
+		// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+		if (LookupGame(UnicodeString(GetWindowsWideCharFieldAsWchar(msg->Chat.gameName))) != m_currentGame)
 		{
 			DEBUG_LOG(("Game '%ls' is not my game", msg->Chat.gameName));
 			if (m_currentGame)
@@ -723,8 +750,8 @@ void LANAPI::handleChat( LANMessage *msg, UnsignedInt senderIP )
 		{
 			if (m_currentGame && m_currentGame->getIP(player) == senderIP)
 			{
-				// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-				OnChat(UnicodeString(GetWindowsWideCharAsWchar(msg->name)), m_currentGame->getIP(player), UnicodeString(GetWindowsWideCharAsWchar(msg->Chat.message)), msg->Chat.chatType);
+				// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+				OnChat(UnicodeString(GetWindowsWideCharFieldAsWchar(msg->name)), m_currentGame->getIP(player), UnicodeString(GetWindowsWideCharFieldAsWchar(msg->Chat.message)), msg->Chat.chatType);
 				break;
 			}
 		}
@@ -774,8 +801,8 @@ void LANAPI::handleInActive(LANMessage *msg, UnsignedInt senderIP) {
 	}
 
 	UnicodeString playerName;
-	// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-	playerName = UnicodeString(GetWindowsWideCharAsWchar(msg->name));
+	// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
+	playerName = UnicodeString(GetWindowsWideCharFieldAsWchar(msg->name));
 
 	Int slotNum = m_currentGame->getSlotNum(playerName);
 	if (slotNum < 0)

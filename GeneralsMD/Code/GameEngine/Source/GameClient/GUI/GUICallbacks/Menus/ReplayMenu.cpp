@@ -30,6 +30,11 @@
 // INCLUDES ///////////////////////////////////////////////////////////////////////////////////////
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
+// GeneralsX @bugfix Claude 07/25/2026 copyReplay() needs to tell iOS apart from macOS when it
+// picks a fallback destination folder; TARGET_OS_IPHONE is only defined once this is included.
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 
 #include "Lib/BaseType.h"
 #include "Common/FileSystem.h"
@@ -813,12 +818,53 @@ void copyReplay()
 	translate.translate(GetReplayFilenameFromListbox(listboxReplayFiles, selected));
 	filename.concat(translate);
 
-	char path[1024];
-	LPITEMIDLIST pidl;
-	SHGetSpecialFolderLocation(nullptr, CSIDL_DESKTOPDIRECTORY, &pidl);
-	SHGetPathFromIDList(pidl,path);
+	// GeneralsX @bugfix Claude 07/25/2026 'path' was uninitialized and the results of both shell
+	// calls were thrown away. Off Windows, SHGetSpecialFolderLocation/SHGetPathFromIDList are
+	// CompatLib stubs that always fail and never write to 'path', so newFilename.set(path) ran
+	// strlen() over indeterminate stack -- undefined behaviour on a button any player can press,
+	// and in practice a garbage destination that made "Copy Replay" fail with a generic error on
+	// every macOS/iOS/Linux build. Zero the buffer, honour both return codes, and fall back to a
+	// folder the user can actually reach: ~/Desktop on desktop platforms, and the app's Documents
+	// directory on iOS (the sandbox has no Desktop, and Documents is what the Files app shows).
+	char path[1024] = "";
+	AsciiString destDir;
+
+	LPITEMIDLIST pidl = nullptr;
+	if (SHGetSpecialFolderLocation(nullptr, CSIDL_DESKTOPDIRECTORY, &pidl) == 0 && pidl != nullptr)
+	{
+		if (SHGetPathFromIDList(pidl, path) != 0)
+			destDir.set(path);
+	}
+
+	if (destDir.isEmpty())
+	{
+		const char *home = getenv("HOME");
+		if (home != nullptr && home[0] != '\0')
+		{
+			destDir.set(home);
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+			destDir.concat("/Documents");
+#else
+			destDir.concat("/Desktop");
+#endif
+		}
+	}
+
+	if (destDir.isEmpty())
+	{
+		DEBUG_CRASH(("copyReplay: no destination folder could be determined for the replay copy"));
+		AsciiString reason;
+		UnicodeString errorStr;
+		// Untranslated, matching the FormatMessage error paths in this file which also show
+		// raw system text -- there is no string table entry for this case.
+		reason.set("Could not determine a folder to copy the replay into.");
+		errorStr.translate(reason);
+		MessageBoxOk(TheGameText->fetch("GUI:Error"), errorStr, nullptr);
+		return;
+	}
+
 	AsciiString newFilename;
-	newFilename.set(path);
+	newFilename.set(destDir);
 	// GeneralsX @bugfix copilot 12/03/2026 Use POSIX separator on non-Windows to avoid creating literal backslash filenames.
 #ifdef _WIN32
 	newFilename.concat("\\");

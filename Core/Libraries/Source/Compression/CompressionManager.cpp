@@ -280,28 +280,40 @@ Int CompressionManager::decompressData( void *srcVoid, Int srcLen, void *destVoi
 
 	CompressionType compType = getCompressionType(src, srcLen);
 
-	if (compType == COMPRESSION_BTREE)
+	// GeneralsX @bugfix The BTREE ("EAB\0") and HUFF ("EAH\0") decoders write through an
+	// unbounded cursor until they meet their own stream's terminator; neither has any view
+	// of destLen, which this function accepted and discarded. BTREE_chase() additionally
+	// recurses over a left/right table indexed by bytes the stream supplies, so a cyclic
+	// tree exhausts the stack. Both are reachable from untrusted input: DataChunk decompresses
+	// every .map found during map enumeration (including peer-transferred maps the user never
+	// opened) and ConnectionManager::processChunk decompresses peer packets, and the four-byte
+	// magic alone selects the codec — so bounding only REFPACK would be bypassed by editing
+	// four bytes of a crafted file.
+	//
+	// Rejecting them costs nothing real. getPreferredCompression() is REFPACK, nothing in the
+	// tree ever asks for BTREE or HUFF, WorldBuilder only reuses whatever a map already was,
+	// and a scan of the shipped archives found 171 maps: 166 EAR (REFPACK), 4 uncompressed,
+	// 1 ZL5 — no EAB or EAH anywhere. ZLIB bounds itself via uncompress()'s in/out length and
+	// NOXLZH already takes destLen, so those paths stay as they are.
+	//
+	// If a genuine BTREE/HUFF asset ever turns up, bound those two decoders the way
+	// REF_decode_bounded bounds RefPack before re-enabling this path.
+	if (compType == COMPRESSION_BTREE || compType == COMPRESSION_HUFF)
 	{
-		Int slen = srcLen - 8;
-		Int ret = BTREE_decode(dest, src+8, &slen);
-		if (ret)
-			return ret;
-		else
-			return 0;
-	}
-	if (compType == COMPRESSION_HUFF)
-	{
-		Int slen = srcLen - 8;
-		Int ret = HUFF_decode(dest, src+8, &slen);
-		if (ret)
-			return ret;
-		else
-			return 0;
+		DEBUG_LOG(("Refusing %s stream: decoder cannot bound its destination",
+			(compType == COMPRESSION_BTREE) ? "EAB (BTREE)" : "EAH (HUFF)"));
+		return 0;
 	}
 	if (compType == COMPRESSION_REFPACK)
 	{
+		// GeneralsX @bugfix destLen was accepted by this function and then thrown
+		// away — REF_decode writes until it meets an end opcode with no view of the
+		// destination's extent, so a crafted stream expanded straight past the
+		// caller's buffer. Map enumeration decompresses every .map on disk during
+		// startup, including peer-transferred maps the user never opened, so the
+		// input is untrusted. Use the bounded decoder, which refuses instead.
 		Int slen = srcLen - 8;
-		Int ret = REF_decode(dest, src+8, &slen);
+		Int ret = REF_decode_bounded(dest, destLen, src+8, slen, &slen);
 		if (ret)
 			return ret;
 		else

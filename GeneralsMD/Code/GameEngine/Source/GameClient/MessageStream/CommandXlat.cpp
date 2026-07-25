@@ -3303,6 +3303,15 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 				static Bool oldCloudMap = TRUE;
 				static Bool oldBehindBuildingMarkers = TRUE;
 				static Int oldMaxParticleCount = 0;
+				// GeneralsX @bugfix 25/07/2026 isLowDetails was read here but never assigned anywhere, so the
+				// restore branch was dead code and every press took the "lower details" path below. That path
+				// re-snapshotted the *already lowered* values over the saved originals, so the first press
+				// disabled shadows/lightmap/cloudmap/building markers and clamped particles to
+				// DROPPED_MAX_PARTICLE_COUNT, and the second press overwrote the originals with those lowered
+				// values - making the degraded settings permanent for the rest of the session with no way back.
+				// Assigning the flag at the end of each branch makes the toggle actually toggle and keeps the
+				// originals intact. It also guarantees the restore branch only ever runs after a lower pass, so
+				// the (otherwise bogus) initial oldMaxParticleCount of 0 can never be written back.
 				if(isLowDetails)
 				{
 					TheWritableGlobalData->m_useShadowVolumes = oldShadowVolumsValue;
@@ -3312,6 +3321,7 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 					TheGameLogic->setShowBehindBuildingMarkers(oldBehindBuildingMarkers);
 					if(TheInGameUI)
 						TheInGameUI->message("GUI:ReturnGraphicsToPreviousSettings");
+					isLowDetails = FALSE;
 				}
 				else
 				{
@@ -3332,6 +3342,7 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 
 					if(TheInGameUI)
 						TheInGameUI->message("GUI:DetailsSetToLowest");
+					isLowDetails = TRUE;
 				}
 			}
 			disp = DESTROY_MESSAGE;

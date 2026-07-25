@@ -137,7 +137,14 @@ void INI::parseMapCacheDefinition( INI* ini )
 {
 	const char *c;
 	AsciiString name;
-	MapMetaDataReader mdr;
+	// GeneralsX @bugfix MapMetaDataReader has no constructor, so its scalar members started out
+	// indeterminate, and initFromINI() only DEBUG_CRASHes on an unknown or missing field - which
+	// compiles away in release, leaving the block parsed but the member never written. MapCache.ini
+	// lives in a writable user directory (the app sandbox on iOS), so a truncated or foreign-written
+	// entry that omits e.g. numPlayers used to hand us garbage that was copied straight into the map
+	// cache and used as a loop bound below. Value-initialise the reader so a missing field means
+	// zero instead of stack garbage.
+	MapMetaDataReader mdr = {};
 	MapMetaData md;
 
 	// read the name
@@ -152,7 +159,18 @@ void INI::parseMapCacheDefinition( INI* ini )
 	md.m_isOfficial = mdr.m_isOfficial != 0;
 	md.m_doesExist = TRUE;
 	md.m_isMultiplayer = mdr.m_isMultiplayer != 0;
+	// GeneralsX @bugfix numPlayers comes from the cache file, but nothing validated it on the way in.
+	// MapCache::writeCacheINI only ever emits a count that WaypointMap::update() clamped to
+	// [1, MAX_SLOTS], so clamping here cannot change any cache file we wrote ourselves; it stops a
+	// hand-edited or corrupted entry from claiming more start positions than exist. The count is
+	// read past the end of the 8-entry mdr.m_waypoints array below, and is also used as a slot-array
+	// bound by the lobby screens that consume MapMetaData, so an out-of-range value corrupts memory
+	// well beyond this function.
 	md.m_numPlayers = mdr.m_numPlayers;
+	if (md.m_numPlayers > MAX_SLOTS)
+	{
+		md.m_numPlayers = MAX_SLOTS;
+	}
 	md.m_filesize = mdr.m_filesize;
 	md.m_CRC = mdr.m_CRC;
 	md.m_timestamp = mdr.m_timestamp;
@@ -192,7 +210,9 @@ void INI::parseMapCacheDefinition( INI* ini )
 #endif
 
 	AsciiString startingCamName;
-	for (Int i=0; i<md.m_numPlayers; ++i)
+	// GeneralsX @bugfix keep the read of mdr.m_waypoints bounded by the array it indexes, not only by
+	// the (now clamped) player count, so this loop stays safe if the count above is ever widened.
+	for (Int i=0; i<md.m_numPlayers && i<MAX_SLOTS; ++i)
 	{
 		startingCamName.format("Player_%d_Start", i+1); // start pos waypoints are 1-based
 		md.m_waypoints[startingCamName] = mdr.m_waypoints[i];

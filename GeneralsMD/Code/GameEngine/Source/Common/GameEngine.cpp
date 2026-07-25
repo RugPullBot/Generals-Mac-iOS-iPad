@@ -1019,21 +1019,61 @@ static void autoLoadLatestSaveOnce()
 	SaveGameInfo bestInfo;
 	Bool found = FALSE;
 
-	for ( struct dirent *entry = readdir( dir ); entry != nullptr; entry = readdir( dir ) ) {
-		const size_t len = strlen( entry->d_name );
-		if ( len < 5 || strcasecmp( entry->d_name + len - 4, ".sav" ) != 0 ) {
-			continue;
-		}
-		AsciiString leaf( entry->d_name );
-		SaveGameInfo info;
-		TheGameState->getSaveGameInfoFromFile( leaf, &info );
-		if ( !found || info.date.isNewerThan( &bestInfo.date ) ) {
-			bestName = leaf;
-			bestInfo = info;
-			found = TRUE;
+	{
+		// GeneralsX @bugfix Claude 25/07/2026 The probe must use the full path, and must not be
+		// allowed to throw. GameState::getSaveGameInfoFromFile() fopen()s its argument verbatim;
+		// GameState::iterateSaveFiles() gets away with passing a bare leaf name only because it
+		// chdir()s into the save directory first, and this hand-rolled walk does not. So every
+		// leaf resolved against the process working directory (the app container on iOS), missed,
+		// and threw XFER_FILE_NOT_FOUND straight out of GameEngine::update() into the catch(...)
+		// in execute(), i.e. RELEASE_CRASH. -autoload therefore never resumed anything: it killed
+		// the process on the first frame after the shell came up, every single time.
+		// A missing file is not the only way out either - a truncated or foreign .sav makes the
+		// block parser throw SC_UNKNOWN_BLOCK - so the probe is wrapped exactly the way
+		// addGameToAvailableList() wraps it and a bad entry is skipped instead of being fatal.
+		// closedir() is scope-guarded for the same reason: it used to be unreachable on a throw.
+		// loadGame() below still receives the bare leaf, because it builds the path itself.
+		struct DirCloser
+		{
+			DIR *m_dir;
+			DirCloser( DIR *d ) : m_dir( d ) {}
+			~DirCloser() { closedir( m_dir ); }
+		} dirCloser( dir );
+
+		for ( struct dirent *entry = readdir( dir ); entry != nullptr; entry = readdir( dir ) ) {
+			const size_t len = strlen( entry->d_name );
+			if ( len < 5 || strcasecmp( entry->d_name + len - 4, ".sav" ) != 0 ) {
+				continue;
+			}
+			AsciiString leaf( entry->d_name );
+			const AsciiString probePath = TheGameState->getFilePathInSaveDirectory( leaf );
+			SaveGameInfo info;
+			try {
+				TheGameState->getSaveGameInfoFromFile( probePath, &info );
+			} catch ( ... ) {
+				fprintf(stderr, "AUTOLOAD: skipping unreadable save '%s'\n", probePath.str());
+				fflush(stderr);
+				continue;
+			}
+
+			// A zero year means the file parsed but never yielded a game-info block.
+			// getSaveGameInfoFromFile() only reports that through DEBUG_CRASH, which is compiled
+			// out of release builds, so it has to be checked here - otherwise such a file can win
+			// the "most recent" comparison (the !found arm takes the first entry unconditionally)
+			// and get handed to loadGame() in place of a real save.
+			if ( info.date.year == 0 ) {
+				fprintf(stderr, "AUTOLOAD: skipping save with no game info '%s'\n", probePath.str());
+				fflush(stderr);
+				continue;
+			}
+
+			if ( !found || info.date.isNewerThan( &bestInfo.date ) ) {
+				bestName = leaf;
+				bestInfo = info;
+				found = TRUE;
+			}
 		}
 	}
-	closedir( dir );
 
 	if ( !found ) {
 		fprintf(stderr, "AUTOLOAD: no save games found; staying on the menu.\n");

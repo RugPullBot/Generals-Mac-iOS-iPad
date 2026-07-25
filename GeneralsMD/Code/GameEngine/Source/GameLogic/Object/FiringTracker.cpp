@@ -171,7 +171,17 @@ void FiringTracker::shotFired(const Weapon* weaponFired, ObjectID victimID)
 		AudioEventRTS fireAndForgetSound = weaponFired->getFireSound();
 		fireAndForgetSound.setObjectID(getObject()->getID());
 		TheAudio->addAudioEvent(&fireAndForgetSound);
-		m_frameToStopLoopingSound = 0;
+
+		// GeneralsX @bugfix Deliberately do NOT clear m_frameToStopLoopingSound here.
+		// One FiringTracker is shared by every weapon slot of the object (all of Object::fireCurrentWeapon
+		// and Object::notifyFiringTrackerShotFired funnel into this one instance), so a shot from a weapon
+		// with no FireSoundLoopTime can land while a looping fire sound started by another slot is still
+		// running. Zeroing the timer here orphaned that sound: update()'s teardown (removeAudioEvent plus
+		// the reset of m_audioHandle) is gated on the timer being non-zero, and calcTimeToSleep() then
+		// returned UPDATE_SLEEP_FOREVER, so this module went to sleep still holding a live handle and the
+		// loop kept playing (and kept occupying a voice) until the object was destroyed and ~FiringTracker
+		// finally released it. Leaving the timer alone lets update() stop the loop at its natural deadline,
+		// which is exactly what happens when the looping weapon just stops firing.
 	}
 
 

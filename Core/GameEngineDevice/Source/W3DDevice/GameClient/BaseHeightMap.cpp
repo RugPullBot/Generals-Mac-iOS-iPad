@@ -1517,7 +1517,13 @@ void BaseHeightMapRenderObjClass::recordShoreLineSortInfos()
 			Int minY,maxY;
 			minY=maxY=m_shoreLineTilePositions[i].m_xy >> 16;
 
-			while ((m_shoreLineTilePositions[j].m_xy & 0xffff) == x && j < m_numShoreLineTiles)
+			// GeneralsX @bugfix: the bound test used to come *after* the load, so the run-scan
+			// always read m_shoreLineTilePositions[m_numShoreLineTiles] once per call (the last
+			// run can only end by reaching the tile count).  m_shoreLineTilePositions is grown in
+			// 512-tile steps from 4096 and only when the count has already caught up with the
+			// capacity, so whenever the map's tile count lands exactly on 4096/4608/... that read
+			// is off the end of the heap block.  Test j first and let && short-circuit.
+			while (j < m_numShoreLineTiles && (m_shoreLineTilePositions[j].m_xy & 0xffff) == x)
 			{	//keep track of highest y coordinate.
 				Int y = m_shoreLineTilePositions[j].m_xy >> 16;
 				if (y > maxY)
@@ -1550,7 +1556,11 @@ void BaseHeightMapRenderObjClass::recordShoreLineSortInfos()
 			Int minX,maxX;
 			minX=maxX=m_shoreLineTilePositions[i].m_xy & 0xffff;
 
-			while ((m_shoreLineTilePositions[j].m_xy >> 16) == y && j < m_numShoreLineTiles)
+			// GeneralsX @bugfix: same read-before-bound-test as in the x-major branch above -
+			// the load at index j ran before j was compared against m_numShoreLineTiles, walking
+			// one shoreLineTileInfo past the end of the allocation on maps whose tile count is an
+			// exact multiple of the 512-tile growth step.  Test j first and let && short-circuit.
+			while (j < m_numShoreLineTiles && (m_shoreLineTilePositions[j].m_xy >> 16) == y)
 			{	//keep track of highest x coordinate.
 				Int x = m_shoreLineTilePositions[j].m_xy & 0xffff;
 				if (x > maxX)

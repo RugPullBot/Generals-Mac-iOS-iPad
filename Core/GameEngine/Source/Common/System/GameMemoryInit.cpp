@@ -163,6 +163,21 @@ void userMemoryManagerInitPools()
 #endif
 
 	FILE* fp = fopen(buf, "r");
+	// GeneralsX @bugfix Claude 25/07/2026 the executable directory is not the install root
+	// in every supported layout, so the separator fix above still left this file unreachable
+	// for the bundled macOS build: bundle-macos-zh.sh puts the binary in
+	// <app>/Contents/Resources/bin while the game data stays in the user's Zero Hour
+	// directory, so <exeDir>/Data/INI never exists there and MemoryPools.ini remained inert.
+	// That wrapper chdir()s into the data root before exec, so the process already starts
+	// with the right working directory and a cwd-relative retry finds the file -- and cwd is
+	// where every other Data/INI file is read from anyway. Only attempted after the
+	// exe-relative open has already failed, so no layout that worked before changes, and a
+	// miss here is as silent and harmless as a missing file (this runs before DEBUG_INIT,
+	// see preMainInitMemoryManager in GameMemory.cpp, so we cannot log either way).
+	if (fp == nullptr)
+	{
+		fp = fopen("Data/INI/MemoryPools.ini", "r");
+	}
 	if (fp)
 	{
 		char poolName[256];

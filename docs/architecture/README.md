@@ -38,6 +38,7 @@ here**.
 | [GAME_LOGIC.md](GAME_LOGIC.md) | The simulation half: the frame loop and `FramePacer`, the message-stream translator chain that turns a click into an order, the sleepy update scheduler, `Object`/`Drawable` and the module system, AI state machines, and what determinism actually requires. |
 | [DATA_AND_ASSETS.md](DATA_AND_ASSETS.md) | How the game finds and overrides data: the BIG format, the one flat VFS namespace and its load-order/override rules, INI parsing and override chains, `.csf`/`.str` string tables, the map cache, and save games. |
 | [BUILD_AND_PACKAGING.md](BUILD_AND_PACKAGING.md) | The four parallel dependency mechanisms (vcpkg, FetchContent, meson `ExternalProject`, pre-installed SDKs), both CMake presets, how DXVK and MoltenVK are obtained, and the macOS and iOS packaging scripts end to end. |
+| [COMPRESSION.md](COMPRESSION.md) | The five codecs behind `CompressionManager`, how a four-byte magic alone selects the decoder, which call sites take untrusted input (map enumeration, peer packets), and the destination-bounding work on RefPack with its verification evidence. |
 
 **Suggested reading order** if you are new: `BUILD_AND_PACKAGING` (get it building) →
 `INPUT_AND_PLATFORM` (how the process starts) → `GAME_LOGIC` (how a frame works) →

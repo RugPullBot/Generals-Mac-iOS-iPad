@@ -579,12 +579,27 @@ Object *SpawnBehavior::reclaimOrphanSpawn()
 			tempName != md->m_spawnTemplateNameData.end();
 			++tempName)
 	{
-		// GeneralsX @bugfix compare() returns 0 when the strings are EQUAL, so the
-		// test was inverted: it skipped every entry that differed from the previous
-		// one and processed only consecutive duplicates — the exact opposite of the
-		// stated intent.
+		// GeneralsX @bugfix compare() is strcmp, so it returns 0 when the strings are
+		// EQUAL and the test was inverted: it skipped every entry that DIFFERED from the
+		// previous one. prevName starts empty and was only assigned on the non-skipped
+		// path, so nothing ever got past the continue: iterateObjects below was never
+		// called and this function returned nullptr on every call. CanReclaimOrphans was
+		// therefore dead in every build — spawners built duplicates while their orphaned
+		// slaves lingered, and reclaimedOrphan in createSpawn() was stuck FALSE, which
+		// also pinned the exit-door path there.
+		//
+		// Gated because repairing it changes the sim: reclaiming an orphan skips an object
+		// creation, so logic-frame state (and the CRC) diverges from retail replays and from
+		// peers that do not carry this fix. RETAIL_COMPATIBLE_CRC defaults to 1, so the
+		// default build keeps the retail behaviour; same convention as the other gameplay
+		// divergences in this tree. Build with -DRETAIL_COMPATIBLE_CRC=0 to take the fix.
+#if RETAIL_COMPATIBLE_CRC
+		if (prevName.compare(*tempName) != 0) // retail behaviour: this loop never gets past here
+			continue;
+#else
 		if (prevName.compare(*tempName) == 0) // the list may have redundancy, this will skip some of it
 			continue;
+#endif
 		orphanData.m_matchTemplate = TheThingFactory->findTemplate( *tempName );
 		orphanData.m_source = getObject();
 		orphanData.m_closest = nullptr;

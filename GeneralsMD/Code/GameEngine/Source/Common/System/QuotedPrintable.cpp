@@ -212,11 +212,23 @@ AsciiString QuotedPrintableToAsciiString(AsciiString original)
 	static char dest[1024];
 	int i=0;
 
-	unsigned char *c = reinterpret_cast<unsigned char *>(dest);
 	const unsigned char *src = reinterpret_cast<const unsigned char *>(original.str());
 
+	// GeneralsX @bugfix 25/07/2026 The output cursor used to be a separate pointer 'c' that was
+	// advanced on every iteration, while the loop's only bound tested 'i' - which nothing ever
+	// incremented. The write cursor was therefore completely unbounded: any input with more than
+	// 1023 decoded characters walked straight off the end of the 1024-byte static 'dest', and the
+	// trailing terminator went with it. That is reachable without any network peer - UserPreferences
+	// ::load parses with a 2048-byte line buffer and hands values straight to this decoder (e.g.
+	// CustomMatchPreferences::getPreferredMap), and INIMapCache feeds it INI tokens that may be up
+	// to INI_MAX_CHARS_PER_LINE long. Write through dest[i] so the pre-existing i<1023 guard
+	// actually bounds the stores and the terminator always lands inside the buffer, matching the
+	// already-correct AsciiStringToQuotedPrintable. Decoding is done in an unsigned char so the
+	// nibble shift keeps the exact byte value the old unsigned-char cursor produced.
 	while (*src && i<1023)
 	{
+		unsigned char value = 0;
+
 		if (*src == MAGIC_CHAR)
 		{
 			if (src[1] == '\0')
@@ -224,24 +236,24 @@ AsciiString QuotedPrintableToAsciiString(AsciiString original)
 				// string ends with MAGIC_CHAR
 				break;
 			}
-			*c = hexDigitToInt(src[1]);
+			value = hexDigitToInt(src[1]);
 			src++;
 			if (src[1] != '\0')
 			{
-				*c = *c<<4;
-				*c = *c | hexDigitToInt(src[1]);
+				value = value<<4;
+				value = value | hexDigitToInt(src[1]);
 				src++;
 			}
 		}
 		else
 		{
-			*c = *src;
+			value = *src;
 		}
 		src++;
-		c++;
+		dest[i++] = static_cast<char>(value);
 	}
 
-	*c = 0;
+	dest[i] = 0;
 
 	return dest;
 }

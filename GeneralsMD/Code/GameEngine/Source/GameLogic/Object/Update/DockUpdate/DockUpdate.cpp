@@ -617,6 +617,14 @@ void DockUpdate::xfer( Xfer *xfer )
 		// Vector of Bool gets packed as bitfield internally
 		Bool unpack = m_approachPositionReached[vectorIndex];
 		xfer->xferBool( &unpack );
+		// GeneralsX @bugfix Claude 25/07/2026 The std::vector<bool> proxy reference forces the
+		// temporary above, but the load direction never copied it back, so every "approach
+		// reached" flag came out of a savegame FALSE while the owner IDs were restored. The byte
+		// count matched so the stream never desynced - the state was just silently dropped, and
+		// update() could then never elect an m_activeDocker (isClearToAdvance stayed FALSE), which
+		// stalled every queued supply truck until it timed out and re-approached the dock.
+		// Writing back is a no-op in the save direction, so this is safe for both directions.
+		m_approachPositionReached[vectorIndex] = unpack;
 	}
 
 	// active docker
@@ -641,6 +649,51 @@ void DockUpdate::loadPostProcess()
 
 	// call base class
 	UpdateModule::loadPostProcess();
+
+	// GeneralsX @bugfix Claude 25/07/2026 xfer() serialises m_positionsLoaded but not
+	// m_numberApproachPositionBones, so a loaded dock claimed its positions were already loaded
+	// while the bone counter was still at its constructor value of -1. Every lazy
+	// "if( m_positionsLoaded == FALSE ) loadDockPositions();" then short circuited and the counter
+	// stayed -1 forever, permanently disabling the == 0 boneless approach-point bias in
+	// computeApproachPosition() for dynamic docks and KINDOF_IGNORE_DOCKING_BONES structures
+	// (fortified GLA Supply Stash) - workers clumped at the building centre instead of queueing,
+	// and the post-load sim diverged from the pre-save one.
+	//
+	// Only the counter is restored here. Clearing m_positionsLoaded to force a full
+	// loadDockPositions() re-run would be wrong: that function resolves bones through
+	// Drawable::getPristineBonePositions, which is evaluated against the drawable's CURRENT
+	// m_conditionState. m_positionsLoaded is a one-shot latch, so the xfered coordinates are
+	// "bones as of first use" while a re-run yields "bones as of the first post-load consumer",
+	// under a possibly different condition state (damage, fortify/upgrade model swap, or the
+	// MODELCONDITION_DOCKING* this module sets on its own object). Worse, the non-dynamic branch
+	// copies a zero-initialised approachBones[] into m_approachPositions unconditionally, so a
+	// model exposing fewer DockWaiting bones than the pre-save one would overwrite good restored
+	// coordinates with (0,0,0) - the exact clumping this fix is meant to prevent. Recomputing the
+	// counter alone leaves all four restored position members untouched and keeps the save format
+	// unchanged, so existing savegames are repaired without altering the xfer byte stream or CRC.
+	if( m_positionsLoaded && m_numberApproachPositionBones < 0 )
+	{
+		Object *obj = getObject();
+		Drawable *myDrawable = obj ? obj->getDrawable() : NULL;
+		if( myDrawable == NULL )
+		{
+			// loadDockPositions() only ever writes the counter inside "if (myDrawable)", so a
+			// dock with no drawable never had one; leave the latch alone rather than making
+			// all six lazy call sites re-enter loadDockPositions() for the rest of the match.
+		}
+		else if( obj->isKindOf( KINDOF_IGNORE_DOCKING_BONES ) ||
+				 m_numberApproachPositions == DYNAMIC_APPROACH_VECTOR_FLAG )
+		{
+			m_numberApproachPositionBones = 0;
+		}
+		else
+		{
+			// Query the bone count only. approachBones is a scratch destination that is
+			// deliberately discarded - m_approachPositions keeps its restored values.
+			Coord3D approachBones[DEFAULT_APPROACH_VECTOR_SIZE] = {0};
+			m_numberApproachPositionBones = myDrawable->getPristineBonePositions( "DockWaiting", 1, approachBones, nullptr, m_numberApproachPositions );
+		}
+	}
 
 }
 

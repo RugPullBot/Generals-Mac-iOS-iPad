@@ -126,9 +126,14 @@ void CrateCollide::onCollide( Object *other, const Coord3D *, const Coord3D * )
 		{
 			Anim2DTemplate *animTemplate = TheAnim2DCollection->findTemplate( modData->m_executionAnimationTemplate );
 
+			// GeneralsX @bugfix The INI field "ExecuteAnimationFades" was parsed into
+			// m_executeAnimationFades but never read anywhere; the fade bit was hardcoded on here, so
+			// crates that asked for "ExecuteAnimationFades = No" still faded out over the last frames of
+			// their pickup animation. Pass the parsed flag instead. The default is TRUE, so every crate
+			// that does not set the field keeps its existing look.
 			TheInGameUI->addWorldAnimation( animTemplate,
 																			getObject()->getPosition(),
-																			WORLD_ANIM_FADE_ON_EXPIRE,
+																			modData->m_executeAnimationFades ? WORLD_ANIM_FADE_ON_EXPIRE : WORLD_ANIM_NO_OPTIONS,
 																			modData->m_executeAnimationDisplayTimeInSeconds,
 																			modData->m_executeAnimationZRisePerSecond );
 

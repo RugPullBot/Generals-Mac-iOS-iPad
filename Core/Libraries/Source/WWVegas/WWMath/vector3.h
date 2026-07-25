@@ -495,7 +495,14 @@ WWINLINE float Vector3::Quick_Length() const
 
 	if (max < mid) { tmp = max; max = mid; mid = tmp; }
 	if (max < min) { tmp = max; max = min; min = tmp; }
-	if (mid < min) { tmp = mid; mid = min; min = tmp; }   // GeneralsX @bugfix was min = mid, losing the swapped value
+	// GeneralsX @bugfix The third step of this descending sort read "min = mid", which threw
+	// away the value stashed in tmp and left min == mid. Roughly two thirds of inputs take
+	// that swap, and double-counting the middle magnitude pushed the estimate as much as
+	// +16% high instead of staying inside the +/-8% this approximation promises above.
+	// The result feeds projected-shadow zfar (TexProjectClass::Compute_Perspective_Projection)
+	// and DistLODClass::Update_Lod, so shadow volumes and LOD switch distances were both
+	// computed from a length that was too long.
+	if (mid < min) { tmp = mid; mid = min; min = tmp; }
 
 	return max + (11.0f / 32.0f)*mid + (1.0f / 4.0f)*min;
 }

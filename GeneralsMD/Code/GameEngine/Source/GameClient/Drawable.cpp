@@ -114,15 +114,18 @@ static_assert(ARRAY_SIZE(TheDrawableIconNames) == MAX_ICONS + 1, "Incorrect arra
 // GeneralsX @bugfix FelipeBraz 03/06/2026 Preferred known Unicode-supporting fonts (Arial Unicode MS) over configured DrawableCaptionFont
 // to ensure Cyrillic and other non-Latin characters render correctly via DXVK on macOS.
 // GeneralsX @test FelipeBraz 03/06/2026 TEST: Hardcode Arial Unicode MS to verify 3D rendering
+// GeneralsX @bugfix 25/07/2026 Removed the [GX-ISSUE144] stderr instrumentation from this helper.
+// It was never wrapped in RTS_DEBUG, so it shipped in release: every caption/construction-string
+// font resolution paid a snprintf plus a synchronous stderr write, which on iOS goes through
+// unified logging and stalls the render thread. The last snprintf in the chain had no matching
+// fprintf at all, so it formatted into log_buffer and threw the result away. Nothing consumes
+// these traces; the real logic (the null-library guard and the fallback chain) is untouched.
 static GameFont *ResolveDrawableCaptionFont()
 {
-	char log_buffer[512];
 	GameFont *font = nullptr;
 
 	if (TheFontLibrary == nullptr || TheInGameUI == nullptr)
 	{
-		snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] Drawable ResolveCaptionFont missing TheFontLibrary=%p TheInGameUI=%p", TheFontLibrary, TheInGameUI);
-		fprintf(stderr, "%s\n", log_buffer);
 		return nullptr;
 	}
 
@@ -132,14 +135,9 @@ static GameFont *ResolveDrawableCaptionFont()
 
 	// TEST: hardcode Arial Unicode MS
 	font = TheFontLibrary->getFont("Arial Unicode MS", pointSize, bold);
-	snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] TEST ResolveCaptionFont Arial Unicode MS %s pointSize=%d bold=%d",
-		font ? "HIT" : "MISS", pointSize, bold);
-	fprintf(stderr, "%s\n", log_buffer);
 	if (font) return font;
 
 	font = TheFontLibrary->getFont("Arial", pointSize, bold);
-	snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] TEST ResolveCaptionFont Arial %s pointSize=%d bold=%d",
-		font ? "HIT" : "MISS", pointSize, bold);
 	return font;
 }
 
@@ -396,15 +394,12 @@ Drawable::Drawable( const ThingTemplate *thingTemplate, DrawableStatusBits statu
 	m_constructDisplayString = TheDisplayStringManager->newDisplayString();
 	if (m_constructDisplayString)
 	{
+		// GeneralsX @bugfix 25/07/2026 Removed the [GX-ISSUE144] trace that used to sit here.
+		// It was an unbounded sprintf of a data-driven font name into a 256-byte stack buffer
+		// followed by an unconditional stderr write - in a release build, on the constructor of
+		// *every* Drawable in the game (thousands per match, in bursts at map load).
 		GameFont *ctorFont = ResolveDrawableCaptionFont();
 		m_constructDisplayString->setFont(ctorFont);
-		{
-			char _lb[256];
-			sprintf(_lb, "[GX-ISSUE144] Drawable ctor constructDS font=%s size=%d",
-				ctorFont ? ctorFont->nameString.str() : "NULL",
-				ctorFont ? ctorFont->pointSize : -1);
-			fprintf(stderr, "%s\n", _lb);
-		}
 	}
 
 	m_ambientSound = nullptr;
@@ -3666,10 +3661,15 @@ void Drawable::drawDisabled(const IRegion2D* healthBarRegion)
 //-------------------------------------------------------------------------------------------------
 /** Draw construction percent for drawables that have objects that are "under construction" */
 //-------------------------------------------------------------------------------------------------
+// GeneralsX @bugfix 25/07/2026 Stripped the [GX-ISSUE144] stderr instrumentation out of this
+// function. drawIconUI() calls it once per drawable per frame, and the "value has changed" test
+// below compares a continuously advancing Real, so it is true on essentially every frame a
+// building is under construction. The trace therefore ran a redundant TheGameText->fetch(), a
+// wide-to-narrow conversion loop, a snprintf and a synchronous stderr write every frame, for
+// every building under construction, in release builds - none of it wrapped in RTS_DEBUG and
+// nothing reading the output. Rendering and string state are unchanged.
 void Drawable::drawConstructPercent( const IRegion2D *healthBarRegion )
 {
-	char log_buffer[512];
-
 	// this data is in an attached object
 	Object *obj = getObject();
 
@@ -3699,11 +3699,6 @@ void Drawable::drawConstructPercent( const IRegion2D *healthBarRegion )
 		if (m_constructDisplayString)
 		{
 			m_constructDisplayString->setFont(ResolveDrawableCaptionFont());
-			snprintf(log_buffer, sizeof(log_buffer),
-				"[GX-ISSUE144] Drawable construct string allocated drawable=%p obj=%p",
-				this,
-				obj);
-			fprintf(stderr, "%s\n", log_buffer);
 		}
 	}
 
@@ -3712,43 +3707,11 @@ void Drawable::drawConstructPercent( const IRegion2D *healthBarRegion )
 	{
 		UnicodeString buffer;
 
-		// Log the raw format string from GameText before formatting
-		{
-			static bool _fetchLogged = false;
-			if (!_fetchLogged) {
-				_fetchLogged = true;
-				UnicodeString fetchResult = TheGameText->fetch("CONTROLBAR:UnderConstructionDesc");
-				const WideChar *fws = fetchResult.str();
-				char fnarrow[128] = {};
-				for (int _fi = 0; _fi < 64 && fws[_fi]; ++_fi)
-					fnarrow[_fi] = (fws[_fi] < 128) ? (char)fws[_fi] : '?';
-				snprintf(log_buffer, sizeof(log_buffer),
-					"[GX-ISSUE144] fetch UnderConstructionDesc len=%d text=\"%s\"",
-					fetchResult.getLength(), fnarrow);
-				fprintf(stderr, "%s\n", log_buffer);
-			}
-		}
-
 		buffer.format( TheGameText->fetch("CONTROLBAR:UnderConstructionDesc"), obj->getConstructionPercent());
 		m_constructDisplayString->setText( buffer );
 
 		// record this percent as our last displayed so we don't un-necessarily rebuild the string
 		m_lastConstructDisplayed = obj->getConstructionPercent();
-
-		// Log actual text content (convert wchar to narrow for logging)
-		const WideChar *ws = buffer.str();
-		char narrow[128] = {};
-		for (int _i = 0; _i < 64 && ws[_i]; ++_i)
-			narrow[_i] = (ws[_i] < 128) ? (char)ws[_i] : '?';
-		GameFont *curFont = m_constructDisplayString->getFont();
-		snprintf(log_buffer, sizeof(log_buffer),
-			"[GX-ISSUE144] Drawable construct text update drawable=%p pct=%g len=%d text=\"%s\" font=%s",
-			this,
-			(double)obj->getConstructionPercent(),
-			buffer.getLength(),
-			narrow,
-			curFont ? curFont->nameString.str() : "NULL");
-		fprintf(stderr, "%s\n", log_buffer);
 	}
 
 	// get center position in drawable
@@ -3766,16 +3729,6 @@ void Drawable::drawConstructPercent( const IRegion2D *healthBarRegion )
 	Color color = GameMakeColor( 255, 255, 255, 255 );
 	Color dropColor = GameMakeColor( 0, 0, 0, 255 );
 	Int tw = m_constructDisplayString->getWidth();
-	static bool _constructDrawLogged = false;
-	if (!_constructDrawLogged) {
-		GameFont *df = m_constructDisplayString->getFont();
-		snprintf(log_buffer, sizeof(log_buffer),
-			"[GX-ISSUE144] Drawable construct draw drawable=%p screen=(%d,%d) width=%d font=%s",
-			this, screen.x, screen.y, tw,
-			df ? df->nameString.str() : "NULL");
-		fprintf(stderr, "%s\n", log_buffer);
-		_constructDrawLogged = true;
-	}
 	screen.x -= (tw / 2);
 	m_constructDisplayString->draw( screen.x, screen.y, color, dropColor );
 
@@ -4353,15 +4306,16 @@ const Matrix3D *Drawable::getTransformMatrix() const
  * Set and clear the drawable's caption text
  */
 //-------------------------------------------------------------------------------------------------
+// GeneralsX @bugfix 25/07/2026 Removed the [GX-ISSUE144] stderr instrumentation. It was not
+// wrapped in RTS_DEBUG, so it shipped in release builds and wrote synchronously to stderr on a
+// path the player drives (beacon captions in multiplayer). Nothing reads the output, and the
+// caption text it reported is player-authored, which is not something to be echoing into the
+// device log. Caption creation, filtering and update behaviour are unchanged.
 void Drawable::setCaptionText( const UnicodeString& captionText )
 {
-	char log_buffer[512];
-
 	if (captionText.isEmpty())
 	{
 		clearCaptionText();
-		snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] Drawable caption clear-request drawable=%p", this);
-		fprintf(stderr, "%s\n", log_buffer);
 		return;
 	}
 
@@ -4374,12 +4328,6 @@ void Drawable::setCaptionText( const UnicodeString& captionText )
 		GameFont *font = ResolveDrawableCaptionFont();
 		m_captionDisplayString->setFont( font );
 		m_captionDisplayString->setText( sanitizedString );
-		snprintf(log_buffer, sizeof(log_buffer),
-			"[GX-ISSUE144] Drawable caption new drawable=%p textLength=%d font=%p",
-			this,
-			sanitizedString.getLength(),
-			font);
-		fprintf(stderr, "%s\n", log_buffer);
 	}
 	else
 	{
@@ -4387,11 +4335,6 @@ void Drawable::setCaptionText( const UnicodeString& captionText )
 		if( m_captionDisplayString->getText().compare(sanitizedString) != 0 )
 		{
 			m_captionDisplayString->setText( sanitizedString );
-			snprintf(log_buffer, sizeof(log_buffer),
-				"[GX-ISSUE144] Drawable caption update drawable=%p textLength=%d",
-				this,
-				sanitizedString.getLength());
-			fprintf(stderr, "%s\n", log_buffer);
 		}
 	}
 }

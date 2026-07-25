@@ -599,10 +599,31 @@ ModuleData* ModuleFactory::newModuleDataFromINI(INI* ini, const AsciiString& nam
 //-------------------------------------------------------------------------------------------------
 /*static*/ NameKeyType ModuleFactory::makeDecoratedNameKey(const AsciiString& name, ModuleType type)
 {
+	// GeneralsX @bugfix This used to strcpy() 'name' into tmp[] unbounded. 'name' is an
+	// INI token (Object/AddModule/ReplaceModule entries reach here via
+	// ThingTemplate::parseModuleName), and an INI line may be up to
+	// INI_MAX_CHARS_PER_LINE (1028) bytes, so a module name longer than 254 characters
+	// smashed the stack. Everything that would have rejected the entry -- the
+	// template-lookup miss, the "you must use AddModule in override INI files" check --
+	// runs after this point, so a map.ini shipped with a downloaded or network-
+	// transferred map could overflow before any validation happened.
+	// Fast path copies only what provably fits; the (never legitimate) over-long name
+	// falls back to a heap-built string so it still hashes to its own distinct key and
+	// simply fails to match a registered template, rather than being truncated into an
+	// alias of some other module's name.
 	char tmp[256];
-	tmp[0] = '0' + (int)type;
-	strcpy(&tmp[1], name.str());
-	return TheNameKeyGenerator->nameToKey(tmp);
+	const Int len = name.getLength();
+	if (len < (Int)(sizeof(tmp) - 1))
+	{
+		tmp[0] = '0' + (int)type;
+		memcpy(&tmp[1], name.str(), len + 1);		// +1 to bring the terminator along
+		return TheNameKeyGenerator->nameToKey(tmp);
+	}
+
+	AsciiString decoratedName;
+	decoratedName.concat((char)('0' + (int)type));
+	decoratedName.concat(name);
+	return TheNameKeyGenerator->nameToKey(decoratedName.str());
 }
 
 //-------------------------------------------------------------------------------------------------

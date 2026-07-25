@@ -470,10 +470,26 @@ void ActiveBody::attemptDamage( DamageInfo *damageInfo )
 								damager->scoreTheKill( thingToKill );
 							thingToKill->kill();
 							++numKilled;
-							thingToKill->getControllingPlayer()->getAcademyStats()->recordClearedGarrisonedBuilding();
 						}
 					}
 
+				}
+
+				// GeneralsX @bugfix The academy "cleared a garrisoned building" stat was being credited
+				// to thingToKill->getControllingPlayer() -- the *victim* -- and bumped once per occupant
+				// killed. The counter is only ever read as a boolean (AcademyStats::calculateAcademyAdvice
+				// tip 19, "ACADEMY:ClearBuildings"), so crediting the victim inverted the score-screen
+				// advice: the attacker who actually cleared the building was still told to go clear
+				// garrisoned buildings, while the defender who lost the occupants was told they already
+				// had. It also dereferenced getControllingPlayer() unchecked, and that returns NULL for
+				// a teamless object. Credit the damager's player instead, once per cleared building,
+				// matching DumbProjectileBehavior::projectileHandleCollision(), which handles the vast
+				// majority of garrison slayings and already does it this way.
+				if( numKilled > 0 && damager )
+				{
+					Player* damagerPlayer = damager->getControllingPlayer();
+					if( damagerPlayer )
+						damagerPlayer->getAcademyStats()->recordClearedGarrisonedBuilding();
 				}
 			}
 			alreadyHandled = TRUE;
