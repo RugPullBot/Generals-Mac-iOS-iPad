@@ -49,6 +49,8 @@
 #include <cstring>
 #include <cstdio>
 #include <unistd.h>   // _exit()
+#include <dirent.h>
+#include <strings.h>  // strcasecmp
 #include <glob.h>     // glob() for Vulkan ICD discovery
 
 // USER INCLUDES (match WinMain.cpp pattern)
@@ -460,9 +462,16 @@ int main(int argc, char* argv[])
 			mkdir(cacheDir, 0755);
 			setenv("DXVK_STATE_CACHE_PATH", cacheDir, 0);
 
-			if (usingBundleData) {
+			{
 				// Seed default settings on first run (full detail instead of the
 				// 2003 auto-detect, which drops unknown GPUs to Low).
+				//
+				// No longer gated on running from the bundle: a code-only build runs
+				// from Documents, where DefaultOptions.ini now also lives (see the
+				// asset seed above). Gating it here meant such a build silently fell
+				// back to the 2003 GPU auto-detect — Low LOD and quarter-resolution
+				// textures — which the porting playbook calls the number one cause of
+				// "looks worse than my PC".
 				char userDataDir[1024], optionsPath[1024];
 				snprintf(userDataDir, sizeof(userDataDir),
 				         "%s/Library/Application Support/GeneralsX/GeneralsZH", home);
@@ -476,16 +485,63 @@ int main(int argc, char* argv[])
 					}
 				}
 
+				// Seed Documents with the bundled assets, once.
+				//
+				// A full build carries ~2.7 GB of game data inside the signed bundle,
+				// which makes every update a multi-gigabyte transfer — painful when
+				// the device is nowhere near the build machine. A code-only build is
+				// ~100 MB, but it needs the data to already exist in Documents.
+				//
+				// So the self-contained build hands the data over: on first launch it
+				// copies its GameData into Documents and drops a marker. From then on
+				// a code-only build finds it and runs, and updates cost 100 MB instead
+				// of 2 GB. Costs one copy and the disk to hold it.
+				//
+				// Opt out by creating a file named "no-asset-seed" in Documents.
+				{
+					char docsSeed[1024];
+					snprintf(docsSeed, sizeof(docsSeed), "%s/Documents", home);
+					char seedMarker[1024];
+					snprintf(seedMarker, sizeof(seedMarker), "%s/.assets-seeded", docsSeed);
+					char optOut[1024];
+					snprintf(optOut, sizeof(optOut), "%s/no-asset-seed", docsSeed);
+
+					if (access(seedMarker, F_OK) != 0 && access(optOut, F_OK) != 0) {
+						fprintf(stderr, "INFO: seeding Documents with bundled game data "
+						                "(one time; enables ~100MB code-only updates)\n");
+						fflush(stderr);
+						std::error_code copyError;
+						std::filesystem::copy(bundleData, docsSeed,
+							std::filesystem::copy_options::recursive |
+							std::filesystem::copy_options::overwrite_existing,
+							copyError);
+						if (copyError) {
+							fprintf(stderr, "WARNING: asset seed failed: %s\n",
+							        copyError.message().c_str());
+						} else {
+							FILE *m = fopen(seedMarker, "w");
+							if (m != nullptr) { fclose(m); }
+							fprintf(stderr, "INFO: asset seed complete\n");
+						}
+						fflush(stderr);
+					}
+				}
+
 				// One-time tidy-up: remove asset copies from Documents now that
 				// the bundle carries them. Guarded by a sentinel so it truly runs
 				// once — Documents is exposed via the Files app, and anything the
 				// user places there later (mods, custom maps) must never be touched.
 				// "Maps" is deliberately NOT in the list: it is where user maps live.
+				//
+				// Skipped entirely once the seed above has run: those copies are now
+				// deliberate, and deleting them would defeat the whole point.
 				char docs[1024];
 				snprintf(docs, sizeof(docs), "%s/Documents", home);
+				char seededMarker[1024];
+				snprintf(seededMarker, sizeof(seededMarker), "%s/.assets-seeded", docs);
 				char sentinel[1024];
 				snprintf(sentinel, sizeof(sentinel), "%s/.bundle-assets-tidied", docs);
-				if (access(sentinel, F_OK) != 0) {
+				if (access(sentinel, F_OK) != 0 && access(seededMarker, F_OK) != 0) {
 					std::error_code fsError;
 					for (const auto &entry : std::filesystem::directory_iterator(docs, fsError)) {
 						const std::string name = entry.path().filename().string();
@@ -647,6 +703,47 @@ int main(int argc, char* argv[])
 				__argc = n;
 				fprintf(stderr, "INFO: iOS internal resolution set to %sx%s (window %dx%d)\n",
 				        xresVal, yresVal, winW, winH);
+			}
+		}
+
+		// iOS has no command line, so -autoload is switched on by dropping a file
+		// named "autoload" into the app's Documents folder — reachable from the
+		// Files app, so it can be toggled on device without a rebuild. Resumes the
+		// most recent save instead of stopping at the main menu, which is the
+		// difference between reproducing an in-game bug in seconds and clicking
+		// through the shell every time.
+		{
+			const char *docHome = getenv("HOME");
+			if (docHome != nullptr) {
+				// Match case-insensitively, file or folder. The Files app will not
+				// create an empty file, only a folder, and it names new folders
+				// "untitled folder" — so this has to be forgiving about what the user
+				// managed to produce, rather than demanding an exact lowercase name.
+				bool wantAutoload = false;
+				char docsDir[1024];
+				snprintf(docsDir, sizeof(docsDir), "%s/Documents", docHome);
+				if (DIR *dp = opendir(docsDir)) {
+					for (struct dirent *de = readdir(dp); de != nullptr; de = readdir(dp)) {
+						if (strcasecmp(de->d_name, "autoload") == 0) {
+							wantAutoload = true;
+							break;
+						}
+					}
+					closedir(dp);
+				}
+				if (wantAutoload) {
+					static char autoloadFlag[] = "-autoload";
+					static char* alArgv[66];
+					int n = 0;
+					for (int i = 0; i < __argc && n < 64; ++i) {
+						alArgv[n++] = __argv[i];
+					}
+					alArgv[n++] = autoloadFlag;
+					alArgv[n] = nullptr;
+					__argv = alArgv;
+					__argc = n;
+					fprintf(stderr, "INFO: Documents/autoload present - resuming most recent save\n");
+				}
 			}
 		}
 #endif

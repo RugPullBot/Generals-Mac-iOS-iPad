@@ -54,6 +54,8 @@
 #include "Common/ModuleFactory.h"
 #include "Common/Debug.h"
 #include "Common/GameState.h"
+#include <dirent.h>
+#include <strings.h>
 #include "Common/GameStateMap.h"
 #include "Common/Science.h"
 #include "Common/FunctionLexicon.h"
@@ -731,6 +733,21 @@ void GameEngine::init()
 
 		TheFramePacer->setFramesPerSecondLimit(TheGlobalData->m_framesPerSecondLimit);
 
+		// GeneralsX @tweak Rendering above the historic 30Hz needs the logic time
+		// scale switched on, otherwise canUpdateRegularGameLogic() ticks the
+		// simulation once per rendered frame and the entire game runs at render
+		// speed — -fps 60 would play at double speed rather than looking smoother.
+		// With it enabled the logic is driven from a time accumulator at BaseFps
+		// while rendering runs free. Does not apply to network matches, which take
+		// canUpdateNetworkGameLogic() instead.
+		if (TheGlobalData->m_framesPerSecondLimit > BaseFps)
+		{
+			TheFramePacer->setLogicTimeScaleFps(BaseFps);
+			TheFramePacer->enableLogicTimeScale(TRUE);
+			DEBUG_LOG(("Render fps limit %d exceeds base %d: logic time scale enabled at %d",
+			           TheGlobalData->m_framesPerSecondLimit, (Int)BaseFps, (Int)BaseFps));
+		}
+
 		TheAudio->setOn(TheGlobalData->m_audioOn && TheGlobalData->m_musicOn, AudioAffect_Music);
 		TheAudio->setOn(TheGlobalData->m_audioOn && TheGlobalData->m_soundsOn, AudioAffect_Sound);
 		TheAudio->setOn(TheGlobalData->m_audioOn && TheGlobalData->m_sounds3DOn, AudioAffect_Sound3D);
@@ -957,8 +974,91 @@ DECLARE_PERF_TIMER(GameEngine_update)
 /** -----------------------------------------------------------------------------------------------
  * Update the game engine by updating the GameClient and GameLogic singletons.
  */
+// GeneralsX @feature -autoload support.
+//
+// Picks the most recent save and resumes it, so a test cycle starts inside the
+// match instead of at the main menu. Runs once, on the first update after the
+// shell is alive, because the save machinery and the map cache are not ready any
+// earlier.
+static void autoLoadLatestSaveOnce()
+{
+	static Bool s_tried = FALSE;
+	if (s_tried) {
+		return;
+	}
+	if (TheGlobalData == nullptr || !TheGlobalData->m_autoLoadLatestSave) {
+		return;
+	}
+	if (TheGameState == nullptr || TheShell == nullptr || !TheShell->isShellActive()) {
+		// Say why we are still waiting, once a second, rather than silently
+		// spinning — a silent early return is indistinguishable from a crash.
+		static int s_waitLog = 0;
+		if ((s_waitLog++ % 30) == 0) {
+			fprintf(stderr, "AUTOLOAD: waiting (gameState=%d shell=%d shellActive=%d)\n",
+			        TheGameState != nullptr, TheShell != nullptr,
+			        (TheShell != nullptr) ? (int)TheShell->isShellActive() : -1);
+			fflush(stderr);
+		}
+		return;   // shell not up yet; try again next frame
+	}
+	fprintf(stderr, "AUTOLOAD: gates passed, looking for saves\n");
+	fflush(stderr);
+	s_tried = TRUE;
+
+	// GameState::iterateSaveFiles is private, so walk the save directory directly.
+	// getFilePathInSaveDirectory("") yields the directory itself.
+	const AsciiString saveDir = TheGameState->getFilePathInSaveDirectory( AsciiString( "" ) );
+	DIR *dir = opendir( saveDir.str() );
+	if ( dir == nullptr ) {
+		fprintf(stderr, "AUTOLOAD: cannot open save directory '%s'\n", saveDir.str());
+		fflush(stderr);
+		return;
+	}
+
+	AsciiString bestName;
+	SaveGameInfo bestInfo;
+	Bool found = FALSE;
+
+	for ( struct dirent *entry = readdir( dir ); entry != nullptr; entry = readdir( dir ) ) {
+		const size_t len = strlen( entry->d_name );
+		if ( len < 5 || strcasecmp( entry->d_name + len - 4, ".sav" ) != 0 ) {
+			continue;
+		}
+		AsciiString leaf( entry->d_name );
+		SaveGameInfo info;
+		TheGameState->getSaveGameInfoFromFile( leaf, &info );
+		if ( !found || info.date.isNewerThan( &bestInfo.date ) ) {
+			bestName = leaf;
+			bestInfo = info;
+			found = TRUE;
+		}
+	}
+	closedir( dir );
+
+	if ( !found ) {
+		fprintf(stderr, "AUTOLOAD: no save games found; staying on the menu.\n");
+		fflush(stderr);
+		return;
+	}
+
+	fprintf(stderr, "AUTOLOAD: resuming '%s' (%04d-%02d-%02d %02d:%02d:%02d)\n",
+	        bestName.str(), (int)bestInfo.date.year, (int)bestInfo.date.month,
+	        (int)bestInfo.date.day, (int)bestInfo.date.hour,
+	        (int)bestInfo.date.minute, (int)bestInfo.date.second);
+	fflush(stderr);
+
+	AvailableGameInfo gameInfo;
+	gameInfo.filename = bestName;
+	gameInfo.saveGameInfo = bestInfo;
+	gameInfo.next = nullptr;
+	gameInfo.prev = nullptr;
+	TheGameState->loadGame( gameInfo );
+}
+
 void GameEngine::update()
 {
+	autoLoadLatestSaveOnce();
+
 	USE_PERF_TIMER(GameEngine_update)
 	{
 		{

@@ -368,6 +368,7 @@ public:
 
 	AsciiString m_shellMapName;				///< Holds the shell map name
 	Bool m_shellMapOn;								///< User can set the shell map not to load
+	Bool m_autoLoadLatestSave;				///< -autoload: jump straight into the most recent save at startup (testing aid)
 	Bool m_playIntro;									///< Flag to say if we're to play the intro or not
 	Bool m_playSizzle;								///< Flag to say whether we play the sizzle movie after the logo movie.
 	Bool m_afterIntro;								///< we need to tell the game our intro is done

@@ -826,6 +826,18 @@ Int parseWinCursors(char *args[], int num)
 	return 1;
 }
 
+// GeneralsX @feature -autoload: skip the menus and resume the most recent save.
+// Testing aid — reproducing an in-game bug otherwise means clicking through the
+// shell into a match every single time.
+Int parseAutoLoad( char *args[], int num )
+{
+	TheWritableGlobalData->m_autoLoadLatestSave = TRUE;
+	parseNoLogo( args, num );
+	parseNoShellMap( args, num );
+	parseNoWindowAnimation( args, num );
+	return 1;
+}
+
 Int parseQuickStart( char *args[], int num )
 {
 	parseNoLogo( args, num );
@@ -1178,6 +1190,7 @@ static CommandLineParam paramsForEngineInit[] =
 	{ "-playStats", parsePlayStats },
 	{ "-mod", parseMod },
 	{ "-noshaders", parseNoShaders },
+	{ "-autoload", parseAutoLoad },
 	{ "-quickstart", parseQuickStart },
 	{ "-useWaveEditor", parseUseWaveEditor },
 

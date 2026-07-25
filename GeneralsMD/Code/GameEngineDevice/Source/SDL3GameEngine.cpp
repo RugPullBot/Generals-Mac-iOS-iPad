@@ -167,6 +167,23 @@ struct TouchState {
 	float f3x = 0.0f, f3y = 0.0f;
 	float lastDist = 0.0f;                 // finger spread at the previous motion
 	float lastCx = 0.0f, lastCy = 0.0f;    // centroid at the previous motion
+	bool  suppressRightButton = false;     // placement mode: RMB would cancel
+	bool  rightButtonHeld = false;         // have we actually pressed RMB?
+	bool  placementAnchored = false;       // LMB held to set a building's facing
+	int   activeFingers = 0;               // fingers currently down, any phase
+	Uint64 pinchTicks = 0;                 // when the two-finger gesture started
+
+	// Two-finger intent, decided once per gesture and then held. Comparing the
+	// two per-event lets the winner flip frame to frame — a pinch where one
+	// finger travels further than the other swings the midpoint a long way, so
+	// "pan" keeps winning individual frames and the camera crawls while you are
+	// plainly just zooming. Measure both from where the gesture started, commit
+	// to whichever crosses the threshold first, and ignore the other until the
+	// fingers lift.
+	enum Intent { UNDECIDED, ZOOMING, PANNING };
+	Intent intent = UNDECIDED;
+	float startDist = 0.0f;
+	float startCx = 0.0f, startCy = 0.0f;
 };
 
 TouchState s_touch;
@@ -175,7 +192,8 @@ const Uint64 LONG_PRESS_MS = 600;
 const float PINCH_STEP_RATIO = 0.06f;  // 6% distance change per wheel tick
 const float TAP_DEAD_ZONE_PX = 8.0f;   // jitter below this keeps a tap a tap
 const float SCROLL_STEP_PX = 36.0f;    // vertical travel per wheel tick in menus
-const float PAN_DEAD_ZONE_PX = 3.0f;   // centroid jitter below this is not a pan
+const float GESTURE_COMMIT_PX = 24.0f; // travel needed to commit to zoom or pan
+const Uint64 TWO_FINGER_TAP_MS = 250;  // quick two-finger tap = dismiss/back
 
 void sendSyntheticMouse(SDL3Mouse *mouse, SDL_Window *window, Uint32 type,
                         float x, float y, Uint8 button = 0, float wheelY = 0.0f)
@@ -220,6 +238,29 @@ void sendSyntheticMouse(SDL3Mouse *mouse, SDL_Window *window, Uint32 type,
 // the zoom from the same two fingers meant every pinch also dragged the view,
 // which makes precise zooming impossible — the anchor slides out from under you.
 // Panning now needs a third finger (beginPan below).
+// A quick two-finger tap means "dismiss / back". ESC is what the engine already
+// treats as cancel everywhere — menus, popups, placement, the in-game menu — so
+// synthesising it reuses all of that rather than special-casing each screen.
+void sendSyntheticEscape(SDL_Window *window)
+{
+	SDL3Keyboard *keyboard = dynamic_cast<SDL3Keyboard *>(TheKeyboard);
+	if (keyboard == nullptr) {
+		return;
+	}
+	const SDL_WindowID windowID = SDL_GetWindowID(window);
+	for (int press = 1; press >= 0; --press) {
+		SDL_Event ev;
+		SDL_zero(ev);
+		ev.type = press ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+		ev.key.windowID = windowID;
+		ev.key.scancode = SDL_SCANCODE_ESCAPE;
+		ev.key.key = SDLK_ESCAPE;
+		ev.key.down = press ? true : false;
+		ev.key.repeat = false;
+		keyboard->addSDLEvent(&ev);
+	}
+}
+
 void beginTwoFinger(SDL3Mouse *mouse, SDL_Window *window, int winW, int winH)
 {
 	s_touch.panX = (s_touch.f1x + s_touch.f2x) * 0.5f * (float)winW;
@@ -243,9 +284,28 @@ void beginTwoFinger(SDL3Mouse *mouse, SDL_Window *window, int winW, int winH)
 	s_touch.lastDist = s_touch.pinchDist;
 	s_touch.lastCx = s_touch.panX;
 	s_touch.lastCy = s_touch.panY;
+	s_touch.intent = TouchState::UNDECIDED;
+	s_touch.pinchTicks = SDL_GetTicks();
+	s_touch.startDist = s_touch.pinchDist;
+	s_touch.startCx = s_touch.panX;
+	s_touch.startCy = s_touch.panY;
 	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.panX, s_touch.panY);
-	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
-	                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
+
+	// While a building is waiting to be placed, the right button means "cancel", so
+	// it must never be pressed during placement — two fingers there only move the
+	// cursor, which drags the ghost where you want it.
+	s_touch.suppressRightButton =
+		(TheInGameUI != nullptr && TheInGameUI->getPendingPlaceType() != nullptr);
+
+	// Do NOT press the right button yet, even outside placement.
+	//
+	// The engine's right-drag scroll (SCROLL_RMB) is velocity-based: while the
+	// button is held the camera keeps scrolling from the cursor's displacement,
+	// with no further input needed. Pressing it as soon as a second finger landed
+	// meant every pinch ran on top of a live scroll gesture — the view drifted
+	// during the zoom and kept drifting afterwards while the fingers rested. The
+	// button is now pressed only once the gesture commits to panning.
+	s_touch.rightButtonHeld = false;
 	s_touch.phase = TouchState::PINCH;
 }
 
@@ -256,8 +316,15 @@ void beginPan(SDL3Mouse *mouse, SDL_Window *window, int winW, int winH)
 {
 	s_touch.panX = (s_touch.f1x + s_touch.f2x + s_touch.f3x) * (1.0f / 3.0f) * (float)winW;
 	s_touch.panY = (s_touch.f1y + s_touch.f2y + s_touch.f3y) * (1.0f / 3.0f) * (float)winH;
-	// The right button is already held from the pinch; just keep dragging.
 	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.panX, s_touch.panY);
+	// A third finger is an explicit request to move the camera, so take the right
+	// button here if the pinch had not already committed to panning. Never during
+	// placement, where the right button cancels.
+	if (!s_touch.suppressRightButton && !s_touch.rightButtonHeld) {
+		sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
+		                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
+		s_touch.rightButtonHeld = true;
+	}
 	s_touch.phase = TouchState::PAN;
 }
 
@@ -270,6 +337,20 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 
 	switch (event.type) {
 	case SDL_EVENT_FINGER_DOWN:
+		// Audio diagnostic trigger, counted independently of the gesture state
+		// machine. It was previously hooked to the three-finger PAN phase, which
+		// does not exist on menu screens — so on the very screen where the audio
+		// fault shows up, a four-finger tap did nothing at all.
+		++s_touch.activeFingers;
+		if (s_touch.activeFingers == 4) {
+			AudioDebugDump("four-finger tap");
+		}
+		else if (s_touch.activeFingers == 5) {
+			// Five fingers = ESC: the in-game menu / pause, or back out of a screen.
+			// Deliberately not two — that is the deselect tap — and not three, which
+			// pans. Five is unreachable by accident during play.
+			sendSyntheticEscape(window);
+		}
 		if (s_touch.phase == TouchState::IDLE) {
 			// Defer all BUTTON output: a finger landing could become a tap, a
 			// drag-box, a long-press, or the first finger of a camera pan. A
@@ -310,17 +391,25 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 			beginTwoFinger(mouse, window, winW, winH);
 		}
 		else if (s_touch.phase == TouchState::PINCH) {
-			// Third finger promotes the gesture to a camera pan.
 			s_touch.finger3 = event.tfinger.fingerID;
 			s_touch.f3x = event.tfinger.x;
 			s_touch.f3y = event.tfinger.y;
-			beginPan(mouse, window, winW, winH);
-		}
-		else if (s_touch.phase == TouchState::PAN) {
-			// A fourth finger during a pan dumps the audio diagnostic ring. Four
-			// because nothing else uses it, so it cannot be triggered by accident
-			// while playing. The pan itself is left running.
-			AudioDebugDump("four-finger tap");
+			if (s_touch.suppressRightButton) {
+				// Placing a building: the engine already has a rotate gesture — press
+				// and drag sets the facing (m_placeAnchorInProgress). Two fingers have
+				// the ghost where it should go, so the third takes the left button
+				// there and its movement swings the angle. Releasing commits, exactly
+				// as a mouse press-drag-release would.
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION,
+				                   s_touch.panX, s_touch.panY);
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
+				                   s_touch.panX, s_touch.panY, SDL_BUTTON_LEFT);
+				s_touch.placementAnchored = true;
+				s_touch.phase = TouchState::PAN;
+			} else {
+				// Third finger promotes the gesture to a camera pan.
+				beginPan(mouse, window, winW, winH);
+			}
 		}
 		// LONGPRESSED / PAN / SCROLL with extra fingers: ignored
 		break;
@@ -377,27 +466,42 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 			}
 		}
 		else if (s_touch.phase == TouchState::PINCH) {
-			// Two fingers can zoom or pan, but doing both from one event makes each
-			// ruin the other: spreading the fingers always drags the centroid a few
-			// pixels, which used to be fed straight in as camera motion and made the
-			// view lurch while zooming. Classify each event by whichever changed more
-			// — the spread between the fingers, or where their midpoint sits — and
-			// act on only that one.
+			// A two-finger gesture is either a zoom or a pan, never both, and which
+			// one it is gets decided once. Both candidates are measured from where
+			// the gesture began, in the same units, and the first to travel far
+			// enough wins for the rest of the gesture.
 			const float cx = (s_touch.f1x + s_touch.f2x) * 0.5f * (float)winW;
 			const float cy = (s_touch.f1y + s_touch.f2y) * 0.5f * (float)winH;
 			const float dx = (s_touch.f1x - s_touch.f2x) * (float)winW;
 			const float dy = (s_touch.f1y - s_touch.f2y) * (float)winH;
 			const float dist = SDL_sqrtf(dx * dx + dy * dy);
 
-			const float distDelta = SDL_fabsf(dist - s_touch.lastDist);
-			const float panDelta = SDL_fabsf(cx - s_touch.lastCx) + SDL_fabsf(cy - s_touch.lastCy);
+			if (s_touch.intent == TouchState::UNDECIDED) {
+				const float spreadTravel = SDL_fabsf(dist - s_touch.startDist);
+				const float centreDx = cx - s_touch.startCx;
+				const float centreDy = cy - s_touch.startCy;
+				const float centreTravel = SDL_sqrtf(centreDx * centreDx + centreDy * centreDy);
 
-			// Fingers resting on the glass still jitter by a pixel or two, and while
-			// zooming the midpoint always wanders a little. Without a floor on the
-			// pan term that jitter wins the comparison the moment the spread stops
-			// changing, and the camera creeps while you hold a zoom.
-			if (distDelta > panDelta || panDelta < PAN_DEAD_ZONE_PX) {
-				// Spread dominates: pure zoom, camera untouched.
+				if (spreadTravel >= GESTURE_COMMIT_PX && spreadTravel >= centreTravel) {
+					s_touch.intent = TouchState::ZOOMING;
+				} else if (centreTravel >= GESTURE_COMMIT_PX) {
+					s_touch.intent = TouchState::PANNING;
+					// Re-base the pan so it starts from here rather than snapping the
+					// camera by the distance already travelled while deciding.
+					s_touch.panX = cx;
+					s_touch.panY = cy;
+					// Now, and only now, take hold of the right button — anchoring the
+					// scroll where the pan actually begins.
+					if (!s_touch.suppressRightButton && !s_touch.rightButtonHeld) {
+						sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, cx, cy);
+						sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
+						                   cx, cy, SDL_BUTTON_RIGHT);
+						s_touch.rightButtonHeld = true;
+					}
+				}
+			}
+
+			if (s_touch.intent == TouchState::ZOOMING) {
 				if (s_touch.pinchDist > 1.0f) {
 					const float ratio = dist / s_touch.pinchDist;
 					if (ratio > 1.0f + PINCH_STEP_RATIO) {
@@ -408,23 +512,30 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 						s_touch.pinchDist = dist;
 					}
 				}
-			} else {
-				// Midpoint dominates: pan, tracking the centroid directly.
+			}
+			else if (s_touch.intent == TouchState::PANNING) {
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, cx, cy);
 				s_touch.panX = cx;
 				s_touch.panY = cy;
-				// Keep the zoom reference current so releasing a pan does not fire a
-				// spurious wheel tick from drift accumulated while panning.
 				s_touch.pinchDist = dist;
 			}
+			// UNDECIDED: emit nothing. A gesture below the threshold is indistinguishable
+			// from resting fingers, and acting on it is what made the camera creep.
 
 			s_touch.lastDist = dist;
 			s_touch.lastCx = cx;
 			s_touch.lastCy = cy;
 		}
 		else if (s_touch.phase == TouchState::PAN) {
-			const float cx = (s_touch.f1x + s_touch.f2x + s_touch.f3x) * (1.0f / 3.0f) * (float)winW;
-			const float cy = (s_touch.f1y + s_touch.f2y + s_touch.f3y) * (1.0f / 3.0f) * (float)winH;
+			// Rotating a building follows the third finger alone: the facing is the
+			// direction from the anchor to the cursor, so averaging in the two fingers
+			// holding position would drag the angle back towards them.
+			const float cx = s_touch.placementAnchored
+				? (s_touch.f3x * (float)winW)
+				: ((s_touch.f1x + s_touch.f2x + s_touch.f3x) * (1.0f / 3.0f) * (float)winW);
+			const float cy = s_touch.placementAnchored
+				? (s_touch.f3y * (float)winH)
+				: ((s_touch.f1y + s_touch.f2y + s_touch.f3y) * (1.0f / 3.0f) * (float)winH);
 			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, cx, cy);
 			s_touch.panX = cx;
 			s_touch.panY = cy;
@@ -433,6 +544,9 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 
 	case SDL_EVENT_FINGER_UP:
 	case SDL_EVENT_FINGER_CANCELED:
+		if (s_touch.activeFingers > 0) {
+			--s_touch.activeFingers;
+		}
 		if (event.tfinger.fingerID != s_touch.finger1 &&
 		    !((s_touch.phase == TouchState::PINCH || s_touch.phase == TouchState::PAN ||
 		       s_touch.phase == TouchState::SCROLL) &&
@@ -459,13 +573,71 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, px, py, SDL_BUTTON_LEFT);
 				break;
 			case TouchState::PAN:
-				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
-				                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
+				if (s_touch.placementAnchored) {
+					// Releasing the rotate drag commits the building at its chosen angle.
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+					                   s_touch.panX, s_touch.panY, SDL_BUTTON_LEFT);
+					s_touch.placementAnchored = false;
+				}
+				if (s_touch.rightButtonHeld) {
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+					                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
+					s_touch.rightButtonHeld = false;
+				}
 				break;
 			case TouchState::PINCH:
-				// Holds the right button for the camera drag, same as PAN.
-				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
-				                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
+				// A CANCELED touch is the OS taking the gesture away (palm rejection,
+				// a notification banner, an incoming call). It is not a decision by
+				// the player, so it must not commit a placement or fire a click.
+				if (event.type == SDL_EVENT_FINGER_CANCELED) {
+					if (s_touch.rightButtonHeld) {
+						sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+						                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
+						s_touch.rightButtonHeld = false;
+					}
+					break;
+				}
+				// Two fingers on and straight back off, having committed to neither
+				// zoom nor pan, is a right-click: deselect units, cancel a pending
+				// placement, back out of a command. That is what the engine already
+				// binds to the right button, so this reuses it everywhere instead of
+				// special-casing screens. Previously this only happened by adding a
+				// third finger, whose beginPan() press incidentally deselected.
+				//
+				// The gesture-intent lock does the hard part: UNDECIDED means neither
+				// zoom nor pan travelled far enough, so a real pinch or drag can never
+				// be mistaken for a tap.
+				if (s_touch.intent == TouchState::UNDECIDED &&
+				    (SDL_GetTicks() - s_touch.pinchTicks) <= TWO_FINGER_TAP_MS) {
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION,
+					                   s_touch.panX, s_touch.panY);
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
+					                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+					                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
+					break;
+				}
+				if (s_touch.suppressRightButton) {
+					// Placement mode: the two fingers were dragging the ghost, so
+					// lifting them means "put it here". Without this the building
+					// stayed pending and needed a separate tap to commit, which also
+					// moved it again to wherever that tap landed.
+					//
+					// Not after a zoom: spreading two fingers to look around is not a
+					// decision to build.
+					if (s_touch.intent != TouchState::ZOOMING) {
+						sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION,
+						                   s_touch.panX, s_touch.panY);
+						sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
+						                   s_touch.panX, s_touch.panY, SDL_BUTTON_LEFT);
+						sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+						                   s_touch.panX, s_touch.panY, SDL_BUTTON_LEFT);
+					}
+				} else if (s_touch.rightButtonHeld) {
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+					                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
+					s_touch.rightButtonHeld = false;
+				}
 				break;
 			case TouchState::SCROLL:
 				// No button was ever pressed, so nothing to release.
@@ -473,7 +645,22 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 			default:
 				break;
 		}
-		s_touch.phase = TouchState::IDLE;
+		// Only return to IDLE once the screen is actually clear.
+		//
+		// This used to reset unconditionally on the first lift, while other fingers
+		// were still down. The next finger to move or land was then treated as the
+		// start of a brand new gesture — which for a one-finger tap means a
+		// committed left click wherever that finger happened to be. In placement
+		// mode that reads as the building jumping to the last finger position.
+		//
+		// With fingers remaining, drop back to a phase that emits nothing until the
+		// hand is lifted, so the leftovers cannot be misread as a fresh gesture.
+		if (s_touch.activeFingers <= 0) {
+			s_touch.activeFingers = 0;
+			s_touch.phase = TouchState::IDLE;
+		} else {
+			s_touch.phase = TouchState::LONGPRESSED;  // inert: swallows input until release
+		}
 		break;
 	}
 }
