@@ -156,6 +156,11 @@ void W3DGadgetHorizontalSliderImageDraw( GameWindow *window,
 	Int numBoxes = 0;
 	Int numSelectedBoxes = 0;
 	Int numHighlightBoxes = 0;
+	// GeneralsX @bugfix fillSquare comes straight from the gadget's image slot with
+	// no null test — an unset disabled-state image dereferences null here, and a
+	// zero width would divide the box loop by nothing.
+	if( fillSquare == nullptr || fillSquare->getImageWidth() <= 0 )
+		return;
 	Int boxWidth = fillSquare->getImageWidth()* xMulti;
 	Int boxPadding = 2;
 	start.x = origin.x;

@@ -368,6 +368,15 @@ void ControlBar::populatePurchaseScience( Player* player )
 
 			setControlCommand( m_sciencePurchaseWindowsRank8[ i ], commandButton );
 			ScienceType	st = SCIENCE_INVALID;
+			// GeneralsX @bugfix The rank-1 and rank-3 loops directly above check the
+			// vector before indexing it; this one did not. "Science = None" is a
+			// parser-supported spelling that yields an empty vector, so a hand-edited
+			// or modded INI indexed element 0 of nothing. The SCIENCE_INVALID
+			// initialiser above is the fossil of the missing guard.
+			if( commandButton->getScienceVec().empty() )
+			{
+				continue;
+			}
 			st = commandButton->getScienceVec()[ 0 ];
 			if( player->isScienceDisabled( st ) )
 			{

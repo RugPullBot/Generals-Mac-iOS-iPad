@@ -318,9 +318,19 @@ static GHTTPBool motdCallback( GHTTPRequest request, GHTTPResult result,
 	}
 
 	delete[] MOTDBuffer;
-	MOTDBuffer = NEW char[bufferLen];
-	memcpy(MOTDBuffer, buffer, bufferLen);
-	MOTDBuffer[bufferLen-1] = 0;
+	// GeneralsX @bugfix An empty or failed fetch leaves bufferLen at 0, so this
+	// allocated nothing and then wrote the terminator to MOTDBuffer[-1].
+	if (bufferLen < 1)
+	{
+		MOTDBuffer = NEW char[1];
+		MOTDBuffer[0] = 0;
+	}
+	else
+	{
+		MOTDBuffer = NEW char[bufferLen];
+		memcpy(MOTDBuffer, buffer, bufferLen);
+		MOTDBuffer[bufferLen-1] = 0;
+	}
 
 	--checksLeftBeforeOnline;
 	DEBUG_ASSERTCRASH(checksLeftBeforeOnline>=0, ("Too many callbacks"));

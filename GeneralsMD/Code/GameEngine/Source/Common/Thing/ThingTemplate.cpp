@@ -596,6 +596,17 @@ void ThingTemplate::parseModuleName(INI* ini, void *instance, void* store, const
 
 	ModuleData* data = TheModuleFactory->newModuleDataFromINI(ini, tokenStr, type, moduleTagStr);
 
+	// GeneralsX @bugfix newModuleDataFromINI returns null on a lookup miss and its
+	// only complaint is a DEBUG_CRASH, which compiles away. isAiModuleData() is
+	// virtual, so this was a vptr load from address 0 — a misspelled module name in
+	// a downloaded map's map.ini crashed during INI load instead of reporting a
+	// data error.
+	if (data == nullptr)
+	{
+		DEBUG_LOG(("ThingTemplate: unknown module '%s' (tag '%s'); rejecting.", tokenStr, moduleTagStr));
+		throw INI_INVALID_DATA;
+	}
+
 	if (data->isAiModuleData())
 	{
 		Bool replaced = mi->clearAiModuleInfo();

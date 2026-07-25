@@ -2166,7 +2166,14 @@ void Player::transferAssetsFromThat(Player *that)
 	std::list<Object *> objsToTransfer;
 
 	// let's not transfer beacons
-	const ThingTemplate *beaconTemplate = TheThingFactory->findTemplate( that->getPlayerTemplate()->getBeaconTemplate() );
+	// GeneralsX @bugfix The neutral player is constructed with init(nullptr), and a
+	// map whose playerFaction is absent from PlayerTemplate.ini also survives on a
+	// compiled-out assert — so getPlayerTemplate() can be null here. Team.cpp
+	// carries a dated @bugfix for this exact beacon lookup; this site was missed.
+	const PlayerTemplate *thatTemplate = that->getPlayerTemplate();
+	const ThingTemplate *beaconTemplate = (thatTemplate != nullptr)
+		? TheThingFactory->findTemplate( thatTemplate->getBeaconTemplate() )
+		: nullptr;
 
 	// transfer all his units.
 	for (PlayerTeamList::iterator it = that->m_playerTeamPrototypes.begin();

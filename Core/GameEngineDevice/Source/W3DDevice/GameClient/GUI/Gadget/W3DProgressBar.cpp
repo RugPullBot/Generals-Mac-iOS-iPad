@@ -384,6 +384,14 @@ void W3DGadgetProgressBarImageDraw( GameWindow *window, WinInstanceData *instDat
 	barWindowSize.x = ((size.x - 20) * progress) / 100;
 	barWindowSize.y = size.y;
 
+	// GeneralsX @bugfix The sanity check above deliberately stopped testing
+	// barCenter (see the commented-out condition), but this dereferences it. A
+	// progress bar whose disabled/hilite bar-centre image is unset — legal, and the
+	// reason the check was relaxed — crashed here. Skip only the fill and still draw
+	// the frame, rather than returning early and losing the whole widget.
+	if( barCenter == nullptr || barCenter->getImageWidth() <= 0 )
+		return;
+
 	pieces = barWindowSize.x / barCenter->getImageWidth();
  	// draw the pieces
 	start.x = origin.x +10;
