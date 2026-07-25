@@ -2960,6 +2960,14 @@ ALuint OpenALAudioManager::playSample(AudioEventRTS* event, PlayingAudio* audio)
 	if (bufferHandle) {
 		alSourcei(audio->m_source, AL_SOURCE_RELATIVE, AL_TRUE);
 		alSourcei(audio->m_source, AL_BUFFER, (ALuint)(uintptr_t)bufferHandle);
+		// GeneralsX @bugfix Set the gain before starting. Nothing here ever applied
+		// AL_GAIN, so a sample played at whatever gain its pooled source last had —
+		// full scale for a fresh source. The per-frame volume refresh normally
+		// papered over it, but that refresh is suppressed for the whole duration of
+		// any speech stream (GameAudio.cpp, has3DSensitiveStreamsPlaying), so an
+		// effect fired during an EVA line stayed at full volume until the line
+		// ended. Audibly: a sudden, very loud, arbitrary sound effect.
+		adjustPlayingVolume(audio);
 		alSourcePlay(audio->m_source);
 	}
 
@@ -3018,6 +3026,9 @@ ALuint OpenALAudioManager::playSample3D(AudioEventRTS* event, PlayingAudio* samp
 			DEBUG_LOG(("Playing 3D sample '%s' at %f, %f, %f\n", event->getEventName().str(), x, y, z));
 
 			// Start playback
+			// GeneralsX @bugfix As in playSample: AL_GAIN was never set here either, so a
+			// positional effect started at whatever gain its pooled source carried.
+			adjustPlayingVolume(sample3D);
 			alSourcePlay(source);
 		}
 		return handle;
