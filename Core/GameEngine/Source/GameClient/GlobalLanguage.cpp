@@ -157,7 +157,7 @@ void GlobalLanguage::init()
 		AsciiString fname;
 		fname.format("Data\\%s\\Language", registryLanguage.str());
 
-		sprintf(log_buffer,
+		snprintf(log_buffer, sizeof(log_buffer),
 			"[GX-ISSUE144] GlobalLanguage init registryLanguage=%s primaryIni=%s",
 			registryLanguage.str(),
 			fname.str());
@@ -165,7 +165,7 @@ void GlobalLanguage::init()
 
 		INI ini;
 		ini.loadFileDirectory( fname, INI_LOAD_OVERWRITE, nullptr );
-		sprintf(log_buffer,
+		snprintf(log_buffer, sizeof(log_buffer),
 			"[GX-ISSUE144] GlobalLanguage init loaded primary unicodeFont=%s",
 			m_unicodeFontName.isNotEmpty() ? m_unicodeFontName.str() : "<empty>");
 		fprintf(stderr, "%s\n", log_buffer);
@@ -185,26 +185,26 @@ void GlobalLanguage::init()
 			stockFnameWithExt.concat(".ini");
 			if (TheFileSystem->doesFileExist(stockFnameWithExt.str()))
 			{
-				sprintf(log_buffer,
+				snprintf(log_buffer, sizeof(log_buffer),
 					"[GX-ISSUE144] GlobalLanguage init loading stock fallback=%s",
 					stockFname.str());
 				fprintf(stderr, "%s\n", log_buffer);
 				ini.loadFileDirectory( stockFname, INI_LOAD_MULTIFILE, nullptr );
-				sprintf(log_buffer,
+				snprintf(log_buffer, sizeof(log_buffer),
 					"[GX-ISSUE144] GlobalLanguage init fallback merged unicodeFont=%s (may have been filled)",
 					m_unicodeFontName.isNotEmpty() ? m_unicodeFontName.str() : "<empty>");
 				fprintf(stderr, "%s\n", log_buffer);
 			}
 			else
 			{
-				sprintf(log_buffer,
+				snprintf(log_buffer, sizeof(log_buffer),
 					"[GX-ISSUE144] GlobalLanguage init stock fallback skipped, file not present: %s",
 					stockFnameWithExt.str());
 				fprintf(stderr, "%s\n", log_buffer);
 			}
 		}
 
-		sprintf(log_buffer,
+		snprintf(log_buffer, sizeof(log_buffer),
 			"[GX-ISSUE144] GlobalLanguage init final unicodeFont=%s drawableCaption=%s defaultWindow=%s",
 			m_unicodeFontName.isNotEmpty() ? m_unicodeFontName.str() : "<empty>",
 			m_drawableCaptionFont.name.isNotEmpty() ? m_drawableCaptionFont.name.str() : "<empty>",
@@ -218,13 +218,13 @@ void GlobalLanguage::init()
 		AsciiString font = *it;
 		if(AddFontResource(font.str()) == 0)
 		{
-			sprintf(log_buffer, "[GX-ISSUE144] GlobalLanguage local font add FAILED file=%s", font.str());
+			snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] GlobalLanguage local font add FAILED file=%s", font.str());
 			fprintf(stderr, "%s\n", log_buffer);
 			DEBUG_CRASH(("GlobalLanguage::init Failed to add font %s", font.str()));
 		}
 		else
 		{
-			sprintf(log_buffer, "[GX-ISSUE144] GlobalLanguage local font add OK file=%s", font.str());
+			snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] GlobalLanguage local font add OK file=%s", font.str());
 			fprintf(stderr, "%s\n", log_buffer);
 			//SendMessage( HWND_BROADCAST, WM_FONTCHANGE, 0, 0);
 		}
@@ -234,7 +234,7 @@ void GlobalLanguage::init()
 	// override values with user preferences
 	OptionPreferences optionPref;
 	m_userResolutionFontSizeAdjustment = optionPref.getResolutionFontAdjustment();
-	sprintf(log_buffer,
+	snprintf(log_buffer, sizeof(log_buffer),
 		"[GX-ISSUE144] GlobalLanguage resolutionAdjustment effective=%.3f user=%.3f base=%.3f",
 		getResolutionFontSizeAdjustment(),
 		m_userResolutionFontSizeAdjustment,

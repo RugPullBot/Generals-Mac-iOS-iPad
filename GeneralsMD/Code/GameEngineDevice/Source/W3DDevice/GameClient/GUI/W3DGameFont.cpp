@@ -70,7 +70,7 @@ FontCharsClass *LoadUnicodeFallbackFont(Int size, Bool bold, const char *base_na
 		preferred_name = TheGlobalLanguageData->m_unicodeFontName.str();
 	}
 
-	sprintf(log_buffer,
+	snprintf(log_buffer, sizeof(log_buffer),
 		"[GX-ISSUE144] W3DFont fallback start size=%d bold=%d preferred=%s base=%s",
 		size,
 		bold,
@@ -102,12 +102,12 @@ FontCharsClass *LoadUnicodeFallbackFont(Int size, Bool bold, const char *base_na
 
 		FontCharsClass *font = WW3DAssetManager::Get_Instance()->Get_FontChars(font_name, size, bold);
 		if (font != nullptr) {
-			sprintf(log_buffer, "[GX-ISSUE144] W3DFont fallback hit list=%s", font_name);
+			snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] W3DFont fallback hit list=%s", font_name);
 			fprintf(stderr, "%s\n", log_buffer);
 			return font;
 		}
 
-		sprintf(log_buffer, "[GX-ISSUE144] W3DFont fallback miss list=%s", font_name);
+		snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] W3DFont fallback miss list=%s", font_name);
 		fprintf(stderr, "%s\n", log_buffer);
 	}
 
@@ -115,20 +115,20 @@ FontCharsClass *LoadUnicodeFallbackFont(Int size, Bool bold, const char *base_na
 	if (preferred_name != nullptr && (base_name == nullptr || strcmp(preferred_name, base_name) != 0)) {
 		FontCharsClass *font = WW3DAssetManager::Get_Instance()->Get_FontChars(preferred_name, size, bold);
 		if (font != nullptr) {
-			sprintf(log_buffer, "[GX-ISSUE144] W3DFont fallback hit preferred=%s", preferred_name);
+			snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] W3DFont fallback hit preferred=%s", preferred_name);
 			fprintf(stderr, "%s\n", log_buffer);
 			return font;
 		}
 
-		sprintf(log_buffer, "[GX-ISSUE144] W3DFont fallback miss preferred=%s", preferred_name);
+		snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] W3DFont fallback miss preferred=%s", preferred_name);
 		fprintf(stderr, "%s\n", log_buffer);
 	}
 	else if (preferred_name != nullptr) {
-		sprintf(log_buffer, "[GX-ISSUE144] W3DFont fallback skip preferred=%s reason=same-as-base", preferred_name);
+		snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] W3DFont fallback skip preferred=%s reason=same-as-base", preferred_name);
 		fprintf(stderr, "%s\n", log_buffer);
 	}
 
-	sprintf(log_buffer,
+	snprintf(log_buffer, sizeof(log_buffer),
 		"[GX-ISSUE144] W3DFont fallback exhausted size=%d bold=%d",
 		size,
 		bold);
@@ -166,7 +166,7 @@ Bool W3DFontLibrary::loadFontData( GameFont *font )
 	const char* name = font->nameString.str();
 	const Int size = font->pointSize;
 	const Bool bold = font->bold;
-	sprintf(log_buffer, "[GX-ISSUE144] W3DFont load request name=%s size=%d bold=%d", name ? name : "<null>", size, bold);
+	snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] W3DFont load request name=%s size=%d bold=%d", name ? name : "<null>", size, bold);
 	fprintf(stderr, "%s\n", log_buffer);
 
 	// get the font data from the asset manager
@@ -174,13 +174,13 @@ Bool W3DFontLibrary::loadFontData( GameFont *font )
 
 	if( fontChar == nullptr )
 	{
-		sprintf(log_buffer, "[GX-ISSUE144] W3DFont load miss name=%s size=%d bold=%d", name ? name : "<null>", size, bold);
+		snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] W3DFont load miss name=%s size=%d bold=%d", name ? name : "<null>", size, bold);
 		fprintf(stderr, "%s\n", log_buffer);
 		DEBUG_CRASH(( "Unable to find font '%s' in Asset Manager", name ));
 		return FALSE;
 	}
 
-	sprintf(log_buffer, "[GX-ISSUE144] W3DFont load hit name=%s size=%d bold=%d", name ? name : "<null>", size, bold);
+	snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] W3DFont load hit name=%s size=%d bold=%d", name ? name : "<null>", size, bold);
 	fprintf(stderr, "%s\n", log_buffer);
 
 	// assign font data
@@ -211,7 +211,7 @@ Bool W3DFontLibrary::loadFontData( GameFont *font )
 			fontChar->AlternateUnicodeFont = LoadUnicodeFallbackFont(size, bold, name);
 		}
 	}
-	sprintf(log_buffer,
+	snprintf(log_buffer, sizeof(log_buffer),
 		"[GX-ISSUE144] W3DFont alternate unicode %s for base=%s",
 		fontChar->AlternateUnicodeFont ? "assigned" : "missing",
 		name ? name : "<null>");

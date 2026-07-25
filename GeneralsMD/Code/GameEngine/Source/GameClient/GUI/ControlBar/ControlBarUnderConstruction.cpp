@@ -62,7 +62,7 @@ void ControlBar::updateConstructionTextDisplay( Object *obj )
 	text.format( TheGameText->fetch( "CONTROLBAR:UnderConstructionDesc" ),
 							 obj->getConstructionPercent() );
 	GadgetStaticTextSetText( descWindow, text );
-	sprintf(log_buffer,
+	snprintf(log_buffer, sizeof(log_buffer),
 		"[GX-ISSUE144] UnderConstruction text update obj=%p percent=%d textLen=%d descWindow=%p",
 		obj,
 		obj->getConstructionPercent(),

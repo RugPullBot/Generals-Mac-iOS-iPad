@@ -172,6 +172,15 @@ NetCommandRef * NetPacket::ConstructNetCommandMsgFromRawData(UnsignedByte *data,
 
 			}
 
+			// GeneralsX @bugfix The switch above has no default case and msg starts
+			// null, so a command type this build does not recognise — trivially
+			// supplied by a peer — left msg null and every call below dereferenced
+			// it. Drop the command instead of crashing on it.
+			if (msg == nullptr) {
+				DEBUG_LOG(("NetPacket: unrecognised command type %d in packet; dropping.", (int)commandType));
+				return ref;
+			}
+
 			msg->setExecutionFrame(frame);
 			msg->setID(commandID);
 			msg->setPlayerID(playerID);
@@ -727,7 +736,13 @@ NetCommandList * NetPacket::getCommandList() {
 			++i;
 			// Repeat the last command, doing some funky cool byte-saving stuff
 			if (lastCommand == nullptr) {
+				// GeneralsX @bugfix DEBUG_CRASH compiles away in release, and every
+				// branch below dereferences lastCommand. A 'Z' repeat command arriving
+				// first — before anything exists to repeat — is a remote null deref.
+				// Skip the command; the surrounding loop already uses continue to
+				// discard commands it cannot process.
 				DEBUG_CRASH(("Got a repeat command with no command to repeat."));
+				continue;
 			}
 
 			NetCommandMsg *msg = nullptr;

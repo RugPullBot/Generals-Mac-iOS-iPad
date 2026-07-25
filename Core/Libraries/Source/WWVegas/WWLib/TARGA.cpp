@@ -376,7 +376,29 @@ long Targa::Load(const char* name, char* palette, char* image,bool invert_image)
 			/* Load the palette from the TGA if a palette buffer is provided
 			 * otherwise we will skip it.
 			 */
-			if ((palette != nullptr) && (Header.CMapLength > 0)) {
+			// GeneralsX @bugfix Validate the colour-map header before using it to
+			// offset into, and size a read for, the caller's palette buffer.
+			//
+			// CMapStart, CMapLength and CMapDepth all come straight from the file
+			// with no checks. CMapStart is a signed short and was multiplied by the
+			// entry size and ADDED to the destination pointer, so a crafted TGA
+			// picked both the write offset (positive or negative) and the length.
+			// Callers pass fixed stack arrays of 256*3 or 256*4 bytes, and a 256-entry
+			// 32bpp palette already fills the larger of those exactly — so any
+			// nonzero CMapStart overran even a well-formed-looking file. TGAs are
+			// loaded from BIG archives and from user-supplied maps and mods.
+			//
+			// A colour map cannot legally exceed 256 entries, and the smallest buffer
+			// any caller supplies is 256*3, so bound the total against that.
+			const long kMaxPaletteBytes = 256 * 3;
+			const bool paletteHeaderSane =
+				(Header.CMapStart >= 0) &&
+				(Header.CMapLength > 0) &&
+				(depth > 0) && (depth <= 4) &&
+				((long)Header.CMapStart + (long)Header.CMapLength <= 256) &&
+				(((long)Header.CMapStart + (long)Header.CMapLength) * depth <= kMaxPaletteBytes);
+
+			if ((palette != nullptr) && (Header.CMapLength > 0) && paletteHeaderSane) {
 
 				/* Adjust palette to the starting color entry. */
 				palette += (Header.CMapStart * depth);
@@ -386,6 +408,13 @@ long Targa::Load(const char* name, char* palette, char* image,bool invert_image)
 					error = TGAERR_READ;
 				}
 
+			} else if ((palette != nullptr) && (Header.CMapLength > 0) && !paletteHeaderSane) {
+				/* Refuse the colour map but keep the stream position consistent. */
+				if (File_Seek(size, SEEK_CUR) == -1) {
+					error = TGAERR_READ;
+				} else {
+					error = TGAERR_SYNTAX;
+				}
 			} else {
 				if (File_Seek(size, SEEK_CUR) == -1) {
 					error = TGAERR_READ;
@@ -1100,6 +1129,18 @@ long Targa::DecodeImage()
 				count &= 0x7F;
 				count++;
 
+				/* GeneralsX @bugfix Reject a packet claiming more pixels than remain.
+				 * pixel_count is unsigned, so "pixel_count -= count" with an oversized
+				 * final packet wrapped it to ~2^64 and the loop kept decoding file
+				 * bytes into the heap until a read happened to fail. TGAs come from
+				 * BIG archives, user maps and mods, so the count is untrusted.
+				 */
+				if ((unsigned long)count > pixel_count)
+					{
+					error = TGAERR_SYNTAX;
+					break;
+					}
+
 				/* Read in run pixel. */
 				if (File_Read(image, depth) == depth)
 					{
@@ -1117,6 +1158,14 @@ long Targa::DecodeImage()
 			else
 				{
 				count++;
+
+				/* GeneralsX @bugfix Same bound as the run-length branch above. */
+				if ((unsigned long)count > pixel_count)
+					{
+					error = TGAERR_SYNTAX;
+					break;
+					}
+
 				size = (count * depth);
 
 				/* Read in raw pixels. */

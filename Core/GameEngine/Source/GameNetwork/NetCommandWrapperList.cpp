@@ -200,11 +200,20 @@ NetCommandList * NetCommandWrapperList::getReadyCommands()
 		next = temp->m_next;
 		if (temp->isComplete()) {
 			NetCommandRef *msg = NetPacket::ConstructNetCommandMsgFromRawData(temp->getRawData(), temp->getRawDataLength());
-			NetCommandRef *ret = retlist->addMessage(msg->getCommand());
-			ret->setRelay(msg->getRelay());
+			// GeneralsX @bugfix ConstructNetCommandMsgFromRawData returns null for a
+			// packet it cannot parse — an unrecognised command type, or a 'Z' repeat
+			// with nothing to repeat. Both are remotely supplied. Dereferencing the
+			// result unconditionally simply relocated the crash from the parser to
+			// here, so drop the malformed command and carry on with the list.
+			if (msg != nullptr) {
+				NetCommandRef *ret = retlist->addMessage(msg->getCommand());
+				if (ret != nullptr) {
+					ret->setRelay(msg->getRelay());
+				}
 
-			deleteInstance(msg);
-			msg = nullptr;
+				deleteInstance(msg);
+				msg = nullptr;
+			}
 
 			removeFromList(temp);
 			temp = nullptr;

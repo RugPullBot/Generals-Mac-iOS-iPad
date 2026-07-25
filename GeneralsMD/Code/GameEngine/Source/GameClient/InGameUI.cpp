@@ -1325,7 +1325,7 @@ void InGameUI::init()
 
 	INI ini;
 	ini.loadFileDirectory( "Data\\INI\\InGameUI", INI_LOAD_OVERWRITE, nullptr );
-	sprintf(log_buffer, "[GX-ISSUE144] InGameUI init loaded Data\\INI\\InGameUI");
+	snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] InGameUI init loaded Data\\INI\\InGameUI");
 	fprintf(stderr, "%s\\n", log_buffer);
 
 	//override INI values with language localized values:
@@ -1387,7 +1387,7 @@ void InGameUI::init()
 			m_namedTimerReadyBold = TheGlobalLanguageData->m_namedTimerCountdownReadyFont.bold;
 		}
 
-		sprintf(log_buffer,
+		snprintf(log_buffer, sizeof(log_buffer),
 			"[GX-ISSUE144] InGameUI font override drawableCaption=%s size=%d bold=%d defaultWindow=%s size=%d bold=%d unicode=%s",
 			m_drawableCaptionFont.str(),
 			m_drawableCaptionPointSize,
@@ -1400,7 +1400,7 @@ void InGameUI::init()
 	}
 	else
 	{
-		sprintf(log_buffer, "[GX-ISSUE144] InGameUI init without TheGlobalLanguageData");
+		snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] InGameUI init without TheGlobalLanguageData");
 		fprintf(stderr, "%s\\n", log_buffer);
 	}
 

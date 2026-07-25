@@ -1087,11 +1087,29 @@ void ConnectionManager::processAck(NetCommandMsg *msg) {
  */
 PlayerLeaveCode ConnectionManager::processPlayerLeave(NetPlayerLeaveCommandMsg *msg) {
 	UnsignedByte playerID = msg->getLeavingPlayerID();
+	// GeneralsX @bugfix Validate the slot before indexing.
+	//
+	// getLeavingPlayerID() is a separate payload field from the already-validated
+	// sender ID and carries any value 0-255, while m_connections/m_frameData hold
+	// MAX_SLOTS entries. An out-of-range value read far past both arrays and then
+	// called setQuitting()/setQuitFrame() through whatever word happened to be
+	// there — a write at an attacker-influenced address, reachable from a network
+	// packet. Every sibling handler in this file (processFrameResendRequest,
+	// processRunAheadMetrics, processDisconnectChat, disconnectPlayer) already
+	// guards this; processPlayerLeave was the one that did not.
+	if (playerID >= MAX_SLOTS) {
+		DEBUG_LOG(("ConnectionManager::processPlayerLeave() - rejecting out-of-range player id %d", playerID));
+		return PLAYERLEAVECODE_UNKNOWN;
+	}
 	if ((playerID != m_localSlot) && (m_connections[playerID] != nullptr)) {
 		DEBUG_LOG(("ConnectionManager::processPlayerLeave() - setQuitting() on player %d on frame %d", playerID, TheGameLogic->getFrame()));
 		m_connections[playerID]->setQuitting();
 	}
-	DEBUG_ASSERTCRASH(m_frameData[playerID]->getIsQuitting() == FALSE, ("Player %d is already quitting", playerID));
+	// GeneralsX @bugfix The assert below dereferenced m_frameData[playerID] before
+	// the null test on the following line, so a null entry crashed in debug and the
+	// check was pointless in release. Test first.
+	DEBUG_ASSERTCRASH(m_frameData[playerID] == nullptr || m_frameData[playerID]->getIsQuitting() == FALSE,
+	                  ("Player %d is already quitting", playerID));
 	if ((playerID != m_localSlot) && (m_frameData[playerID] != nullptr) && (m_frameData[playerID]->getIsQuitting() == FALSE)) {
 		DEBUG_LOG(("ConnectionManager::processPlayerLeave - setQuitFrame on player %d for frame %d", playerID, TheGameLogic->getFrame()+1));
 		m_frameData[playerID]->setQuitFrame(TheGameLogic->getFrame() + FRAMES_TO_KEEP + 1);

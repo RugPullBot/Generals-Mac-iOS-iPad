@@ -121,7 +121,7 @@ static GameFont *ResolveDrawableCaptionFont()
 
 	if (TheFontLibrary == nullptr || TheInGameUI == nullptr)
 	{
-		sprintf(log_buffer, "[GX-ISSUE144] Drawable ResolveCaptionFont missing TheFontLibrary=%p TheInGameUI=%p", TheFontLibrary, TheInGameUI);
+		snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] Drawable ResolveCaptionFont missing TheFontLibrary=%p TheInGameUI=%p", TheFontLibrary, TheInGameUI);
 		fprintf(stderr, "%s\n", log_buffer);
 		return nullptr;
 	}
@@ -132,13 +132,13 @@ static GameFont *ResolveDrawableCaptionFont()
 
 	// TEST: hardcode Arial Unicode MS
 	font = TheFontLibrary->getFont("Arial Unicode MS", pointSize, bold);
-	sprintf(log_buffer, "[GX-ISSUE144] TEST ResolveCaptionFont Arial Unicode MS %s pointSize=%d bold=%d",
+	snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] TEST ResolveCaptionFont Arial Unicode MS %s pointSize=%d bold=%d",
 		font ? "HIT" : "MISS", pointSize, bold);
 	fprintf(stderr, "%s\n", log_buffer);
 	if (font) return font;
 
 	font = TheFontLibrary->getFont("Arial", pointSize, bold);
-	sprintf(log_buffer, "[GX-ISSUE144] TEST ResolveCaptionFont Arial %s pointSize=%d bold=%d",
+	snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] TEST ResolveCaptionFont Arial %s pointSize=%d bold=%d",
 		font ? "HIT" : "MISS", pointSize, bold);
 	return font;
 }
@@ -3699,7 +3699,7 @@ void Drawable::drawConstructPercent( const IRegion2D *healthBarRegion )
 		if (m_constructDisplayString)
 		{
 			m_constructDisplayString->setFont(ResolveDrawableCaptionFont());
-			sprintf(log_buffer,
+			snprintf(log_buffer, sizeof(log_buffer),
 				"[GX-ISSUE144] Drawable construct string allocated drawable=%p obj=%p",
 				this,
 				obj);
@@ -3722,7 +3722,7 @@ void Drawable::drawConstructPercent( const IRegion2D *healthBarRegion )
 				char fnarrow[128] = {};
 				for (int _fi = 0; _fi < 64 && fws[_fi]; ++_fi)
 					fnarrow[_fi] = (fws[_fi] < 128) ? (char)fws[_fi] : '?';
-				sprintf(log_buffer,
+				snprintf(log_buffer, sizeof(log_buffer),
 					"[GX-ISSUE144] fetch UnderConstructionDesc len=%d text=\"%s\"",
 					fetchResult.getLength(), fnarrow);
 				fprintf(stderr, "%s\n", log_buffer);
@@ -3741,7 +3741,7 @@ void Drawable::drawConstructPercent( const IRegion2D *healthBarRegion )
 		for (int _i = 0; _i < 64 && ws[_i]; ++_i)
 			narrow[_i] = (ws[_i] < 128) ? (char)ws[_i] : '?';
 		GameFont *curFont = m_constructDisplayString->getFont();
-		sprintf(log_buffer,
+		snprintf(log_buffer, sizeof(log_buffer),
 			"[GX-ISSUE144] Drawable construct text update drawable=%p pct=%g len=%d text=\"%s\" font=%s",
 			this,
 			(double)obj->getConstructionPercent(),
@@ -3769,7 +3769,7 @@ void Drawable::drawConstructPercent( const IRegion2D *healthBarRegion )
 	static bool _constructDrawLogged = false;
 	if (!_constructDrawLogged) {
 		GameFont *df = m_constructDisplayString->getFont();
-		sprintf(log_buffer,
+		snprintf(log_buffer, sizeof(log_buffer),
 			"[GX-ISSUE144] Drawable construct draw drawable=%p screen=(%d,%d) width=%d font=%s",
 			this, screen.x, screen.y, tw,
 			df ? df->nameString.str() : "NULL");
@@ -4360,7 +4360,7 @@ void Drawable::setCaptionText( const UnicodeString& captionText )
 	if (captionText.isEmpty())
 	{
 		clearCaptionText();
-		sprintf(log_buffer, "[GX-ISSUE144] Drawable caption clear-request drawable=%p", this);
+		snprintf(log_buffer, sizeof(log_buffer), "[GX-ISSUE144] Drawable caption clear-request drawable=%p", this);
 		fprintf(stderr, "%s\n", log_buffer);
 		return;
 	}
@@ -4374,7 +4374,7 @@ void Drawable::setCaptionText( const UnicodeString& captionText )
 		GameFont *font = ResolveDrawableCaptionFont();
 		m_captionDisplayString->setFont( font );
 		m_captionDisplayString->setText( sanitizedString );
-		sprintf(log_buffer,
+		snprintf(log_buffer, sizeof(log_buffer),
 			"[GX-ISSUE144] Drawable caption new drawable=%p textLength=%d font=%p",
 			this,
 			sanitizedString.getLength(),
@@ -4387,7 +4387,7 @@ void Drawable::setCaptionText( const UnicodeString& captionText )
 		if( m_captionDisplayString->getText().compare(sanitizedString) != 0 )
 		{
 			m_captionDisplayString->setText( sanitizedString );
-			sprintf(log_buffer,
+			snprintf(log_buffer, sizeof(log_buffer),
 				"[GX-ISSUE144] Drawable caption update drawable=%p textLength=%d",
 				this,
 				sanitizedString.getLength());

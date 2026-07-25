@@ -1230,7 +1230,7 @@ FontCharsClass::Get_Char_Data (WCHAR ch)
 		// GeneralsX @bugfix fbraz 03/06/2026 Log ALL Cyrillic delegations for diagnostics
 		if (ch >= 0x0400 && ch <= 0x04FF) {
 			char log_buffer[512];
-			sprintf(log_buffer,
+			snprintf(log_buffer, sizeof(log_buffer),
 				"[GX-ISSUE144] Get_Char_Data delegate U+%04X from=%s to=%s",
 				(unsigned int)ch,
 				GDIFontName.str(),
@@ -1843,7 +1843,7 @@ FontCharsClass::Create_Freetype_Font (const char *font_name)
 	// GeneralsX @bugfix fbraz 03/06/2026 Log FreeType font details for Cyrillic font issue
 	{
 		char log_buffer[512];
-		sprintf(log_buffer,
+		snprintf(log_buffer, sizeof(log_buffer),
 			"[GX-ISSUE144] Freetype path=%s name=%s family=%s num_glyphs=%ld has_Cyrillic_Caps=%s",
 			font_path,
 			font_name,
@@ -1885,7 +1885,7 @@ FontCharsClass::Store_Freetype_Char (WCHAR ch)
 	// GeneralsX @bugfix fbraz 03/06/2026 Log ALL Cyrillic character rendering attempts
 	if (ch >= 0x0400 && ch <= 0x04FF) {
 		char log_buffer[512];
-		sprintf(log_buffer,
+		snprintf(log_buffer, sizeof(log_buffer),
 			"[GX-ISSUE144] Store_Freetype_Char U+%04X glyph_idx=%u font=%s",
 			(unsigned int)ch,
 			(unsigned int)glyph_index,
