@@ -458,6 +458,16 @@ chmod +x "${STAGE_DIR}/run.sh"
 echo ""
 echo "Creating ${OUTPUT_ZIP}..."
 rm -f "${OUTPUT_ZIP}"
+# GeneralsX @bugfix Make everything owner-writable before archiving. Several vcpkg-provided
+# dylibs (libSvtAv1Enc, libavcodec, libx264, libpng16 and friends) arrive mode 444, and zip
+# preserves that. On the machine that unpacks the archive, "xattr -dr com.apple.quarantine"
+# then fails with EACCES on exactly those files, because removing an extended attribute needs
+# write permission. The user is left with a bundle whose FFmpeg and codec libraries are still
+# quarantined -- and macOS refuses to load a quarantined dylib, so the app dies at launch
+# rather than showing anything useful. Read-only was never load-bearing here; these are copies
+# in a staging directory.
+chmod -R u+w "${STAGE_DIR}/${APP_DIR_NAME}"
+
 (cd "${STAGE_DIR}" && zip -r "${OUTPUT_ZIP}" "${APP_DIR_NAME}" run.sh)
 
 echo ""

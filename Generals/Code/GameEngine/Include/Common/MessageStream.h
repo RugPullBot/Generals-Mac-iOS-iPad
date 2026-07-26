@@ -582,6 +582,25 @@ public:
 		MSG_DEBUG_KILL_OBJECT,
 #endif
 
+		// GeneralsX @feature LAN-safe debug-screen cheats.
+		//
+		// EXPLICITLY NUMBERED AND OUTSIDE THE #if ABOVE, on purpose. The 1900 block is guarded
+		// on RTS_DEBUG alone here and on RTS_DEBUG || _ALLOW_DEBUG_CHEATS_IN_RELEASE in the
+		// GeneralsMD tree (GeneralsMD/Code/GameEngine/Include/Common/MessageStream.h). Implicit
+		// numbering after it would give these different wire values in different build
+		// configurations, and two peers of this fork would decode each other's cheats as a
+		// different message. An explicit anchor cannot drift. 1950..1955 satisfies both range
+		// tests: GameClientDispatch.cpp (>=1000 && <=1999) and Network.cpp (>1000 && <1999).
+		//
+		// These MUST stay identical to the GeneralsMD block: Core's GameLogicDispatch.cpp is
+		// compiled into both g_gameengine and z_gameengine and dispatches on these names.
+		MSG_GX_CHEAT_GIVE_MONEY = 1950,							///< (Int targetPlayerIndex, Int amount) amount may be negative
+		MSG_GX_CHEAT_SET_MONEY,											///< (Int targetPlayerIndex, Int amount)
+		MSG_GX_CHEAT_REVEAL_MAP,										///< (Int targetPlayerIndex, Bool reveal)
+		MSG_GX_CHEAT_KILL_PLAYER,										///< (Int targetPlayerIndex, Bool transferToAlly)
+		MSG_GX_CHEAT_KILL_OBJECTS,									///< (Int targetPlayerIndex, Bool includeStructures)
+		MSG_GX_CHEAT_SPAWN_UNIT,										///< (Int targetPlayerIndex, Int templateID, Location pos)
+
 //*********************************************************************************************************
 		MSG_END_NETWORK_MESSAGES = 1999,						///< MARKER TO DELINEATE MESSAGES THAT GO OVER THE NETWORK
 //*********************************************************************************************************

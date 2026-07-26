@@ -319,6 +319,18 @@ private:
 	bool onDebugHurtObject(GameMessage *msg);
 	bool onDebugKillObject(GameMessage *msg);
 #endif
+	// GeneralsX @feature LAN-safe cheats. Unconditional - the shipping presets define neither
+	// RTS_DEBUG nor _ALLOW_DEBUG_CHEATS_IN_RELEASE, and a handler that exists on one peer and not
+	// the other is a silent CRC mismatch. Defined in Core/.../GameLogicDispatch.cpp, which is
+	// compiled into both g_gameengine and z_gameengine, so this block is mirrored from the
+	// GeneralsMD tree verbatim.
+	bool onGxCheatGiveMoney(GameMessage *msg);
+	bool onGxCheatSetMoney(GameMessage *msg);
+	bool onGxCheatRevealMap(GameMessage *msg);
+	bool onGxCheatKillPlayer(GameMessage *msg);
+	bool onGxCheatKillObjects(GameMessage *msg);
+	bool onGxCheatSpawnUnit(GameMessage *msg);
+
 	bool onEnter(GameMessage *msg, AIGroupPtr &currentlySelectedGroup);
 	bool onExit(GameMessage *msg, AIGroupPtr &currentlySelectedGroup);
 	bool onEvacuate(GameMessage *msg, AIGroupPtr &currentlySelectedGroup);
