@@ -141,6 +141,7 @@ set(GAMEENGINE_SRC
 #    Include/GameClient/ClientInstance.h
 #    Include/GameClient/ClientRandomValue.h
     Include/GameClient/CodeGui.h
+    Include/GameClient/CodeGuiSearchField.h
 #    Include/GameClient/Color.h
     Include/GameClient/CommandXlat.h
     Include/GameClient/ControlBar.h
@@ -700,6 +701,7 @@ set(GAMEENGINE_SRC
     Source/GameClient/GUI/AnimateWindowManager.cpp
 #    Source/GameClient/GUI/ChallengeGenerals.cpp
     Source/GameClient/GUI/CodeGui.cpp
+    Source/GameClient/GUI/CodeGuiSearchField.cpp
     Source/GameClient/GUI/ControlBar/ControlBar.cpp
     Source/GameClient/GUI/ControlBar/ControlBarBeacon.cpp
     Source/GameClient/GUI/ControlBar/ControlBarCommand.cpp

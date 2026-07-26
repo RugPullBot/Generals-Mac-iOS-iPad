@@ -665,6 +665,55 @@ void LANAPI::OnInActive(UnsignedInt IP) {
 
 }
 
+// GeneralsX @feature Chat text drawn in a player's own lobby colour is unreadable for the
+// darker half of the multiplayer palette (red, blue, purple) on the near-black chat listbox.
+// Lift anything below a luma floor by blending it toward white: luma is linear in the
+// components, so the exact blend factor can be solved for instead of iterating, and blending
+// toward white keeps the hue recognisable instead of washing the colour out to grey.
+static Color MakeChatColorReadable( Color color )
+{
+	const Int minLuma = 128;
+
+	UnsignedByte red, green, blue, alpha;
+	GameGetColorComponents(color, &red, &green, &blue, &alpha);
+
+	// Rec.601 weights scaled to 256 so this stays integer math.
+	const Int luma = (77 * red + 150 * green + 29 * blue) >> 8;
+	if (luma >= minLuma)
+		return color;
+
+	const Real blend = (Real)(minLuma - luma) / (Real)(255 - luma);
+	red   = (UnsignedByte)(red   + (255 - red)   * blend);
+	green = (UnsignedByte)(green + (255 - green) * blend);
+	blue  = (UnsignedByte)(blue  + (255 - blue)  * blend);
+
+	return GameMakeColor(red, green, blue, alpha);
+}
+
+// GeneralsX @feature Resolve the lobby colour a chat line should be drawn in. Anyone who holds
+// no slot (system lines, players still in the LAN lobby), anyone still set to a random colour
+// and observers keep the caller's classic chat colour, matching the "???" / "None" swatch the
+// slot list shows for them.
+static Color GetPlayerChatColor( LANGameInfo *game, UnicodeString playerName, Color defaultColor )
+{
+	if (game == nullptr || !game->isInGame() || TheMultiplayerSettings == nullptr)
+		return defaultColor;
+
+	const Int slotNum = game->getSlotNum(playerName);
+	if (slotNum < 0)
+		return defaultColor;
+
+	const GameSlot *slot = game->getConstSlot(slotNum);
+	if (slot == nullptr || slot->getColor() < 0 || slot->getPlayerTemplate() == PLAYERTEMPLATE_OBSERVER)
+		return defaultColor;
+
+	const MultiplayerColorDefinition *def = TheMultiplayerSettings->getColor(slot->getColor());
+	if (def == nullptr)
+		return defaultColor;
+
+	return MakeChatColorReadable(def->getColor());
+}
+
 void LANAPI::OnChat( UnicodeString player, UnsignedInt ip, UnicodeString message, ChatType format )
 {
 	GameWindow *chatWindow = nullptr;
@@ -683,6 +732,11 @@ void LANAPI::OnChat( UnicodeString player, UnsignedInt ip, UnicodeString message
 	}
 	if (chatWindow == nullptr)
 		return;
+
+	// GeneralsX @feature Slot colours only exist once we are in a game setup; chat in the LAN
+	// lobby itself keeps the classic local/remote colouring.
+	LANGameInfo *slotColorGame = (m_inLobby) ? nullptr : m_currentGame;
+
 	Int index = -1;
 	UnicodeString unicodeChat;
 	switch (format)
@@ -692,44 +746,27 @@ void LANAPI::OnChat( UnicodeString player, UnsignedInt ip, UnicodeString message
 			index =GadgetListBoxAddEntryText(chatWindow, unicodeChat, chatSystemColor, -1, -1);
 			break;
 		case LANAPIInterface::LANCHAT_EMOTE:
+		{
 			unicodeChat = player;
 			unicodeChat.concat(L' ');
 			unicodeChat.concat(message);
-			if (ip == m_localIP)
-				index =GadgetListBoxAddEntryText(chatWindow, unicodeChat, chatLocalActionColor, -1, -1);
-			else
-				index =GadgetListBoxAddEntryText(chatWindow, unicodeChat, chatActionColor, -1, -1);
+			const Color defaultColor = (ip == m_localIP) ? chatLocalActionColor : chatActionColor;
+			index =GadgetListBoxAddEntryText(chatWindow, unicodeChat, GetPlayerChatColor(slotColorGame, player, defaultColor), -1, -1);
 			break;
+		}
 		case LANAPIInterface::LANCHAT_NORMAL:
 		default:
 		{
 			// Do the language filtering.
 			TheLanguageFilter->filterLine(message);
 
-			Color chatColor = GameMakeColor(255, 255, 255, 255);
-			if (m_currentGame)
-			{
-				Int slotNum = m_currentGame->getSlotNum(player);
-				// it'll be -1 if its invalid.
-				if (slotNum >= 0) {
-					GameSlot *gs = m_currentGame->getSlot(slotNum);
-					if (gs) {
-						Int colorIndex = gs->getColor();
-						MultiplayerColorDefinition *def = TheMultiplayerSettings->getColor(colorIndex);
-						if (def)
-							chatColor = def->getColor();
-					}
-				}
-			}
+			const Color defaultColor = (ip == m_localIP) ? chatLocalNormalColor : chatNormalColor;
 
 			unicodeChat = L"[";
 			unicodeChat.concat(player);
 			unicodeChat.concat(L"] ");
 			unicodeChat.concat(message);
-			if (ip == m_localIP)
-				index =GadgetListBoxAddEntryText(chatWindow, unicodeChat, chatColor, -1, -1);
-			else
-				index =GadgetListBoxAddEntryText(chatWindow, unicodeChat, chatColor, -1, -1);
+			index =GadgetListBoxAddEntryText(chatWindow, unicodeChat, GetPlayerChatColor(slotColorGame, player, defaultColor), -1, -1);
 			break;
 		}
 	}

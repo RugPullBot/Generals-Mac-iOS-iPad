@@ -58,6 +58,7 @@
 #include "GameClient/GameWindow.h"
 
 // FORWARD REFERENCES /////////////////////////////////////////////////////////
+class GameFont;
 class GameWindow;
 class WindowLayout;
 
@@ -104,6 +105,28 @@ struct CodeGuiTheme
 const CodeGuiTheme &CodeGuiGetTheme( void );
 
 //-------------------------------------------------------------------------------------------------
+// Fonts.
+//
+// Every code-built control draws in Arial, because that is the only face the port can rely on
+// (scripts/build/ios/stage-fonts.sh installs Liberation Sans as fonts/arial.ttf).
+//
+// BOLD IS A FAMILY, NOT A FLAG, on every platform this port ships to. The Bool that
+// GameWindowManager::winFindFont / FontLibrary::getFont / WW3DAssetManager::Get_FontChars pass
+// around only reaches FW_BOLD on the Win32 GDI path (render2dsentence.cpp,
+// FontCharsClass::Create_GDI_Font). The FreeType path used on macOS/iOS/Linux is
+// Create_Freetype_Font( font_name ) — it never looks at IsBold at all, so
+// winFindFont( "Arial", 12, TRUE ) yields a SECOND GameFont with byte-identical glyphs. The only
+// thing that changes the weight is the family name handed to the font locator, and the correct
+// spelling of that name differs per platform, so it lives in one place: here.
+//
+// Use this for anything the factories below do not cover — a push button, say:
+//   btn->winSetFont( CodeGuiFont( 12, TRUE ) );
+// GameWindow::winSetFont dispatches by style bit to GadgetListBoxSetFont / GadgetComboBoxSetFont /
+// GadgetTextEntrySetFont / GadgetStaticTextSetFont, each of which re-fonts every DisplayString the
+// gadget owns, so a post-creation swap is safe.
+GameFont *CodeGuiFont( Int pointSize, Bool bold = FALSE );
+
+//-------------------------------------------------------------------------------------------------
 // Control factories.
 //
 // `idName` is hashed with TheNameKeyGenerator->nameToKey() and installed with winSetWindowId().
@@ -138,7 +161,8 @@ GameWindow *CodeGuiLabel( GameWindow *parent,
 													const char *idName,
 													const WideChar *text,
 													Bool centered = FALSE,
-													Int pointSize = 12 );
+													Int pointSize = 12,
+													Bool bold = FALSE );
 
 GameWindow *CodeGuiCheckbox( GameWindow *parent,
 														 Int x, Int y, Int width, Int height,
@@ -149,7 +173,9 @@ GameWindow *CodeGuiCheckbox( GameWindow *parent,
 GameWindow *CodeGuiTextEntry( GameWindow *parent,
 															Int x, Int y, Int width, Int height,
 															const char *idName,
-															Short maxTextLen );
+															Short maxTextLen,
+															Int pointSize = 12,
+															Bool bold = FALSE );
 
 GameWindow *CodeGuiHSlider( GameWindow *parent,
 														Int x, Int y, Int width, Int height,

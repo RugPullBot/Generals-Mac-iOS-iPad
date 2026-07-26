@@ -31,6 +31,7 @@
 #include <cstdint>
 #include "Common/AudioEventRTS.h"
 #include "Common/INI.h"
+#include "Common/MultiplayerSettings.h"
 #include "GameClient/GameText.h"
 #include "GameClient/GadgetListBox.h"
 #include "GameClient/LanguageFilter.h"
@@ -205,6 +206,56 @@ Bool GameSpyInfo::sendChat( UnicodeString message, Bool isAction, GameWindow *pl
 	return false;
 }
 
+// GeneralsX @feature Chat text drawn in a player's own lobby colour is unreadable for the
+// darker half of the multiplayer palette (red, blue, purple) on the near-black chat listbox.
+// Lift anything below a luma floor by blending it toward white: luma is linear in the
+// components, so the exact blend factor can be solved for instead of iterating, and blending
+// toward white keeps the hue recognisable instead of washing the colour out to grey.
+static Color MakeChatColorReadable( Color color )
+{
+	const Int minLuma = 128;
+
+	UnsignedByte red, green, blue, alpha;
+	GameGetColorComponents(color, &red, &green, &blue, &alpha);
+
+	// Rec.601 weights scaled to 256 so this stays integer math.
+	const Int luma = (77 * red + 150 * green + 29 * blue) >> 8;
+	if (luma >= minLuma)
+		return color;
+
+	const Real blend = (Real)(minLuma - luma) / (Real)(255 - luma);
+	red   = (UnsignedByte)(red   + (255 - red)   * blend);
+	green = (UnsignedByte)(green + (255 - green) * blend);
+	blue  = (UnsignedByte)(blue  + (255 - blue)  * blend);
+
+	return GameMakeColor(red, green, blue, alpha);
+}
+
+// GeneralsX @feature Resolve the lobby colour a chat line should be drawn in. Speakers who hold
+// no slot in the current staging room (anyone chatting in a group room, or a player who already
+// left), slots still set to a random colour and observers keep the GameSpy palette colour,
+// which is what the "???" / "None" swatch in the slot list shows for them.
+static Bool GetStagingRoomChatColor( AsciiString nick, Color *color )
+{
+	if (TheGameSpyGame == nullptr || !TheGameSpyGame->isInGame() || TheMultiplayerSettings == nullptr)
+		return FALSE;
+
+	const Int slotNum = TheGameSpyGame->getSlotNum(nick);
+	if (slotNum < 0)
+		return FALSE;
+
+	const GameSlot *slot = TheGameSpyGame->getConstSlot(slotNum);
+	if (slot == nullptr || slot->getColor() < 0 || slot->getPlayerTemplate() == PLAYERTEMPLATE_OBSERVER)
+		return FALSE;
+
+	const MultiplayerColorDefinition *def = TheMultiplayerSettings->getColor(slot->getColor());
+	if (def == nullptr)
+		return FALSE;
+
+	*color = MakeChatColorReadable(def->getColor());
+	return TRUE;
+}
+
 void GameSpyInfo::addChat( AsciiString nick, Int profileID, UnicodeString msg, Bool isPublic, Bool isAction, GameWindow *win )
 {
 	PlayerInfoMap::iterator it = getPlayerInfoMap()->find(nick);
@@ -309,7 +360,18 @@ void GameSpyInfo::addChat( PlayerInfo p, UnicodeString msg, Bool isPublic, Bool 
 		fullMsg.format( L"[%ls] %ls", name.str(), msg.str() );
 	}
 
-	Int index = addText(fullMsg, GameSpyColor[style], win);
+	// GeneralsX @feature Public chat in a game room is drawn in the speaker's lobby colour so
+	// who said what reads at a glance. Private messages keep their palette colour, otherwise a
+	// whisper would be indistinguishable from something the whole room can see.
+	Color chatColor = GameSpyColor[style];
+	if (isPublic)
+	{
+		Color slotColor;
+		if (GetStagingRoomChatColor(p.m_name, &slotColor))
+			chatColor = slotColor;
+	}
+
+	Int index = addText(fullMsg, chatColor, win);
 	if (index >= 0)
 	{
 		GadgetListBoxSetItemData(win, reinterpret_cast<void*>(std::uintptr_t(p.m_profileID)), index);

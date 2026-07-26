@@ -39,6 +39,7 @@
 #include "GameClient/AnimateWindowManager.h"
 #include "GameClient/CampaignManager.h"
 #include "GameClient/WindowLayout.h"
+#include "GameClient/CodeGuiSearchField.h"
 #include "GameClient/Gadget.h"
 #include "GameClient/Shell.h"
 #include "GameClient/GameWindowManager.h"
@@ -57,6 +58,43 @@ static Bool isShuttingDown = false;
 static Bool startGame = false;
 static Bool buttonPushed = false;
 static GameDifficulty s_AIDiff = DIFFICULTY_NORMAL;
+
+// GeneralsX @feature Claude 27/07/2026 Map search field, built in code. MapSelectMenu.wnd lives
+// inside WindowZH.big and the .wnd editor is Windows-only, so the row is created at runtime against
+// ListboxMap's real rect. This screen is single player, so there is no host to gate on and the
+// field is unconditional.
+static CodeGuiSearchField soloMapSearchField;
+
+// Mirrors the RadioButtonSystemMaps/RadioButtonUserMaps pair, which is exactly what the
+// "UseSystemMapDir" preference holds. Reading OptionPreferences instead would re-parse the ini on
+// every keystroke.
+static Bool soloMapUsesSystemMaps = TRUE;
+
+//-------------------------------------------------------------------------------------------------
+/** Refill the map listbox from the current source radio, map kind and search filter */
+//-------------------------------------------------------------------------------------------------
+// GeneralsX @feature Claude 27/07/2026 One choke point for every repopulate, so the three inputs
+// can never drift apart.
+static void repopulateSoloMapList( void )
+{
+	if( mapList == nullptr )
+		return;
+
+	// Deliberately NOT calling TheMapCache->updateCache() here. Each row's item data is a raw
+	// const char* into a MapCache key (MapUtil.cpp), safe only while the cache is not modified
+	// under a live listbox, and buttonOK dereferences that pointer.
+	populateMapListbox( mapList, soloMapUsesSystemMaps, !showSoloMaps, AsciiString::TheEmptyString,
+											soloMapSearchField.getFilter() );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** The search field changed; refill the list through the one choke point */
+//-------------------------------------------------------------------------------------------------
+static void soloMapSearchChanged( CodeGuiSearchField *field )
+{
+	repopulateSoloMapList();
+}
+
 static void setupGameStart(AsciiString mapName)
 {
 	startGame = true;
@@ -167,9 +205,23 @@ void MapSelectMenuInit( WindowLayout *layout, void *userData )
 	mapList = TheWindowManager->winGetWindowFromId( nullptr, mapListID );
 	if( mapList )
 	{
+		soloMapUsesSystemMaps = usesSystemMapDir;
+
+		// GeneralsX @feature Claude 27/07/2026 Deliberately NO reset() before this create(), unlike
+		// the lobby map screens. This one is a shell-stack layout: Shell::hideShell() only runs its
+		// shutdown, it does not pop, so Shell::showShell() can run this Init a SECOND time on the
+		// very same listbox when the player quits a match back to the menu. Resetting here would
+		// hand create() a clean slate and it would stack a second row on the first and shrink the
+		// listbox twice. Left alone, create() bails while m_entry is still live, and the pointers are
+		// dropped in GWM_DESTROY — which is delivered whether the layout is popped or the windows go
+		// out from under it via GameWindowManager::reset()/winDestroyAll on a match transition.
+		soloMapSearchField.create( mapList, soloMapSearchChanged,
+															 "MapSelectMenu.wnd:TextEntryMapSearch",
+															 "MapSelectMenu.wnd:ButtonMapSearchClear" );
+
 		if (TheMapCache)
-			TheMapCache->updateCache();
-		populateMapListbox( mapList, usesSystemMapDir, !showSoloMaps );
+			TheMapCache->updateCache();		// the only updateCache; never once per keystroke
+		repopulateSoloMapList();
 	}
 
 
@@ -326,7 +378,11 @@ WindowMsgHandledType MapSelectMenuSystem( GameWindow *window, UnsignedInt msg,
 		//---------------------------------------------------------------------------------------------
 		case GWM_DESTROY:
 		{
-
+			// GeneralsX @feature Claude 27/07/2026 The only place the search row's windows genuinely
+			// go away (Shell::hideShell keeps the layout alive across a match), so the only place the
+			// raw pointers may be dropped. GameWindowManager::reset() also reaches here via
+			// winDestroyAll on a match transition.
+			soloMapSearchField.reset();
 			break;
 
 		}
@@ -344,12 +400,31 @@ WindowMsgHandledType MapSelectMenuSystem( GameWindow *window, UnsignedInt msg,
 		}
 
 		//---------------------------------------------------------------------------------------------
+		// GeneralsX @feature Claude 27/07/2026 Live map search. GadgetTextEntryInput sends
+		// GEM_UPDATE_TEXT to the entry's OWNER on every accepted character and every backspace, and
+		// GEM_EDIT_DONE on Return. The field parents itself to the listbox's parent, which is
+		// MapSelectMenuParent — the window this callback is bound to. No .wnd change involved.
+		case GEM_UPDATE_TEXT:
+		case GEM_EDIT_DONE:
+		{
+			soloMapSearchField.handleSystemMsg( msg, (GameWindow *)mData1 );
+			break;
+		}
+
+		//---------------------------------------------------------------------------------------------
 		case GBM_SELECTED:
 		{
 			if (buttonPushed)
 				break;
 
 			GameWindow *control = (GameWindow *)mData1;
+
+			// GeneralsX @feature Claude 27/07/2026 The clear button is code-created and belongs to no
+			// .wnd, so let the search field claim it by pointer before anything reads an id off
+			// `control`.
+			if ( soloMapSearchField.handleSystemMsg( msg, control ) )
+				break;
+
 			Int controlID = control->winGetWindowId();
 
 			static NameKeyType singlePlayerID = NAMEKEY("MapSelectMenu.wnd:ButtonSinglePlayer");
@@ -357,20 +432,19 @@ WindowMsgHandledType MapSelectMenuSystem( GameWindow *window, UnsignedInt msg,
 			if ( controlID == singlePlayerID )
 			{
 				showSoloMaps = true;
-				OptionPreferences pref;
-				populateMapListbox( mapList, pref.usesSystemMapDir(), !showSoloMaps );
+				repopulateSoloMapList();		// keeps any active search text applied
 			}
 			else if ( controlID == multiplayerID )
 			{
 				showSoloMaps = false;
-				OptionPreferences pref;
-				populateMapListbox( mapList, pref.usesSystemMapDir(), !showSoloMaps );
+				repopulateSoloMapList();
 			}
 			else if ( controlID == radioButtonSystemMapsID )
 			{
 				if (TheMapCache)
 					TheMapCache->updateCache();
-				populateMapListbox( mapList, TRUE, !showSoloMaps );
+				soloMapUsesSystemMaps = TRUE;
+				repopulateSoloMapList();
 				OptionPreferences pref;
 				pref["UseSystemMapDir"] = "yes";
 				pref.write();
@@ -379,7 +453,8 @@ WindowMsgHandledType MapSelectMenuSystem( GameWindow *window, UnsignedInt msg,
 			{
 				if (TheMapCache)
 					TheMapCache->updateCache();
-				populateMapListbox( mapList, FALSE, !showSoloMaps );
+				soloMapUsesSystemMaps = FALSE;
+				repopulateSoloMapList();
 				OptionPreferences pref;
 				pref["UseSystemMapDir"] = "no";
 				pref.write();

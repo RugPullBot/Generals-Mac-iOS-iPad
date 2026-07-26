@@ -28,6 +28,12 @@
 
 #include "PreRTS.h"
 
+// GeneralsX @feature Claude 27/07/2026 codeGuiFontFamily() has to tell iOS apart from macOS;
+// TARGET_OS_IPHONE is only defined once this is included.
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #include "Common/GameMemory.h"
 #include "Common/NameKeyGenerator.h"
 #include "GameClient/CodeGui.h"
@@ -75,20 +81,66 @@ static const CodeGuiTheme s_theme =
 const CodeGuiTheme &CodeGuiGetTheme( void ) { return s_theme; }
 
 //-------------------------------------------------------------------------------------------------
+/** Spell the Arial family the way THIS platform's font locator wants it.
+	*
+	* GeneralsX @feature Claude 27/07/2026 Real bold on the FreeType platforms.
+	*
+	* The Bool that winFindFont -> FontLibrary::getFont -> Get_FontChars -> Initialize_GDI_Font
+	* threads through only reaches FW_BOLD inside FontCharsClass::Create_GDI_Font. On macOS/iOS/Linux
+	* the build takes Create_Freetype_Font( font_name ) instead, which never reads IsBold — so the
+	* flag alone buys nothing but a duplicate GameFont with identical glyphs. The weight has to come
+	* out of the family name, and the two locators disagree on how to spell it:
+	*
+	*   iOS      Locate_Font_FontConfig lowercases the name, strips spaces, and opens
+	*            fonts/<name>.ttf under the CWD. "Arial Bold" -> fonts/arialbold.ttf, which
+	*            scripts/build/ios/stage-fonts.sh stages as LiberationSans-Bold. VERIFIED present.
+	*   macOS /  Locate_Font_FontConfig runs FcNameParse + FcFontMatch. FcNameParse treats
+	*   Linux    "Arial Bold" as a FAMILY, finds no such family, and FcFontMatch — which never
+	*            fails, it only degrades — hands back whatever it likes best (Verdana on the
+	*            reference Mac). ":bold" is fontconfig's own weight syntax and is the only spelling
+	*            that actually lands on Arial Bold.
+	*   Win32    GDI honours the bold flag directly, and a face name with a colon in it would not
+	*            resolve, so the plain family is correct there.
+	*
+	* Keep the bold flag set as well as the name: it is what keeps the bold and regular faces in
+	* separate FontCharsClass slots (FontCharsClass::Is_Font compares name, size AND bold). */
+//-------------------------------------------------------------------------------------------------
+static const char *codeGuiFontFamily( Bool bold )
+{
+	if( bold == FALSE )
+		return "Arial";
+
+#if defined(_WIN32)
+	return "Arial";
+#elif defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+	return "Arial Bold";
+#else
+	return "Arial:bold";
+#endif
+}
+
+//-------------------------------------------------------------------------------------------------
 /** Resolve the font every code-built control uses. */
 //-------------------------------------------------------------------------------------------------
-static GameFont *codeGuiFont( Int pointSize )
+static GameFont *codeGuiFont( Int pointSize, Bool bold = FALSE )
 {
-	// On iOS FontCharsClass::Locate_Font_FontConfig lowercases the family, strips spaces and looks
-	// for fonts/<name>.ttf relative to CWD, falling back unconditionally to fonts/arial.ttf.
-	// scripts/build/ios/stage-fonts.sh stages arial / arialbold / couriernew / timesnewroman, so
-	// "Arial" resolves exactly. bold=TRUE allocates a distinct GameFont with IDENTICAL glyphs
-	// (IsBold is only consumed on the Win32 GDI path), so we never bother asking for it.
 	if( TheWindowManager == nullptr )
 		return nullptr;
 
-	return TheWindowManager->winFindFont( "Arial", pointSize, FALSE );
+	GameFont *font = TheWindowManager->winFindFont( codeGuiFontFamily( bold ), pointSize, bold );
+
+	// A gadget with a null font draws no glyphs at all, so a missing bold face must degrade to the
+	// regular one rather than to nothing. getFont() only returns null on a genuine load failure —
+	// on the fontconfig path that essentially cannot happen, but on iOS it can if fonts/ was never
+	// staged into the bundle.
+	if( font == nullptr && bold )
+		font = TheWindowManager->winFindFont( "Arial", pointSize, FALSE );
+
+	return font;
 }
+
+//-------------------------------------------------------------------------------------------------
+GameFont *CodeGuiFont( Int pointSize, Bool bold ) { return codeGuiFont( pointSize, bold ); }
 
 //-------------------------------------------------------------------------------------------------
 /** Stamp an id onto a freshly created window.
@@ -241,7 +293,8 @@ GameWindow *CodeGuiButton( GameWindow *parent, Int x, Int y, Int width, Int heig
 
 //-------------------------------------------------------------------------------------------------
 GameWindow *CodeGuiLabel( GameWindow *parent, Int x, Int y, Int width, Int height,
-													const char *idName, const WideChar *text, Bool centered, Int pointSize )
+													const char *idName, const WideChar *text, Bool centered, Int pointSize,
+													Bool bold )
 {
 	if( TheWindowManager == nullptr )
 		return nullptr;
@@ -261,13 +314,15 @@ GameWindow *CodeGuiLabel( GameWindow *parent, Int x, Int y, Int width, Int heigh
 	// defaultVisual = FALSE here (unlike buttons) so no background box is painted behind the text:
 	// every slot stays WIN_COLOR_UNDEFINED and only the glyphs draw. This is the in-tree precedent
 	// from MainMenu.cpp's version/credit labels.
+	// The font still lands: assignDefaultGadgetLook applies defaultFont BEFORE it checks
+	// assignVisual and returns, so FALSE suppresses the colours and images only.
 	// NOTE: gogoGadgetStaticText BitClears GWS_TAB_STOP on OUR struct — harmless, but it is why
 	// instData must never be reused without another init().
 	GameWindow *lbl = TheWindowManager->gogoGadgetStaticText(
 												parent, WIN_STATUS_ENABLED,
 												x, y, width, height,
 												&instData, &textData,
-												codeGuiFont( pointSize ),
+												codeGuiFont( pointSize, bold ),
 												FALSE );
 	if( lbl == nullptr )
 		return nullptr;
@@ -352,7 +407,7 @@ GameWindow *CodeGuiCheckbox( GameWindow *parent, Int x, Int y, Int width, Int he
 
 //-------------------------------------------------------------------------------------------------
 GameWindow *CodeGuiTextEntry( GameWindow *parent, Int x, Int y, Int width, Int height,
-															const char *idName, Short maxTextLen )
+															const char *idName, Short maxTextLen, Int pointSize, Bool bold )
 {
 	if( TheWindowManager == nullptr )
 		return nullptr;
@@ -379,7 +434,7 @@ GameWindow *CodeGuiTextEntry( GameWindow *parent, Int x, Int y, Int width, Int h
 													parent, WIN_STATUS_ENABLED,
 													x, y, width, height,
 													&instData, &entryData,
-													codeGuiFont( 12 ),
+													codeGuiFont( pointSize, bold ),
 													TRUE );
 	if( entry == nullptr )
 		return nullptr;
@@ -396,8 +451,9 @@ GameWindow *CodeGuiTextEntry( GameWindow *parent, Int x, Int y, Int width, Int h
 
 	// winSetFont already dispatched to GadgetTextEntrySetFont (GameWindow::winSetFont switches on
 	// the style bits) because gogoGadgetTextEntry does winSetUserData() BEFORE
-	// assignDefaultGadgetLook(). Re-asserting is idempotent and documents the dependency.
-	GameFont *font = codeGuiFont( 12 );
+	// assignDefaultGadgetLook(). Re-asserting is idempotent and documents the dependency: this is
+	// the call that puts the face on entryData->text, i.e. on the glyphs the user types.
+	GameFont *font = codeGuiFont( pointSize, bold );
 	if( font )
 		GadgetTextEntrySetFont( entry, font );
 

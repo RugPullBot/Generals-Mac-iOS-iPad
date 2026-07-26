@@ -35,6 +35,7 @@
 #include "Common/MessageStream.h"
 #include "Common/UserPreferences.h"
 #include "GameClient/WindowLayout.h"
+#include "GameClient/CodeGuiSearchField.h"
 #include "GameClient/Gadget.h"
 #include "GameClient/Shell.h"
 #include "GameClient/GameWindowManager.h"
@@ -61,6 +62,16 @@ static NameKeyType buttonMapStartPositionID[MAX_SLOTS] = { NAMEKEY_INVALID,NAMEK
 																									NAMEKEY_INVALID,NAMEKEY_INVALID,
 																										NAMEKEY_INVALID,NAMEKEY_INVALID,
 																										NAMEKEY_INVALID,NAMEKEY_INVALID };
+
+// GeneralsX @feature Claude 27/07/2026 Map search field, built in code. LanMapSelectMenu.wnd lives
+// inside WindowZH.big and the .wnd editor is Windows-only, so the row is created at runtime against
+// ListboxMap's real rect. Its windows are children of LanMapSelectMenuParent, so the Back/OK paths
+// tear them down with the rest of the overlay.
+// HOST ONLY: in a LAN lobby only the host may change the map, which is why
+// LanGameOptionsMenuInit's !TheLAN->AmIHost() branch disables ButtonSelectMap. A client's list is
+// read-only, so it gets no field at all rather than a greyed one.
+static CodeGuiSearchField lanMapSearchField;
+static Bool lanMapSearchUsesSystemMaps = TRUE;
 
 
 // PUBLIC FUNCTIONS ///////////////////////////////////////////////////////////////////////////////
@@ -102,6 +113,7 @@ static void NullifyControls()
 {
 	parent = nullptr;
 	mapList = nullptr;
+	lanMapSearchField.reset();
 	if (winMapPreview)
 	{
 		winMapPreview->winSetUserData(nullptr);
@@ -111,6 +123,42 @@ static void NullifyControls()
 	{
 		buttonMapStartPosition[i] = nullptr;
 	}
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Refill the map listbox from the current source radio and the current search filter */
+//-------------------------------------------------------------------------------------------------
+// GeneralsX @feature Claude 27/07/2026 One choke point for every repopulate, so the source radio
+// and the search text can never drift apart.
+static void repopulateLanMapList( void )
+{
+	if( mapList == nullptr )
+		return;
+
+	// Deliberately NOT calling TheMapCache->updateCache() here. Each row's item data is a raw
+	// const char* into a MapCache key (MapUtil.cpp), safe only while the cache is not modified
+	// under a live listbox. Rebuilding it per keystroke would dangle every row, and both
+	// GLM_SELECTED and buttonOK dereference that pointer.
+	populateMapListbox( mapList, lanMapSearchUsesSystemMaps, TRUE, TheLAN->GetMyGame()->getMap(),
+											lanMapSearchField.getFilter() );
+
+	// populateMapListbox always asks for row 0 when the map it wanted is missing, and
+	// GadgetListBoxSystem's GLM_SET_SELECTION bails out before notifying the owner when row 0 has
+	// no cell — i.e. exactly when the filter matched nothing. Without this the preview and the
+	// start spots would keep showing a map that is no longer in the list.
+	// positionStartSpots dereferences its mapWindow unconditionally on the not-found path.
+	Int selected = -1;
+	GadgetListBoxGetSelected( mapList, &selected );
+	if( selected < 0 && winMapPreview )
+		positionStartSpots( AsciiString::TheEmptyString, buttonMapStartPosition, winMapPreview );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** The search field changed; refill the list through the one choke point */
+//-------------------------------------------------------------------------------------------------
+static void lanMapSearchChanged( CodeGuiSearchField *field )
+{
+	repopulateLanMapList();
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -167,9 +215,25 @@ void LanMapSelectMenuInit( WindowLayout *layout, void *userData )
 	mapList = TheWindowManager->winGetWindowFromId( parent, mapListID );
 	if( mapList )
 	{
+		// GeneralsX @feature Claude 27/07/2026 Reset the search state up front rather than trusting
+		// NullifyControls: winDestroy unlinks the windows immediately but GWM_DESTROY is delivered
+		// later from processDestroyList, so a stale entry pointer can still be set when the overlay
+		// is reopened in the frame it was closed.
+		lanMapSearchField.reset();
+		lanMapSearchUsesSystemMaps = usesSystemMapDir;
+
+		// Only the host may change the map. This is the same predicate LanGameOptionsMenuInit uses
+		// to leave ButtonSelectMap enabled; a client gets no field, not a disabled one.
+		if( TheLAN->AmIHost() )
+		{
+			lanMapSearchField.create( mapList, lanMapSearchChanged,
+																"LanMapSelectMenu.wnd:TextEntryMapSearch",
+																"LanMapSelectMenu.wnd:ButtonMapSearchClear" );
+		}
+
 		if (TheMapCache)
-			TheMapCache->updateCache();
-		populateMapListbox( mapList, usesSystemMapDir, TRUE, TheLAN->GetMyGame()->getMap() );
+			TheMapCache->updateCache();		// the only updateCache; never once per keystroke
+		repopulateLanMapList();
 	}
 }
 
@@ -313,16 +377,36 @@ WindowMsgHandledType LanMapSelectMenuSystem( GameWindow *window, UnsignedInt msg
 				break;
 			}
 		//---------------------------------------------------------------------------------------------
+		// GeneralsX @feature Claude 27/07/2026 Live map search. GadgetTextEntryInput sends
+		// GEM_UPDATE_TEXT to the entry's OWNER on every accepted character and every backspace, and
+		// GEM_EDIT_DONE on Return. The field parents itself to the listbox's parent, which is
+		// LanMapSelectMenuParent — the window this callback is bound to. No .wnd change involved.
+		case GEM_UPDATE_TEXT:
+		case GEM_EDIT_DONE:
+		{
+			lanMapSearchField.handleSystemMsg( msg, (GameWindow *)mData1 );
+			break;
+		}
+
+		//---------------------------------------------------------------------------------------------
 		case GBM_SELECTED:
 		{
 			GameWindow *control = (GameWindow *)mData1;
+
+			// GeneralsX @feature Claude 27/07/2026 The clear button is code-created and belongs to no
+			// .wnd, so let the search field claim it by pointer before anything reads an id off
+			// `control`.
+			if ( lanMapSearchField.handleSystemMsg( msg, control ) )
+				break;
+
 			Int controlID = control->winGetWindowId();
 
 			if ( controlID == radioButtonSystemMapsID )
 			{
 				if (TheMapCache)
 					TheMapCache->updateCache();
-				populateMapListbox( mapList, TRUE, TRUE, TheLAN->GetMyGame()->getMap() );
+				lanMapSearchUsesSystemMaps = TRUE;
+				repopulateLanMapList();		// keeps any active search text applied
 				LANPreferences pref;
 				pref["UseSystemMapDir"] = "yes";
 				pref.write();
@@ -331,7 +415,8 @@ WindowMsgHandledType LanMapSelectMenuSystem( GameWindow *window, UnsignedInt msg
 			{
 				if (TheMapCache)
 					TheMapCache->updateCache();
-				populateMapListbox( mapList, FALSE, TRUE, TheLAN->GetMyGame()->getMap() );
+				lanMapSearchUsesSystemMaps = FALSE;
+				repopulateLanMapList();
 				LANPreferences pref;
 				pref["UseSystemMapDir"] = "no";
 				pref.write();
