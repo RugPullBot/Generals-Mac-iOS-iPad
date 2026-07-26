@@ -172,7 +172,6 @@ struct TouchState {
 	bool  placementAnchored = false;       // LMB held to set a building's facing
 	float cursorX = 0.0f, cursorY = 0.0f;  // where the synthetic cursor actually is
 	bool  relativeDrag = false;            // move the cursor by deltas, not absolutely
-	bool  placementDragging = false;       // one-finger drag positioning a building
 	int   activeFingers = 0;               // fingers currently down, any phase
 	Uint64 pinchTicks = 0;                 // when the two-finger gesture started
 
@@ -452,32 +451,21 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 		if (s_touch.phase == TouchState::PENDING && event.tfinger.fingerID == s_touch.finger1) {
 			const float moved = SDL_fabsf(px - s_touch.downX) + SDL_fabsf(py - s_touch.downY);
 			if (moved >= TAP_DEAD_ZONE_PX) {
-				// While a building is pending, a drag means "move the ghost", not
-				// "drag-select".
+				// Commit to a drag: anchor the LMB at the original touch point so
+				// drag-boxes start where the finger first landed.
 				//
-				// With a mouse, pressing during placement fixes the building's
-				// location and the drag that follows only sets its facing. Doing that
-				// here anchored the building at the point the finger first landed, so
-				// dragging rotated it in place and releasing built it back at the
-				// press point rather than where the finger had been dragged to.
-				//
-				// On touch the natural reading is drag-to-position, lift-to-build. So
-				// hold no button: just move the cursor with the finger, and commit on
-				// release. Rotation stays on the three-finger gesture, which presses
-				// the button deliberately.
-				const bool placing =
-					(TheInGameUI != nullptr && TheInGameUI->getPendingPlaceType() != nullptr);
-				if (placing) {
-					s_touch.placementDragging = true;
-					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
-				} else {
-					// Commit to a drag: anchor the LMB at the original touch point so
-					// drag-boxes start where the finger first landed.
-					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
-					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
-					                   s_touch.downX, s_touch.downY, SDL_BUTTON_LEFT);
-					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
-				}
+				// GeneralsX @revert Claude 26/07/2026 A previous attempt special-cased
+				// building placement here: it held no button and synthesised a click on
+				// release, on the theory that touch wants drag-to-position rather than
+				// the mouse's press-to-place-then-drag-to-face. Karl tested it and it was
+				// worse - it destroyed hold-and-rotate, which is what he actually uses.
+				// The mouse semantics are the correct ones on touch too. Do not "fix"
+				// this again without a concrete report of the old behaviour failing;
+				// four attempts here have all been regressions.
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
+				                   s_touch.downX, s_touch.downY, SDL_BUTTON_LEFT);
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
 				s_touch.phase = TouchState::DRAGGING;
 			}
 		}
@@ -604,7 +592,6 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 		if (s_touch.activeFingers <= 0) {
 			s_touch.activeFingers = 0;
 			s_touch.relativeDrag = false;
-			s_touch.placementDragging = false;
 			if (s_touch.rightButtonHeld) {
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
 				                   s_touch.panX, s_touch.panY, SDL_BUTTON_RIGHT);
@@ -646,16 +633,7 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				                   s_touch.downX, s_touch.downY, SDL_BUTTON_LEFT);
 				break;
 			case TouchState::DRAGGING:
-				if (s_touch.placementDragging) {
-					// No button was held while positioning the ghost; commit the build
-					// here, where the finger actually ended up.
-					s_touch.placementDragging = false;
-					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
-					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN, px, py, SDL_BUTTON_LEFT);
-					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, px, py, SDL_BUTTON_LEFT);
-				} else {
-					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, px, py, SDL_BUTTON_LEFT);
-				}
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, px, py, SDL_BUTTON_LEFT);
 				break;
 			case TouchState::PAN:
 				if (s_touch.placementAnchored) {
