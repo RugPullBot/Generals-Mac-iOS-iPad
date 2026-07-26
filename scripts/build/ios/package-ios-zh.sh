@@ -35,10 +35,37 @@ OUT_DIR="${PROJECT_ROOT}/build/ios-package"
 APP_NAME="GeneralsXZH"
 IDENTITY="${GX_SIGN_IDENTITY:-Apple Development}"
 
-# Signing/bundle identity — override for your own Apple Developer account:
-#   GX_TEAM_ID=ABCDE12345 GX_BUNDLE_ID=com.you.generalszh ./package-ios-zh.sh --install
+# Signing/bundle identity.
+#
+# The defaults below are UPSTREAM's, inherited from the fork, and are wrong for
+# everyone else. Getting them wrong fails in two ways, and the second is nasty:
+#   * wrong team    -> xcodebuild dies with `No Account for Team "..."`. Loud, fine.
+#   * wrong bundle  -> it BUILDS AND INSTALLS, but iOS treats a different bundle id
+#                      as a different app with its own container. The assets seeded
+#                      into Documents by a previous full install are then invisible,
+#                      and a --dev build comes up with no game data — indistinguishable
+#                      from "seeding never ran". Hours vanish here.
+#
+# So: put your values in ios/signing.local.env (gitignored, not shared) once:
+#     GX_TEAM_ID=QHKGZ9G56Z
+#     GX_BUNDLE_ID=com.you.generalszh
+# Environment variables still win over that file, and that file wins over the
+# upstream defaults.
+SIGNING_ENV="${IOS_DIR}/signing.local.env"
+if [[ -f "${SIGNING_ENV}" ]]; then
+    # shellcheck disable=SC1090
+    set -a; source "${SIGNING_ENV}"; set +a
+    echo "==> Signing config from $(basename "${SIGNING_ENV}")"
+fi
 TEAM_ID="${GX_TEAM_ID:-7S264298H8}"
 BUNDLE_ID="${GX_BUNDLE_ID:-me.ammaar.generalszh}"
+
+if [[ "${BUNDLE_ID}" == "me.ammaar.generalszh" ]]; then
+    echo "WARNING: using upstream's bundle id (${BUNDLE_ID})."
+    echo "  If you have previously installed under a different id, this build gets a"
+    echo "  SEPARATE container and will not see assets seeded by that install."
+    echo "  Set GX_BUNDLE_ID, or create ${SIGNING_ENV}."
+fi
 
 GAME_BIN="${BUILD_DIR}/GeneralsMD/GeneralsXZH.app/GeneralsXZH"
 DXVK_BUILD="${BUILD_DIR}/_deps/dxvk-build-macos"
