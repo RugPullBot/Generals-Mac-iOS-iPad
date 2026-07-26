@@ -180,6 +180,9 @@ Bool hasThingsInProduction(PlayerType playerType)
 #endif // defined(RTS_DEBUG) || defined(_ALLOW_DEBUG_CHEATS_IN_RELEASE)
 
 
+// GeneralsX @feature Claude 26/07/2026 Declared in GameClient/CommandXlat.h. Do not make these
+// static: the Debug screen drives the same two steps for touch-only devices, which have no way to
+// press the MSG_META_*_MAX_RENDER_FPS / *_LOGIC_TIME_SCALE keys.
 bool changeMaxRenderFps(FpsValueChange change)
 {
 	UnsignedInt maxRenderFps = TheFramePacer->getFramesPerSecondLimit();

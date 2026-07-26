@@ -31,6 +31,7 @@
 #include "Common/ArchiveFile.h"
 #include "Common/ArchiveFileSystem.h"
 #include "Common/FileSystem.h"
+#include "Common/FramePacer.h"
 #include "Common/GameEngine.h"
 #include "Common/GameState.h"
 #include "Common/GlobalData.h"
@@ -43,6 +44,7 @@
 #include "Common/ThingFactory.h"
 
 #include "GameClient/CodeGui.h"
+#include "GameClient/CommandXlat.h"
 #include "GameClient/DebugMenu.h"
 #include "GameClient/Display.h"
 #include "GameClient/Gadget.h"
@@ -145,6 +147,16 @@ static GameWindow *s_buttonBack			= nullptr;
 
 // Stats
 static GameWindow *s_statLine[ DBG_NUM_STAT_LINES ] = { nullptr };
+
+// Stats - frame pacing block
+static GameWindow *s_fpsRenderValue			= nullptr;
+static GameWindow *s_fpsLogicValue			= nullptr;
+static GameWindow *s_fpsSpeedValue			= nullptr;
+static GameWindow *s_fpsNote						= nullptr;
+static GameWindow *s_buttonRenderFpsDown	= nullptr;
+static GameWindow *s_buttonRenderFpsUp		= nullptr;
+static GameWindow *s_buttonLogicFpsDown		= nullptr;
+static GameWindow *s_buttonLogicFpsUp			= nullptr;
 
 // Cheats
 static GameWindow *s_cheatStatus		= nullptr;
@@ -762,6 +774,100 @@ static void setStatLine( Int i, const UnicodeString &text )
 }
 
 //-------------------------------------------------------------------------------------------------
+/** Frame pacing readout.
+	*
+	* The two values are not independent and the failure mode of treating them as if they were is
+	* silent. GameEngine::canUpdateRegularGameLogic() ticks the simulation once per RENDERED frame
+	* whenever the logic time scale is off - or is sitting at or above the render cap, which is the
+	* same thing as far as that test is concerned - so raising the render cap on its own does not
+	* make the game smoother, it makes it run at renderFps/30 times normal speed. Hence the third
+	* line: the fps pair is diagnostic, the resulting game speed is the answer. */
+//-------------------------------------------------------------------------------------------------
+static void refreshFpsReadout( void )
+{
+	if( TheFramePacer == nullptr )
+		return;
+
+	const Int  maxRenderFps		= TheFramePacer->getFramesPerSecondLimit();
+	const Int  logicFps				= TheFramePacer->getLogicTimeScaleFps();
+	const Bool logicEnabled		= TheFramePacer->isLogicTimeScaleEnabled();
+	const Bool renderUncapped	= ( maxRenderFps >= (Int)RenderFpsPreset::UncappedFpsValue );
+
+	// Exactly the test canUpdateRegularGameLogic() makes. "Enabled" alone is not enough: a scale at
+	// or above the render cap can never gate anything, so the time accumulator is skipped entirely
+	// and the logic falls back to one tick per rendered frame.
+	const Bool logicFollowsRender = ( logicEnabled == FALSE || logicFps >= maxRenderFps );
+
+	UnicodeString text;
+
+	if( s_fpsRenderValue )
+	{
+		if( renderUncapped )
+			text = UnicodeString( L"Uncapped" );
+		else if( TheFramePacer->isActualFramesPerSecondLimitEnabled() == FALSE )
+			text.format( L"%d   (limiter off, running uncapped)", maxRenderFps );
+		else
+			text.format( L"%d", maxRenderFps );
+
+		GadgetStaticTextSetText( s_fpsRenderValue, text );
+	}
+
+	if( s_fpsLogicValue )
+	{
+		// Ignore*: this line reports the configured scale, so it must not read 0.00 just because a
+		// cutscene has time frozen or the network is stalling. Those two are the Game speed line's
+		// business, and answering them in both places at once is what makes a readout unreadable.
+		const Real ratio = TheFramePacer->getActualLogicTimeScaleRatio(
+			FramePacer::IgnoreFrozenTime | FramePacer::IgnoreHaltedGame );
+
+		if( TheNetwork != nullptr )
+			text.format( L"fixed by the network match   ratio %.2f", ratio );
+		else if( logicFollowsRender )
+			text.format( L"off - follows render   (stored %d)", logicFps );
+		else
+			text.format( L"%d   ratio %.2f", logicFps, ratio );
+
+		GadgetStaticTextSetText( s_fpsLogicValue, text );
+	}
+
+	if( s_fpsSpeedValue )
+	{
+		if( TheNetwork != nullptr )
+		{
+			text = UnicodeString( L"paced by the network host" );
+		}
+		else if( TheFramePacer->isTimeFrozen() || TheFramePacer->isGameHalted() )
+		{
+			text = UnicodeString( L"0.00x - time is frozen" );
+		}
+		else
+		{
+			// One logic tick always advances a fixed 1/30s of simulated time. What changes is how
+			// often a tick is allowed, so the speed multiple is simply tick rate over the base rate.
+			const Real tickFps = logicFollowsRender ? TheFramePacer->getUpdateFps() : (Real)logicFps;
+			text.format( L"%.2fx normal   (logic ticks at %.0f Hz, base is %d)",
+									 tickFps / LOGICFRAMES_PER_SECONDS_REAL, tickFps, (Int)LOGICFRAMES_PER_SECOND );
+		}
+
+		GadgetStaticTextSetText( s_fpsSpeedValue, text );
+	}
+
+	if( s_fpsNote )
+	{
+		if( TheNetwork != nullptr )
+			text = UnicodeString( L"Logic time scale is refused in a network match: both peers must step the same way." );
+		else if( logicFollowsRender && maxRenderFps > (Int)LOGICFRAMES_PER_SECOND )
+			text = UnicodeString( L"The match is running fast. Step the logic time scale below the render cap." );
+		else if( logicFollowsRender )
+			text = UnicodeString( L"Logic time scale is off, so the simulation runs at render speed." );
+		else
+			text = UnicodeString( L"Logic time scale paces the simulation; the render cap only buys smoothness." );
+
+		GadgetStaticTextSetText( s_fpsNote, text );
+	}
+}
+
+//-------------------------------------------------------------------------------------------------
 void DebugMenuUpdate( void )
 {
 	if( s_layout == nullptr || s_root == nullptr )
@@ -795,8 +901,18 @@ void DebugMenuUpdate( void )
 		s_buttonSaveHere->winEnable( canSave );
 	}
 
+	// changeLogicTimeScale() returns false without doing anything while TheNetwork is up, and joining
+	// or leaving a match does not close this screen. A button that silently does nothing reads as a
+	// broken button, so it is greyed for as long as the refusal stands. The render cap is untouched
+	// by that rule - it is purely local presentation - so it stays live.
+	const Bool logicScaleAllowed = ( TheNetwork == nullptr );
+	if( s_buttonLogicFpsDown )	s_buttonLogicFpsDown->winEnable( logicScaleAllowed );
+	if( s_buttonLogicFpsUp )		s_buttonLogicFpsUp->winEnable( logicScaleAllowed );
+
 	if( s_activeTab != DBG_TAB_STATS )
 		return;
+
+	refreshFpsReadout();
 
 	UnicodeString line;
 	Int n = 0;
@@ -945,6 +1061,16 @@ static void nullifyControls( void )
 	}
 	for( Int i = 0; i < DBG_NUM_STAT_LINES; ++i )
 		s_statLine[i] = nullptr;
+
+	s_fpsRenderValue			= nullptr;
+	s_fpsLogicValue				= nullptr;
+	s_fpsSpeedValue				= nullptr;
+	s_fpsNote							= nullptr;
+	s_buttonRenderFpsDown	= nullptr;
+	s_buttonRenderFpsUp		= nullptr;
+	s_buttonLogicFpsDown	= nullptr;
+	s_buttonLogicFpsUp		= nullptr;
+
 	for( Int i = 0; i < DBG_NUM_SLIDERS; ++i )
 	{
 		s_slider[i]				= nullptr;
@@ -982,12 +1108,60 @@ static void buildStatsTab( GameWindow *pane, Int paneW )
 	const Int pad		= CodeGuiScaleX( DBG_PAD );
 	const Int lineH	= CodeGuiAtLeast( CodeGuiScaleY( DBG_LINE_H ), 14 );
 	const Int step	= CodeGuiAtLeast( CodeGuiScaleY( 22 ), 15 );
+	const Int innerW	= paneW - pad * 2;
 
 	for( Int i = 0; i < DBG_NUM_STAT_LINES; ++i )
 	{
-		s_statLine[i] = CodeGuiLabel( pane, pad, i * step, paneW - pad * 2, lineH,
+		s_statLine[i] = CodeGuiLabel( pane, pad, i * step, innerW, lineH,
 																	nullptr, L"", FALSE, 12 );
 	}
+
+	// Frame pacing. This lives on Stats rather than Config because the two knobs are only
+	// meaningful next to the measured render FPS above them, and because the pair has to be read
+	// together: the render cap alone decides nothing about how fast the match plays.
+	const Int btnH			= CodeGuiAtLeast( CodeGuiScaleY( DBG_BTN_H ), 26 );
+	const Int labelW		= CodeGuiScaleX( 160 );
+	const Int valueW		= CodeGuiScaleX( 232 );
+	const Int valueX		= pad + CodeGuiScaleX( 164 );
+	const Int stepBtnW	= CodeGuiScaleX( 70 );
+	const Int minusX		= pad + CodeGuiScaleX( 404 );
+	const Int plusX			= pad + CodeGuiScaleX( 480 );
+
+	Int y = DBG_NUM_STAT_LINES * step + CodeGuiScaleY( 8 );
+	CodeGuiLabel( pane, pad, y, innerW, lineH, nullptr, L"FRAME PACING", FALSE, 12 );
+
+	y += CodeGuiScaleY( 24 );
+	CodeGuiLabel( pane, pad, y + CodeGuiScaleY( 4 ), labelW, lineH,
+								nullptr, L"Max render FPS", FALSE, 12 );
+	s_fpsRenderValue = CodeGuiLabel( pane, valueX, y + CodeGuiScaleY( 4 ),
+																	 valueW, lineH, nullptr, L"", FALSE, 12 );
+	s_buttonRenderFpsDown = CodeGuiButton( pane, minusX, y, stepBtnW, btnH,
+																				 "DebugMenu:ButtonRenderFpsDown", L"-",
+																				 L"Step the render cap down one preset" );
+	s_buttonRenderFpsUp = CodeGuiButton( pane, plusX, y, stepBtnW, btnH,
+																			 "DebugMenu:ButtonRenderFpsUp", L"+",
+																			 L"Step the render cap up one preset" );
+
+	y += CodeGuiScaleY( 34 );
+	CodeGuiLabel( pane, pad, y + CodeGuiScaleY( 4 ), labelW, lineH,
+								nullptr, L"Logic time scale", FALSE, 12 );
+	s_fpsLogicValue = CodeGuiLabel( pane, valueX, y + CodeGuiScaleY( 4 ),
+																	valueW, lineH, nullptr, L"", FALSE, 12 );
+	s_buttonLogicFpsDown = CodeGuiButton( pane, minusX, y, stepBtnW, btnH,
+																				"DebugMenu:ButtonLogicFpsDown", L"-",
+																				L"Step the simulation rate down 5 fps" );
+	s_buttonLogicFpsUp = CodeGuiButton( pane, plusX, y, stepBtnW, btnH,
+																			"DebugMenu:ButtonLogicFpsUp", L"+",
+																			L"Step the simulation rate up 5 fps" );
+
+	// The line that answers the question the other two only pose.
+	y += CodeGuiScaleY( 36 );
+	CodeGuiLabel( pane, pad, y, labelW, lineH, nullptr, L"Game speed", FALSE, 12 );
+	s_fpsSpeedValue = CodeGuiLabel( pane, valueX, y,
+																	innerW - CodeGuiScaleX( 164 ), lineH, nullptr, L"", FALSE, 12 );
+
+	y += CodeGuiScaleY( 20 );
+	s_fpsNote = CodeGuiLabel( pane, pad, y, innerW, lineH, nullptr, L"", FALSE, 12 );
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -1389,6 +1563,35 @@ static WindowMsgHandledType DebugMenuSystem( GameWindow *window, UnsignedInt msg
 			if( control == s_buttonSpawn )
 			{
 				doSpawnUnit();
+				return MSG_HANDLED;
+			}
+			// The four frame pacing steps call the same two CommandXlat functions the MSG_META_* key
+			// handlers do rather than poking TheFramePacer, so button and key cannot drift apart: the
+			// enable-flag toggle, the render-cap ceiling and the network refusal stay in one place.
+			// The readout is refreshed here rather than waiting for the next 250ms tick, so a tap
+			// reads as having done something even when the step lands on the same preset.
+			if( control == s_buttonRenderFpsDown )
+			{
+				changeMaxRenderFps( FpsValueChange_Decrease );
+				refreshFpsReadout();
+				return MSG_HANDLED;
+			}
+			if( control == s_buttonRenderFpsUp )
+			{
+				changeMaxRenderFps( FpsValueChange_Increase );
+				refreshFpsReadout();
+				return MSG_HANDLED;
+			}
+			if( control == s_buttonLogicFpsDown )
+			{
+				changeLogicTimeScale( FpsValueChange_Decrease );
+				refreshFpsReadout();
+				return MSG_HANDLED;
+			}
+			if( control == s_buttonLogicFpsUp )
+			{
+				changeLogicTimeScale( FpsValueChange_Increase );
+				refreshFpsReadout();
 				return MSG_HANDLED;
 			}
 			if( control == s_buttonCamDefaults )
