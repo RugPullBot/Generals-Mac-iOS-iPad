@@ -34,6 +34,7 @@
 #include "Common/MessageStream.h"
 #include "Common/UserPreferences.h"
 #include "GameClient/WindowLayout.h"
+#include "GameClient/CodeGui.h"
 #include "GameClient/Gadget.h"
 #include "GameClient/GameText.h"
 #include "GameClient/Mouse.h"
@@ -42,6 +43,7 @@
 #include "GameClient/GadgetListBox.h"
 #include "GameClient/GadgetRadioButton.h"
 #include "GameClient/GadgetStaticText.h"
+#include "GameClient/GadgetTextEntry.h"
 #include "GameNetwork/LANAPICallbacks.h"
 #include "GameClient/MapUtil.h"
 
@@ -64,10 +66,24 @@ static NameKeyType buttonMapStartPositionID[MAX_SLOTS] = { NAMEKEY_INVALID,NAMEK
 static GameWindow *winMapPreview = nullptr;
 static NameKeyType winMapPreviewID = NAMEKEY_INVALID;
 
+// GeneralsX @feature Claude 26/07/2026 Map search field, built in code.
+// SkirmishMapSelectMenu.wnd lives inside WindowZH.big and the .wnd editor is Windows-only, so the
+// field is created at runtime against ListboxMap's real rect instead of being authored. Both
+// windows are children of the layout root, so destroyWindows() on the Back/OK paths tears them
+// down with the rest of the screen and GadgetTextEntrySystem's own GWM_DESTROY frees the
+// EntryData and its three DisplayStrings.
+static GameWindow *mapSearchEntry = nullptr;
+static GameWindow *mapSearchClear = nullptr;
+static UnicodeString mapSearchFilter;
+static Bool mapSearchUsesSystemMaps = TRUE;
+
 static void NullifyControls()
 {
 	parent = nullptr;
 	mapList = nullptr;
+	mapSearchEntry = nullptr;
+	mapSearchClear = nullptr;
+	mapSearchFilter.clear();
 	if (winMapPreview)
 	{
 		winMapPreview->winSetUserData(nullptr);
@@ -245,6 +261,107 @@ void showSkirmishGameOptionsUnderlyingGUIElements( Bool show )
 }
 
 //-------------------------------------------------------------------------------------------------
+/** Refill the map listbox from the current source radio and the current search filter */
+//-------------------------------------------------------------------------------------------------
+// GeneralsX @feature Claude 26/07/2026 One choke point for every repopulate, so the source radio
+// and the search text can never drift apart.
+static void repopulateSkirmishMapList( void )
+{
+	if( mapList == nullptr )
+		return;
+
+	// Deliberately NOT calling TheMapCache->updateCache() here. Each row's item data is a raw
+	// const char* into a MapCache key (MapUtil.cpp), safe only while the cache is not modified
+	// under a live listbox. Rebuilding it per keystroke would dangle every row, and both
+	// GLM_SELECTED and buttonOK dereference that pointer.
+	if( mapSearchUsesSystemMaps )
+	{
+		populateMapListbox( mapList, TRUE, TRUE, TheSkirmishGameInfo->getMap(), mapSearchFilter );
+	}
+	else
+	{
+		populateMapListbox( mapList, FALSE, FALSE, TheSkirmishGameInfo->getMap(), mapSearchFilter );
+		populateMapListboxNoReset( mapList, FALSE, TRUE, TheSkirmishGameInfo->getMap(), mapSearchFilter );
+	}
+
+	// populateMapListbox always asks for row 0 when the map it wanted is missing, and
+	// GadgetListBoxSystem's GLM_SET_SELECTION bails out before notifying the owner when row 0 has
+	// no cell — i.e. exactly when the filter matched nothing. Without this the preview and the
+	// start spots would keep showing a map that is no longer in the list.
+	// positionStartSpots dereferences its mapWindow unconditionally on the not-found path.
+	Int selected = -1;
+	GadgetListBoxGetSelected( mapList, &selected );
+	if( selected < 0 && winMapPreview )
+		positionStartSpots( AsciiString::TheEmptyString, buttonMapStartPosition, winMapPreview );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Create the search field above the map listbox, taking its height out of the list */
+//-------------------------------------------------------------------------------------------------
+// GeneralsX @feature Claude 26/07/2026 Runtime-built, because the .wnd cannot be edited. Every
+// coordinate is read back from the listbox rather than hardcoded: the parser already applied the
+// CREATIONRESOLUTION scaling, so its rect is the only correct source of device pixels.
+static void createSkirmishMapSearchField( void )
+{
+	if( mapList == nullptr || mapSearchEntry != nullptr || TheWindowManager == nullptr )
+		return;
+
+	// NEVER use the file-static `parent` here: Init looks up "SkrimishMapSelectMenuParent"
+	// (transposed) while the .wnd declares "SkirmishMapSelectMenuParent", so `parent` is always
+	// nullptr and every winGetWindowFromId( parent, ... ) in this file silently degrades to a
+	// whole-process search. Parenting a gadget to nullptr would make a top-level window that owns
+	// itself, so its GEM_* messages would go nowhere and the layout would not destroy it.
+	GameWindow *listParent = mapList->winGetParent();
+	if( listParent == nullptr )
+		return;
+
+	Int lx = 0, ly = 0, lw = 0, lh = 0;
+	mapList->winGetPosition( &lx, &ly );		// parent-relative device pixels
+	mapList->winGetSize( &lw, &lh );
+
+	// Int-only arithmetic throughout: TheDisplay->getWidth() is UnsignedInt and Lib/BaseType.h
+	// replaces the min/max macros with template<typename T> T max(T,T), so mixing Int and
+	// UnsignedInt is a hard compile error. CodeGuiScale*/CodeGuiAtLeast are Int-only for this.
+	const Int fieldH = CodeGuiAtLeast( CodeGuiScaleY( 21 ), 21 );
+	const Int gap    = CodeGuiAtLeast( CodeGuiScaleY( 4 ), 3 );
+	const Int clearW = CodeGuiAtLeast( CodeGuiScaleX( 21 ), 21 );
+
+	// Refuse to shrink the list into uselessness on a tiny backbuffer.
+	if( lh <= ( fieldH + gap ) * 2 || lw <= ( clearW + gap ) * 3 )
+		return;
+
+	Int entryX = lx;
+	Int entryW = lw - clearW - gap;
+
+	// A bare box with no caption reads as broken, so label it when there is room to spare.
+	const Int labelW = CodeGuiAtLeast( CodeGuiScaleX( 48 ), 40 );
+	if( entryW - labelW - gap >= CodeGuiAtLeast( CodeGuiScaleX( 120 ), 80 ) )
+	{
+		CodeGuiLabel( listParent, lx, ly, labelW, fieldH, nullptr, L"Search", FALSE, 10 );
+		entryX += labelW + gap;
+		entryW -= labelW + gap;
+	}
+
+	mapSearchEntry = CodeGuiTextEntry( listParent, entryX, ly, entryW, fieldH,
+																		 "SkirmishMapSelectMenu.wnd:TextEntryMapSearch", 32 );
+	if( mapSearchEntry == nullptr )
+		return;
+
+	// The iOS soft keyboard's backspace has not been proven to reach KEY_BACKSPACE, so give the
+	// field a way to empty itself that only needs a tap.
+	mapSearchClear = CodeGuiButton( listParent, lx + lw - clearW, ly, clearW, fieldH,
+																	"SkirmishMapSelectMenu.wnd:ButtonMapSearchClear",
+																	L"X", L"Clear the search" );
+
+	// Take the row's space out of the listbox. winSetSize fires GGM_RESIZED, which
+	// GadgetListBoxSystem handles by repositioning the up/down buttons and the slider and
+	// recomputing the column widths, so a runtime resize is fully supported. Do it before the
+	// first populate so displayHeight is already correct.
+	mapList->winSetPosition( lx, ly + fieldH + gap );
+	mapList->winSetSize( lw, lh - fieldH - gap );
+}
+
+//-------------------------------------------------------------------------------------------------
 /** Initialize the MapSelect menu */
 //-------------------------------------------------------------------------------------------------
 void SkirmishMapSelectMenuInit( WindowLayout *layout, void *userData )
@@ -300,17 +417,20 @@ void SkirmishMapSelectMenuInit( WindowLayout *layout, void *userData )
 	mapList = TheWindowManager->winGetWindowFromId( parent, mapListID );
 	if( mapList )
 	{
+		// GeneralsX @feature Claude 26/07/2026 Reset the search state up front rather than trusting
+		// NullifyControls: winDestroy only queues the windows and GWM_DESTROY is delivered later
+		// from processDestroyList, so a stale mapSearchEntry can still be set when the screen is
+		// reopened in the same frame it was closed.
+		mapSearchEntry = nullptr;
+		mapSearchClear = nullptr;
+		mapSearchFilter.clear();
+		mapSearchUsesSystemMaps = usesSystemMapDir;
+
+		createSkirmishMapSearchField();
+
 		if (TheMapCache)
-			TheMapCache->updateCache();
-		if (usesSystemMapDir)
-		{
-			populateMapListbox( mapList, TRUE, TRUE, TheSkirmishGameInfo->getMap() );
-		}
-		else
-		{
-			populateMapListbox( mapList, FALSE, FALSE, TheSkirmishGameInfo->getMap() );
-			populateMapListboxNoReset( mapList, FALSE, TRUE, TheSkirmishGameInfo->getMap() );
-		}
+			TheMapCache->updateCache();		// the only updateCache; never once per keystroke
+		repopulateSkirmishMapList();
 		mapList->winSetTooltipFunc(mapListTooltipFunc);
 	}
 
@@ -495,17 +615,54 @@ WindowMsgHandledType SkirmishMapSelectMenuSystem( GameWindow *window, UnsignedIn
 			}
 
 		//---------------------------------------------------------------------------------------------
+		// GeneralsX @feature Claude 26/07/2026 Live map search. GadgetTextEntryInput sends
+		// GEM_UPDATE_TEXT to the entry's OWNER on every accepted character and every backspace, and
+		// GEM_EDIT_DONE on Return. gogoGadgetTextEntry set that owner to the window we passed as
+		// parent, which is the layout root — the same window the .wnd bound this callback to. No
+		// .wnd change and no FunctionLexicon row are involved.
+		case GEM_UPDATE_TEXT:
+		case GEM_EDIT_DONE:
+		{
+			GameWindow *control = (GameWindow *)mData1;
+			if( mapSearchEntry != nullptr && control == mapSearchEntry )
+			{
+				mapSearchFilter = GadgetTextEntryGetText( mapSearchEntry );
+				repopulateSkirmishMapList();
+			}
+			break;
+		}
+
+		//---------------------------------------------------------------------------------------------
 		case GBM_SELECTED:
 		{
 			// this isn't fixed yet
 			GameWindow *control = (GameWindow *)mData1;
+
+			// GeneralsX @feature Claude 26/07/2026 The clear button is code-created and carries no
+			// .wnd id, so match it by pointer before anything reads an id off `control`.
+			if ( mapSearchClear != nullptr && control == mapSearchClear )
+			{
+				if ( mapSearchEntry )
+				{
+					GadgetTextEntrySetText( mapSearchEntry, UnicodeString::TheEmptyString );
+					// Hand focus back to the field. GadgetPushButtonInput never takes focus itself
+					// (the winSetFocus calls in it are commented out), but re-asserting it is what
+					// keeps SDL3GameEngine::updateTextInputState holding the iOS keyboard up.
+					TheWindowManager->winSetFocus( mapSearchEntry );
+				}
+				mapSearchFilter.clear();
+				repopulateSkirmishMapList();
+				break;
+			}
+
 			Int controlID = control->winGetWindowId();
 
 			if ( controlID == radioButtonSystemMapsID )
 			{
 				if (TheMapCache)
 					TheMapCache->updateCache();
-				populateMapListbox( mapList, TRUE, TRUE, TheSkirmishGameInfo->getMap() );
+				mapSearchUsesSystemMaps = TRUE;
+				repopulateSkirmishMapList();		// keeps any active search text applied
 				//LANPreferences pref;
 				//pref["UseSystemMapDir"] = "yes";
 				//pref.write();
@@ -514,8 +671,8 @@ WindowMsgHandledType SkirmishMapSelectMenuSystem( GameWindow *window, UnsignedIn
 			{
 				if (TheMapCache)
 					TheMapCache->updateCache();
-				populateMapListbox( mapList, FALSE, FALSE, TheSkirmishGameInfo->getMap() );
-				populateMapListboxNoReset( mapList, FALSE, TRUE, TheSkirmishGameInfo->getMap() );
+				mapSearchUsesSystemMaps = FALSE;
+				repopulateSkirmishMapList();
 				//LANPreferences pref;
 				//pref["UseSystemMapDir"] = "no";
 				//pref.write();

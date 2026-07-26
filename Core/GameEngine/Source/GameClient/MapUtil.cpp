@@ -30,6 +30,7 @@
 // INCLUDES ///////////////////////////////////////////////////////////////////////////////////////
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 #include <cstdint>
+#include <wctype.h>	// GeneralsX @feature towlower, for the case-insensitive map name filter
 
 #include "Common/crc.h"
 #include "Common/FileSystem.h"
@@ -797,6 +798,7 @@ struct MapListBoxData
 		, mapToSelect()
 		, selectionIndex(0) // always select *something*
 		, isMultiplayer(false)
+		, filter()
 	{
 	}
 
@@ -814,7 +816,39 @@ struct MapListBoxData
 	AsciiString mapToSelect;
 	Int selectionIndex;
 	Bool isMultiplayer;
+	UnicodeString filter;
 };
+
+//-------------------------------------------------------------------------------------------------
+// GeneralsX @feature Case-insensitive substring test for the map display-name filter.
+// UnicodeString offers compareNoCase / startsWithNoCase / endsWithNoCase but no case-insensitive
+// substring search (find() takes a single WideChar), and a search box needs substring matching,
+// so it is spelled out here. str() never returns nullptr, it returns a pointer to a null WideChar.
+static Bool mapNameMatchesFilter(const UnicodeString& name, const UnicodeString& filter)
+{
+	if (filter.isEmpty())
+		return TRUE;
+
+	if (name.isEmpty())
+		return FALSE;
+
+	for (const WideChar *hay = name.str(); *hay; ++hay)
+	{
+		const WideChar *h = hay;
+		const WideChar *n = filter.str();
+
+		while (*n && *h && towlower(*h) == towlower(*n))
+		{
+			++h;
+			++n;
+		}
+
+		if (*n == 0)
+			return TRUE;
+	}
+
+	return FALSE;
+}
 
 //-------------------------------------------------------------------------------------------------
 static Bool addMapToMapListbox(
@@ -823,7 +857,8 @@ static Bool addMapToMapListbox(
 	const AsciiString& mapName,
 	const MapMetaData& mapMetaData)
 {
-	const Bool mapOk = mapName.startsWithNoCase(mapDir.str()) && lbData.isMultiplayer == mapMetaData.m_isMultiplayer && !mapMetaData.m_displayName.isEmpty();
+	const Bool mapOk = mapName.startsWithNoCase(mapDir.str()) && lbData.isMultiplayer == mapMetaData.m_isMultiplayer && !mapMetaData.m_displayName.isEmpty()
+		&& mapNameMatchesFilter(mapMetaData.m_displayName, lbData.filter);
 
 	if (mapOk)
 	{
@@ -944,7 +979,8 @@ static Bool addMapCollectionToMapListbox(
 //-------------------------------------------------------------------------------------------------
 /** Load the listbox with all the map files available to play */
 //-------------------------------------------------------------------------------------------------
-Int populateMapListboxNoReset( GameWindow *listbox, Bool useSystemMaps, Bool isMultiplayer, AsciiString mapToSelect )
+Int populateMapListboxNoReset( GameWindow *listbox, Bool useSystemMaps, Bool isMultiplayer, AsciiString mapToSelect,
+	UnicodeString filter )
 {
 	if(!TheMapCache)
 		return -1;
@@ -958,6 +994,7 @@ Int populateMapListboxNoReset( GameWindow *listbox, Bool useSystemMaps, Bool isM
 	lbData.numColumns = GadgetListBoxGetNumColumns( listbox );
 	lbData.mapToSelect = mapToSelect;
 	lbData.isMultiplayer = isMultiplayer;
+	lbData.filter = filter;
 
 	if (lbData.numColumns > 1)
 	{
@@ -1026,7 +1063,8 @@ Int populateMapListboxNoReset( GameWindow *listbox, Bool useSystemMaps, Bool isM
 //-------------------------------------------------------------------------------------------------
 /** Load the listbox with all the map files available to play */
 //-------------------------------------------------------------------------------------------------
-Int populateMapListbox( GameWindow *listbox, Bool useSystemMaps, Bool isMultiplayer, AsciiString mapToSelect )
+Int populateMapListbox( GameWindow *listbox, Bool useSystemMaps, Bool isMultiplayer, AsciiString mapToSelect,
+	UnicodeString filter )
 {
 	if(!TheMapCache)
 		return -1;
@@ -1037,7 +1075,7 @@ Int populateMapListbox( GameWindow *listbox, Bool useSystemMaps, Bool isMultipla
 	// reset the listbox content
 	GadgetListBoxReset( listbox );
 
-	return populateMapListboxNoReset( listbox, useSystemMaps, isMultiplayer, mapToSelect );
+	return populateMapListboxNoReset( listbox, useSystemMaps, isMultiplayer, mapToSelect, filter );
 }
 
 

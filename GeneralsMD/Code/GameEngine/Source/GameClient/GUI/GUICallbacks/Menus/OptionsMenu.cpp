@@ -44,6 +44,8 @@
 #include "Common/version.h"
 
 #include "GameClient/ClientInstance.h"
+#include "GameClient/DebugMenu.h"
+#include "GameClient/GadgetPushButton.h"
 #include "GameClient/GameClient.h"
 #include "GameClient/InGameUI.h"
 #include "GameClient/LookAtXlat.h"
@@ -1529,7 +1531,7 @@ WindowMsgHandledType OptionsMenuSystem( GameWindow *window, UnsignedInt msg,
 	static NameKeyType buttonAccept = NAMEKEY_INVALID;
 	static NameKeyType buttonReplayMenu = NAMEKEY_INVALID;
 	static NameKeyType buttonKeyboardOptionsMenu = NAMEKEY_INVALID;
-	static NameKeyType buttonExtrasMenu = NAMEKEY_INVALID;
+	static NameKeyType buttonDebugMenu = NAMEKEY_INVALID;
 
 	switch( msg )
 	{
@@ -1544,35 +1546,38 @@ WindowMsgHandledType OptionsMenuSystem( GameWindow *window, UnsignedInt msg,
 			buttonAccept = TheNameKeyGenerator->nameToKey( "OptionsMenu.wnd:ButtonAccept" );
 			buttonKeyboardOptionsMenu = TheNameKeyGenerator->nameToKey( "OptionsMenu.wnd:ButtonKeyboardOptions" );
 
-			// GeneralsX @feature fbraz3 08/06/2026 Create Extras button dynamically
-			// (OptionsMenu.wnd in WindowZH.big has no ButtonExtras, so we add it at runtime)
+			// GeneralsX @feature fbraz3 08/06/2026 Create the entry button dynamically
+			// (OptionsMenu.wnd in WindowZH.big has no such button, so we add it at runtime)
 			//
-			// GeneralsX @bugfix Only offer the button when the menu it opens actually
-			// exists. Zero Hour ships no Menus/ExtrasMenu.wnd in any .big, so on a
-			// stock install this button led straight to a null layout and killed the
-			// process. Gating on the file keeps the feature working for data that does
-			// provide the layout, without presenting a dead end to everyone else.
-			if (TheFileSystem != nullptr &&
-			    TheFileSystem->doesFileExist("Window\\Menus\\ExtrasMenu.wnd"))
+			// GeneralsX @feature Claude 26/07/2026 This is now the Debug screen, and the
+			// Extras settings live inside it. No file-existence gate any more: the screen
+			// is built entirely in code (GameClient/DebugMenu.h), so there is nothing that
+			// can be missing from the shipped data and no null layout to walk into.
 			{
 				GameWindow *backBtn = TheWindowManager->winGetWindowFromId(window, buttonBack);
 				if (backBtn) {
 					WinInstanceData instData;
 					instData.init();
 					BitSet(instData.m_style, GWS_PUSH_BUTTON | GWS_MOUSE_TRACK);
-					instData.m_textLabelString = "Extras";
 
-					GameWindow *extrasBtn = TheWindowManager->gogoGadgetPushButton(
+					// GeneralsX @bugfix Claude 26/07/2026 Dropped WIN_STATUS_IMAGE and
+					// m_textLabelString. gogoGadgetPushButton latches the image draw func at
+					// creation, so with no PushButton* mapped image in the shipped data the
+					// button drew nothing at all; and the label string goes through
+					// TheGameText->fetch, which renders "MISSING: 'Extras'" for a literal.
+					// Colours plus GadgetButtonSetText avoid both.
+					GameWindow *dbgBtn = TheWindowManager->gogoGadgetPushButton(
 						backBtn->winGetParent(),
-						WIN_STATUS_ENABLED | WIN_STATUS_IMAGE,
+						WIN_STATUS_ENABLED,
 						320, 528,
 						145, 32,
 						&instData, nullptr, TRUE);
 
-					if (extrasBtn) {
-						buttonExtrasMenu = TheNameKeyGenerator->nameToKey("OptionsMenu.wnd:ButtonExtras");
-						extrasBtn->winSetWindowId(buttonExtrasMenu);
-						extrasBtn->winSetSystemFunc(OptionsMenuSystem);
+					if (dbgBtn) {
+						buttonDebugMenu = TheNameKeyGenerator->nameToKey("OptionsMenu.wnd:ButtonDebug");
+						dbgBtn->winSetWindowId(buttonDebugMenu);
+						dbgBtn->winSetSystemFunc(OptionsMenuSystem);
+						GadgetButtonSetText(dbgBtn, UnicodeString(L"Debug"));
 					}
 				}
 			}
@@ -1695,9 +1700,15 @@ WindowMsgHandledType OptionsMenuSystem( GameWindow *window, UnsignedInt msg,
 			{
 				TheShell->push( "Menus/KeyboardOptionsMenu.wnd" );
 			}
-			else if ( controlID == buttonExtrasMenu )
+			// GeneralsX @feature Claude 26/07/2026 Open the code-built Debug overlay instead of
+			// pushing a shell screen: the same screen has to open over a running match, where
+			// Shell::push would run the underlying menu's Shutdown. The NAMEKEY_INVALID guard is
+			// required - NAMEKEY_INVALID is 0 and so is an un-ID'd window's id, so without it any
+			// unnamed control routing GBM_SELECTED here would open the screen when the button was
+			// never created.
+			else if ( buttonDebugMenu != NAMEKEY_INVALID && controlID == buttonDebugMenu )
 			{
-				TheShell->push( "Menus/ExtrasMenu.wnd" );
+				DebugMenuOpen();
 			}
 			else if(controlID == checkDrawAnchorID )
       {

@@ -137,8 +137,13 @@ extern TechAndSupplyImages TheSupplyAndTechImageLocations;
 // TheSuperHackers @refactor xezon 28/11/2025 Refactors the map list population implementation
 // by breaking it into smaller pieces to make it more maintainable.
 
-Int populateMapListbox( GameWindow *listbox, Bool useSystemMaps, Bool isMultiplayer, AsciiString mapToSelect = AsciiString::TheEmptyString );		/// Read a list of maps from the run directory and fill in the listbox.  Return the selected index
-Int populateMapListboxNoReset( GameWindow *listbox, Bool useSystemMaps, Bool isMultiplayer, AsciiString mapToSelect = AsciiString::TheEmptyString );		/// Read a list of maps from the run directory and fill in the listbox.  Return the selected index
+// GeneralsX @feature Optional display-name filter, so a search box can narrow the list without
+// duplicating any of the grouping, ordering, medal or item-data logic. It is defaulted to empty,
+// which means "match everything", so every existing caller keeps its current behaviour untouched.
+Int populateMapListbox( GameWindow *listbox, Bool useSystemMaps, Bool isMultiplayer, AsciiString mapToSelect = AsciiString::TheEmptyString,
+	UnicodeString filter = UnicodeString::TheEmptyString );		/// Read a list of maps from the run directory and fill in the listbox.  Return the selected index
+Int populateMapListboxNoReset( GameWindow *listbox, Bool useSystemMaps, Bool isMultiplayer, AsciiString mapToSelect = AsciiString::TheEmptyString,
+	UnicodeString filter = UnicodeString::TheEmptyString );		/// Read a list of maps from the run directory and fill in the listbox.  Return the selected index
 Bool isValidMap( AsciiString mapName, Bool isMultiplayer );						/// Validate a map
 Image *getMapPreviewImage( AsciiString mapName );
 AsciiString getDefaultMap( Bool isMultiplayer );											/// Find a valid map

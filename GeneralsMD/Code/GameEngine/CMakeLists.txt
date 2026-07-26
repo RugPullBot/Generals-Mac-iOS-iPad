@@ -140,6 +140,7 @@ set(GAMEENGINE_SRC
 #    Include/GameClient/ChallengeGenerals.h
 #    Include/GameClient/ClientInstance.h
 #    Include/GameClient/ClientRandomValue.h
+    Include/GameClient/CodeGui.h
 #    Include/GameClient/Color.h
     Include/GameClient/CommandXlat.h
     Include/GameClient/ControlBar.h
@@ -147,6 +148,8 @@ set(GAMEENGINE_SRC
     Include/GameClient/ControlBarScheme.h
 #    Include/GameClient/Credits.h
 #    Include/GameClient/DebugDisplay.h
+    Include/GameClient/DebugFloatButton.h
+    Include/GameClient/DebugMenu.h
     Include/GameClient/Diplomacy.h
     Include/GameClient/DisconnectMenu.h
 #    Include/GameClient/Display.h
@@ -696,6 +699,7 @@ set(GAMEENGINE_SRC
 #    Source/GameClient/GraphDraw.cpp
     Source/GameClient/GUI/AnimateWindowManager.cpp
 #    Source/GameClient/GUI/ChallengeGenerals.cpp
+    Source/GameClient/GUI/CodeGui.cpp
     Source/GameClient/GUI/ControlBar/ControlBar.cpp
     Source/GameClient/GUI/ControlBar/ControlBarBeacon.cpp
     Source/GameClient/GUI/ControlBar/ControlBarCommand.cpp
@@ -708,6 +712,7 @@ set(GAMEENGINE_SRC
     Source/GameClient/GUI/ControlBar/ControlBarScheme.cpp
     Source/GameClient/GUI/ControlBar/ControlBarStructureInventory.cpp
     Source/GameClient/GUI/ControlBar/ControlBarUnderConstruction.cpp
+    Source/GameClient/GUI/DebugFloatButton.cpp
     Source/GameClient/GUI/DisconnectMenu/DisconnectMenu.cpp
     Source/GameClient/GUI/EstablishConnectionsMenu/EstablishConnectionsMenu.cpp
 #    Source/GameClient/GUI/Gadget/GadgetCheckBox.cpp
@@ -738,6 +743,7 @@ set(GAMEENGINE_SRC
     Source/GameClient/GUI/GUICallbacks/InGamePopupMessage.cpp
     Source/GameClient/GUI/GUICallbacks/Menus/ChallengeMenu.cpp
     Source/GameClient/GUI/GUICallbacks/Menus/CreditsMenu.cpp
+    Source/GameClient/GUI/GUICallbacks/Menus/DebugMenu.cpp
     Source/GameClient/GUI/GUICallbacks/Menus/DifficultySelect.cpp
     Source/GameClient/GUI/GUICallbacks/Menus/DisconnectWindow.cpp
     Source/GameClient/GUI/GUICallbacks/Menus/DownloadMenu.cpp

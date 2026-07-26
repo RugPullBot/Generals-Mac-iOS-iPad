@@ -51,6 +51,7 @@
 #include "GameClient/ChallengeGenerals.h"
 #include "GameClient/CommandXlat.h"
 #include "GameClient/ControlBar.h"
+#include "GameClient/DebugFloatButton.h"
 #include "GameClient/Diplomacy.h"
 #include "GameClient/Display.h"
 #include "GameClient/DisplayStringManager.h"
@@ -175,6 +176,10 @@ GameClient::~GameClient()
 
 	delete TheIMEManager;
 	TheIMEManager = nullptr;
+
+	// GeneralsX @feature Claude 26/07/2026 Drop the floating Debug overlay while its window manager
+	// is still alive, otherwise its file statics outlive the windows they point at.
+	DebugFloatButtonDestroy();
 
 	// delete window manager
 	delete TheWindowManager;
@@ -444,6 +449,12 @@ void GameClient::init()
 		TheSnowManager->setName("TheSnowManager");
 	}
 
+	// GeneralsX @feature Claude 26/07/2026 Floating Debug button. This position is load-bearing:
+	// TheDisplay, TheFontLibrary, TheMappedImageCollection and TheWindowManager are all up by now,
+	// and GameClient::init runs after GameEngine::init's verifyNameKeyID(2265) checkpoint, so the two
+	// name keys minted here cannot shift any CRC-relevant ordinal. Do not hoist it earlier.
+	DebugFloatButtonCreate();
+
 #ifdef PERF_TIMERS
 	TheGraphDraw = new GraphDraw;
 #endif
@@ -646,6 +657,11 @@ void GameClient::update()
 	{
 		TheWindowManager->UPDATE();
 	}
+
+	// GeneralsX @feature Claude 26/07/2026 Keep-alive for the floating Debug button: rebuilds it if
+	// the display resolution changed, since a runtime-created window gets none of the .wnd parser's
+	// resolution scaling and no layout owns it. Two integer compares in the steady state.
+	DebugFloatButtonUpdate();
 
 	// update the video player
 	{
