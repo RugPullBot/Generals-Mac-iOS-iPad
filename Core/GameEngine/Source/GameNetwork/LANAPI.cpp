@@ -29,6 +29,7 @@
 #include "Common/crc.h"
 #include "Common/GameState.h"
 #include "Common/Registry.h"
+#include "GameNetwork/IPEnumeration.h"
 #include "GameNetwork/LANAPI.h"
 #include "GameNetwork/networkutil.h"
 #include "Common/GlobalData.h"
@@ -42,6 +43,32 @@
 static const UnsignedShort lobbyPort = 8086; ///< This is the UDP port used by all LANAPI communication
 
 AsciiString GetMessageTypeString(UnsignedInt type);
+
+// GeneralsX @bugfix Darwin fails every sendto(255.255.255.255) with EHOSTUNREACH - SO_BROADCAST,
+// SO_DONTROUTE and IP_BOUND_IF make no difference - so a limited broadcast means the LAN lobby
+// never announces itself at all. The subnet-directed broadcast of the interface we are speaking
+// from (192.168.10.255, or 172.20.10.255 on a phone hotspot) is delivered normally, and is the
+// more precise destination anyway on a multi-homed host: it goes out the interface the player
+// actually chose instead of whichever one the default route happens to pick. Falls back to the
+// limited broadcast when the interface cannot supply one, which is what Windows always does.
+static UnsignedInt findBroadcastAddrForIP( UnsignedInt localIP )
+{
+	if (localIP == 0)
+	{
+		return INADDR_BROADCAST;
+	}
+
+	IPEnumeration IPs;
+	for (EnumeratedIP *ip = IPs.getAddresses(); ip != nullptr; ip = ip->getNext())
+	{
+		if (ip->getIP() == localIP && ip->getBroadcastIP() != 0)
+		{
+			return ip->getBroadcastIP();
+		}
+	}
+
+	return INADDR_BROADCAST;
+}
 
 const UnsignedInt LANAPI::s_resendDelta = 10 * 1000;	///< This is how often we announce ourselves to the world
 /*
@@ -81,7 +108,7 @@ LANAPI::LANAPI() : m_transport(nullptr)
 	m_inLobby = true;
 	m_isInLANMenu = TRUE;
 	m_currentGame = nullptr;
-	m_broadcastAddr = INADDR_BROADCAST;
+	m_broadcastAddr = INADDR_BROADCAST;	// replaced by the interface's subnet broadcast once SetLocalIP picks an interface
 	m_directConnectRemoteIP = 0;
 	m_actionTimeout = 5000; // ms
 	m_lastUpdate = 0;
@@ -1273,6 +1300,10 @@ Bool LANAPI::SetLocalIP( UnsignedInt localIP )
 {
 	Bool retval = TRUE;
 	m_localIP = localIP;
+	m_broadcastAddr = findBroadcastAddrForIP(m_localIP);
+
+	DEBUG_LOG(("LANAPI::SetLocalIP - local IP is %d.%d.%d.%d, broadcasting to %d.%d.%d.%d",
+		PRINTF_IP_AS_4_INTS(m_localIP), PRINTF_IP_AS_4_INTS(m_broadcastAddr)));
 
 	m_transport->reset();
 	retval = m_transport->init(m_localIP, lobbyPort);

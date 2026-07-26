@@ -37,19 +37,26 @@ class EnumeratedIP : public MemoryPoolObject
 {
 	MEMORY_POOL_GLUE_WITH_USERLOOKUP_CREATE(EnumeratedIP, "EnumeratedIP")
 public:
-	EnumeratedIP() { m_IPstring = ""; m_next = nullptr; m_IP = 0; }
+	EnumeratedIP() { m_IPstring = ""; m_next = nullptr; m_IP = 0; m_broadcastIP = 0; }
 
 	// Access functions
 	AsciiString getIPstring() { return m_IPstring; }
 	void setIPstring( AsciiString name ) { m_IPstring = name; }
 	UnsignedInt getIP() { return m_IP; }
 	void setIP( UnsignedInt IP ) { m_IP = IP; }
+	// GeneralsX @bugfix The subnet-directed broadcast address of the interface this address
+	// lives on. Darwin rejects a limited broadcast (255.255.255.255) with EHOSTUNREACH, so LAN
+	// discovery has to aim at the subnet instead. 0 means the platform enumeration could not
+	// supply one and the caller should fall back to INADDR_BROADCAST.
+	UnsignedInt getBroadcastIP() { return m_broadcastIP; }
+	void setBroadcastIP( UnsignedInt IP ) { m_broadcastIP = IP; }
 	EnumeratedIP *getNext() { return m_next; }
 	void setNext( EnumeratedIP *next ) { m_next = next; }
 
 protected:
 	AsciiString m_IPstring;
 	UnsignedInt m_IP;
+	UnsignedInt m_broadcastIP;
 	EnumeratedIP *m_next;
 };
 EMPTY_DTOR(EnumeratedIP)
@@ -70,7 +77,7 @@ public:
 	AsciiString getMachineName();			///< Return the Network Neighborhood machine name
 
 protected:
-	void addNewIP( UnsignedByte a, UnsignedByte b, UnsignedByte c, UnsignedByte d );
+	void addNewIP( UnsignedByte a, UnsignedByte b, UnsignedByte c, UnsignedByte d, UnsignedInt broadcastIP = 0 );
 
 	EnumeratedIP *m_IPlist;
 	Bool m_isWinsockInitialized;

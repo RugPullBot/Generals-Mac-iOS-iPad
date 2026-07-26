@@ -598,6 +598,11 @@ Int UDP::AllowBroadcasts(Bool status)
 	retval = setsockopt(fd, SOL_SOCKET, SO_BROADCAST, (char *)&val, sizeof(BOOL));
 	if (retval == 0)
 		return TRUE;
-	else
-		return FALSE;
+
+	// GeneralsX @bugfix No caller has ever looked at this return value, and a socket missing
+	// SO_BROADCAST refuses every discovery send with EACCES - at the LAN screen that is
+	// indistinguishable from an empty network, which is the hardest kind of failure to chase.
+	DEBUG_LOG(("UDP::AllowBroadcasts - setsockopt(SO_BROADCAST, %d) failed with error %d",
+		(Int)status, WSAGetLastError()));
+	return FALSE;
 }

@@ -344,9 +344,6 @@ static Bool ContainsAnyReadableChars(const WideChar* playerName)
 
 void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 {
-	UnsignedInt responseIP = senderIP;	// need this cause the player may or may not be
-																			// in the player list at the sendMessage.
-
 	if (msg->GameToJoin.gameIP != m_localIP)
 	{
 		return; // Not us.  Ignore it.
@@ -493,7 +490,6 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 
 					// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
 					OnPlayerJoin(player, UnicodeString(GetWindowsWideCharFieldAsWchar(msg->name)));
-					responseIP = 0;
 
 					break;
 				}
@@ -518,7 +514,17 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 		reply.GameNotJoined.gameIP = m_localIP;
 		reply.GameNotJoined.playerIP = senderIP;
 	}
-	sendMessage(&reply, responseIP);
+	// GeneralsX @bugfix The accept path used to zero the destination before this send, which drops the
+	// reply into sendMessage's broadcast branch. Darwin refuses a send to 255.255.255.255 with
+	// EHOSTUNREACH, so a game hosted from the LAN lobby - as opposed to Direct Connect, whose branch
+	// unicasts to each occupied slot and therefore happened to work - never put the accept on the wire
+	// at all: the host showed the joiner in a slot while the joiner sat until m_actionTimeout and
+	// reported RET_TIMEOUT. The reply belongs to exactly one peer in any case. It carries that peer's
+	// slot position, every other recipient discards it on the "playerIP == m_localIP" test in
+	// handleJoinAccept, and the rest of the lobby learns about the new player from the MSG_GAME_OPTIONS
+	// slot list pushed immediately below, not from this message. So address it to the requester, the
+	// same destination the deny replies above already use.
+	sendMessage(&reply, senderIP);
 	RequestGameOptions(GenerateGameOptionsString(), true);
 }
 

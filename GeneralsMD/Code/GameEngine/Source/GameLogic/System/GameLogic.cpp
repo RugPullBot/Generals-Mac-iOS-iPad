@@ -459,9 +459,43 @@ void GameLogic::reset()
 	m_pauseMusic = FALSE;
 	m_inputEnabledMemory = TRUE;
 	m_mouseVisibleMemory = TRUE;
-	m_logicTimeScaleEnabledMemory = FALSE;
+	// GeneralsX @bugfix Order matters here, and it was wrong. pauseGameLogic(FALSE) only restores
+	// the logic time scale "if (!paused && m_logicTimeScaleEnabledMemory)", so clearing that flag
+	// on the line ABOVE the call made the restore structurally unreachable. Any match that ended
+	// while paused-with-time-scale-disabled (CommandXlat.cpp:3505 takes that path) therefore left
+	// the pacer with the time scale OFF while the render cap stayed at whatever the match set --
+	// up to 1000 when the game-speed slider was at maximum. Back in the shell,
+	// canUpdateRegularGameLogic() then ticks once per RENDERED frame, so menus and lobby
+	// animations run at roughly 33x. Restore first, then clear.
 	pauseGameLogic(FALSE);
+	m_logicTimeScaleEnabledMemory = FALSE;
 	pauseGameInput(FALSE);
+
+	// Leave the pacer in a defined state rather than inheriting whatever the match happened to
+	// set. reset() runs on the way back to the shell, and the shell has no business running at a
+	// match's frame rate. This mirrors the pairing in GameEngine::init and onNewGame: a render cap
+	// above the base rate REQUIRES the logic time scale, or the simulation runs at render speed.
+	if (TheFramePacer != nullptr && TheGlobalData != nullptr)
+	{
+		const Int shellFps = (TheGlobalData->m_framesPerSecondLimit > 0)
+												 ? TheGlobalData->m_framesPerSecondLimit
+												 : (Int)BaseFps;
+		TheFramePacer->setFramesPerSecondLimit(shellFps);
+
+		// Enable the time scale unconditionally, NOT just when the cap exceeds BaseFps. Keying off
+		// the cap is wrong because the cap is only honoured while the limiter is on: with
+		// m_useFpsLimit false the pacer renders as fast as the panel allows no matter what the cap
+		// says. Observed on an iPad reporting "Max render FPS 30 (limiter off, running uncapped)"
+		// with the shell at 59.9 fps -- a cap of 30 would have failed this test, left the scale off,
+		// and menus kept running at exactly 2.00x.
+		//
+		// The correct invariant is "if the render rate CAN exceed the base rate, the logic must be
+		// decoupled from it", and in the shell that is always worth doing: pinning logic to 30 while
+		// rendering free gives smooth menus at the right speed, and the shell has no lockstep peer
+		// to stay in step with. Cheaper and more robust than trying to keep cap and limiter in sync.
+		TheFramePacer->setLogicTimeScaleFps(BaseFps);
+		TheFramePacer->enableLogicTimeScale(TRUE);
+	}
 
 	setFPMode();
 

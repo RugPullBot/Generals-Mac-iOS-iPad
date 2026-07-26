@@ -34,6 +34,42 @@
 #include <net/if.h>
 #endif
 
+#ifndef _WIN32
+// GeneralsX @bugfix Darwin answers a limited broadcast (255.255.255.255) with EHOSTUNREACH no
+// matter what socket options are set, and Linux binds broadcast reception to the address the
+// datagram was actually sent to, so LAN discovery needs the subnet-directed broadcast of the
+// interface it is speaking from. getifaddrs already carries it; only ifa_addr was being read.
+// Returns 0 when this interface has no meaningful broadcast address - a point-to-point or /32
+// VPN link, where ifa_broadaddr aliases ifa_dstaddr and holds the peer, not a broadcast - which
+// tells the caller to fall back to INADDR_BROADCAST rather than send to a bogus destination.
+static UnsignedInt getInterfaceBroadcast( const struct ifaddrs *ifa, UnsignedInt hostAddr )
+{
+	UnsignedInt broadcastAddr = 0;
+
+	if ((ifa->ifa_flags & IFF_BROADCAST) != 0
+		&& (ifa->ifa_flags & IFF_POINTOPOINT) == 0
+		&& ifa->ifa_broadaddr != nullptr
+		&& ifa->ifa_broadaddr->sa_family == AF_INET)
+	{
+		const sockaddr_in *bcast = reinterpret_cast<const sockaddr_in *>(ifa->ifa_broadaddr);
+		broadcastAddr = ntohl(bcast->sin_addr.s_addr);
+	}
+	else if (ifa->ifa_netmask != nullptr && ifa->ifa_netmask->sa_family == AF_INET)
+	{
+		const sockaddr_in *mask = reinterpret_cast<const sockaddr_in *>(ifa->ifa_netmask);
+		broadcastAddr = hostAddr | ~ntohl(mask->sin_addr.s_addr);
+	}
+
+	// A /32 mask leaves the host address unchanged, and 0.0.0.0 is no address at all.
+	if (broadcastAddr == hostAddr)
+	{
+		broadcastAddr = 0;
+	}
+
+	return broadcastAddr;
+}
+#endif
+
 IPEnumeration::IPEnumeration()
 {
 	m_IPlist = nullptr;
@@ -120,7 +156,8 @@ EnumeratedIP * IPEnumeration::getAddresses()
 				(UnsignedByte)((hostAddr >> 24) & 0xFF),
 				(UnsignedByte)((hostAddr >> 16) & 0xFF),
 				(UnsignedByte)((hostAddr >> 8) & 0xFF),
-				(UnsignedByte)(hostAddr & 0xFF));
+				(UnsignedByte)(hostAddr & 0xFF),
+				getInterfaceBroadcast(ifa, hostAddr));
 		}
 		freeifaddrs(ifaddr);
 
@@ -174,7 +211,7 @@ EnumeratedIP * IPEnumeration::getAddresses()
 	return m_IPlist;
 }
 
-void IPEnumeration::addNewIP( UnsignedByte a, UnsignedByte b, UnsignedByte c, UnsignedByte d )
+void IPEnumeration::addNewIP( UnsignedByte a, UnsignedByte b, UnsignedByte c, UnsignedByte d, UnsignedInt broadcastIP )
 {
 	UnsignedInt ip = AssembleIp(a, b, c, d);
 	for (EnumeratedIP *current = m_IPlist; current != nullptr; current = current->getNext())
@@ -192,8 +229,9 @@ void IPEnumeration::addNewIP( UnsignedByte a, UnsignedByte b, UnsignedByte c, Un
 
 	newIP->setIPstring(str);
 	newIP->setIP(ip);
+	newIP->setBroadcastIP(broadcastIP);
 
-	DEBUG_LOG(("IP: 0x%8.8X (%s)", ip, str.str()));
+	DEBUG_LOG(("IP: 0x%8.8X (%s) broadcast 0x%8.8X", ip, str.str(), broadcastIP));
 
 	// Add the IP to the list in ascending order
 	if (!m_IPlist)

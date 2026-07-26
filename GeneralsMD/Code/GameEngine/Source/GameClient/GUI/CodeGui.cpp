@@ -61,6 +61,10 @@ Int CodeGuiAtLeast( Int value, Int floorValue ) { return value < floorValue ? fl
 //-------------------------------------------------------------------------------------------------
 static const CodeGuiTheme s_theme =
 {
+	// Deliberately translucent -- the owner reviewed the rendered result and prefers seeing the
+	// screen underneath. Do not "fix" this to opaque: the click-through that made the overlay feel
+	// broken was a separate defect (DebugMenuInput returned MSG_IGNORED for mouse messages, so
+	// taps fell through to the tactical view), and translucency was never the cause.
 	/* panelBg */							GameMakeColor(   6,   8,  14, 235 ),
 	/* panelBorder */					GameMakeColor(  90, 110, 170, 255 ),
 	/* buttonBg */						GameMakeColor(  26,  34,  56, 255 ),

@@ -31,6 +31,13 @@
 // INCLUDES ///////////////////////////////////////////////////////////////////////////////////////
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
+// GeneralsX @bugfix Claude 27/07/2026 getDefaultPlayerName() has to tell iOS apart from macOS and
+// read the device model; TARGET_OS_IPHONE is only defined once TargetConditionals.h is included.
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#include <sys/sysctl.h>
+#endif
+
 #include "Lib/BaseType.h"
 #include "Common/crc.h"
 #include "Common/GameEngine.h"
@@ -93,6 +100,107 @@ Bool LANPreferences::loadFromIniFile()
 	return load("Network.ini");
 }
 
+// GeneralsX @bugfix Claude 27/07/2026 A player name carrying ',' ':' or ';' is refused by the host
+// with RET_DUPLICATE_NAME, which reaches the joiner as a misleading "name taken", so a name that
+// the game picks on the user's behalf must never contain them.
+static AsciiString sanitizeDefaultPlayerName(const AsciiString &name)
+{
+	AsciiString clean;
+	for (Int i = 0; i < name.getLength(); ++i)
+	{
+		const char c = name.getCharAt(i);
+		const Bool isRejected = (c == ',' || c == ':' || c == ';' || (UnsignedByte)c < ' ');
+		clean.concat(isRejected ? '-' : c);
+	}
+
+	return clean;
+}
+
+#if defined(__APPLE__)
+// GeneralsX @bugfix Claude 27/07/2026 Returns the device family, "iPad" or "Mac" for example.
+// UIDevice is not reachable from C++ and since iOS 16 only reports the model name anyway, so the
+// sysctl model string is as close to a device name as this platform gets. The key differs per
+// platform: hw.machine is the device on iOS ("iPad14,3") but the cpu on macOS ("arm64"), while
+// hw.model is the device on macOS ("Mac14,2") but an internal board name on iOS ("J317xAP").
+static AsciiString getAppleDeviceFamily()
+{
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+	const char *modelKey = "hw.machine";
+#else
+	const char *modelKey = "hw.model";
+#endif
+
+	char model[64];
+	size_t modelSize = sizeof(model);
+	if (sysctlbyname(modelKey, model, &modelSize, nullptr, 0) != 0)
+	{
+		return AsciiString::TheEmptyString;
+	}
+	model[sizeof(model) - 1] = '\0';
+
+	// Drop the model and revision numbers: "iPad14,3" becomes "iPad".
+	AsciiString family;
+	for (const char *c = model; *c != '\0'; ++c)
+	{
+		if ((*c < 'a' || *c > 'z') && (*c < 'A' || *c > 'Z'))
+			break;
+
+		family.concat(*c);
+	}
+
+	return family;
+}
+#endif
+
+// GeneralsX @bugfix Claude 27/07/2026 iOS has no user facing host name - gethostname() answers
+// "localhost" on every device - so the machine name cannot serve as the default player name there.
+// Fall back to the device family plus a per device number, because a fixed literal would make the
+// second iOS device on the network look like a name clash to the host.
+static AsciiString getDefaultPlayerName()
+{
+	IPEnumeration IPs;
+	AsciiString machineName = IPs.getMachineName();
+
+	// Keep the leading label only, because gethostname() can answer in the mDNS "<host>.local" form
+	// and the g_lanPlayerNameLength limit would otherwise cut the host name off mid word.
+	AsciiString hostLabel;
+	machineName.nextToken(&hostLabel, ".");
+	hostLabel.trim();
+
+	if (hostLabel.isNotEmpty()
+		&& hostLabel.compareNoCase("localhost") != 0
+		&& hostLabel.compareNoCase("unknown") != 0)
+	{
+		return sanitizeDefaultPlayerName(hostLabel);
+	}
+
+	AsciiString family;
+#if defined(__APPLE__)
+	family = getAppleDeviceFamily();
+#endif
+	if (family.isEmpty())
+	{
+		family = "Player";
+	}
+	// Leave room for the "-1234" suffix so the whole name survives the g_lanPlayerNameLength limit
+	// instead of being cut where the number is.
+	family.truncateTo(g_lanPlayerNameLength - 5);
+
+	// Salt with the home directory, which is the per install container path on iOS. That keeps two
+	// devices of the same model from defaulting to the same name.
+	CRC crc;
+	crc.computeCRC(family.str(), family.getLength());
+	const char *home = getenv("HOME");
+	if (home != nullptr)
+	{
+		crc.computeCRC(home, (Int)strlen(home));
+	}
+
+	AsciiString name;
+	name.format("%s-%04u", family.str(), crc.get() % 10000u);
+	return sanitizeDefaultPlayerName(name);
+}
+
 UnicodeString LANPreferences::getUserName()
 {
 	UnicodeString ret;
@@ -117,9 +225,8 @@ UnicodeString LANPreferences::getUserName()
 		return ret;
 	}
 
-	// Use machine name as default user name.
-	IPEnumeration IPs;
-	ret.translate(IPs.getMachineName());
+	// Use the machine or device name as default user name.
+	ret.translate(getDefaultPlayerName());
 	return ret;
 }
 

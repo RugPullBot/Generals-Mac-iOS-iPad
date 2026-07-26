@@ -26,6 +26,7 @@
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
 #include "Common/crc.h"
+#include "GameClient/ClientInstance.h"
 #include "GameNetwork/Transport.h"
 #include "GameNetwork/NetworkInterface.h"
 
@@ -110,15 +111,33 @@ Bool Transport::init( UnsignedInt ip, UnsignedShort port )
 	if (!m_udpsock)
 		return false;
 
+	// GeneralsX @bugfix A socket bound to a single unicast address is never handed a datagram
+	// addressed to the subnet broadcast, so the LAN lobby could announce itself but never hear
+	// anyone answer: the game browser stayed empty and joins timed out. Bind the wildcard
+	// address so broadcast discovery is actually delivered. Only the bind moves - `ip` remains
+	// the game's identity everywhere it matters (LANAPI::AmIHost, the senderIP == m_localIP
+	// self-filter in LANAPI::update, slot matching), and moving that would break the lobby far
+	// worse. Windows hands broadcasts to a specifically-bound socket already, so it keeps the
+	// address it asked for. Multi-instance clients are the case that still needs the narrow
+	// bind: they share port 8086 and are told apart only by a per-instance 127.x address, so a
+	// wildcard bind would fail the second instance with EADDRINUSE.
+	UnsignedInt bindIP = ip;
+#ifndef _WIN32
+	if (!rts::ClientInstance::isMultiInstance())
+	{
+		bindIP = INADDR_ANY;
+	}
+#endif
+
 	int retval = -1;
 	time_t now = timeGetTime();
 	while ((retval != 0) && ((timeGetTime() - now) < 1000)) {
-		retval = m_udpsock->Bind(ip, port);
+		retval = m_udpsock->Bind(bindIP, port);
 	}
 
 	if (retval != 0) {
-		DEBUG_CRASH(("Could not bind to 0x%8.8X:%d", ip, port));
-		DEBUG_LOG(("Transport::init - Failure to bind socket with error code %x", retval));
+		DEBUG_CRASH(("Could not bind to 0x%8.8X:%d", bindIP, port));
+		DEBUG_LOG(("Transport::init - Failure to bind socket 0x%8.8X:%d (local IP 0x%8.8X) with error code %x", bindIP, port, ip, retval));
 		delete m_udpsock;
 		m_udpsock = nullptr;
 		return false;
