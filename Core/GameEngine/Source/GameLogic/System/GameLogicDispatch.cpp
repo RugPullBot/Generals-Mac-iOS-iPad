@@ -895,6 +895,32 @@ bool GameLogic::onNewGame(MAYBE_UNUSED GameMessage *msg)
 		DEBUG_LOG(("Setting max FPS limit to %d FPS", maxFPS));
 		TheFramePacer->setFramesPerSecondLimit(maxFPS);
 		TheWritableGlobalData->m_useFpsLimit = true;
+
+		// GeneralsX @bugfix Raising the render cap without switching the logic time scale on
+		// leaves canUpdateRegularGameLogic() ticking the simulation once per rendered frame, so
+		// the whole game runs at render speed instead of merely looking smoother.
+		// GameEngine::init pairs these two calls; this path set the limit and never touched the
+		// scale. It matters most in solo play, because reallyDoStart() turns a game-speed slider
+		// at maximum into maxFPS = 1000 -- so "unlimited" made the match run absurdly fast rather
+		// than unlocking the frame rate, which is why the slider was effectively unusable above 60.
+		//
+		// Network games are deliberately excluded. FramePacer::getActualLogicTimeScaleFps defers
+		// to TheNetwork->getFrameRate() while a network game exists, and CommandXlat's
+		// changeLogicTimeScale refuses outright for the same reason; the peers agree the logic
+		// rate between themselves and the client must not second-guess it.
+		if (TheNetwork == nullptr)
+		{
+			if (maxFPS > BaseFps)
+			{
+				TheFramePacer->setLogicTimeScaleFps(BaseFps);
+				TheFramePacer->enableLogicTimeScale(TRUE);
+			}
+			else
+			{
+				// Starting a capped game after an uncapped one must not inherit the scale.
+				TheFramePacer->enableLogicTimeScale(FALSE);
+			}
+		}
 	}
 
 	// prepare for new game
