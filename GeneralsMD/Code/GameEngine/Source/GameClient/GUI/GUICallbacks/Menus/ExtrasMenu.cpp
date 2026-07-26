@@ -108,6 +108,19 @@ void ExtrasMenuInit(WindowLayout *layout, void *userData)
 		Int val = (Int)(pref->getTerrainDrawDistanceScale() * 100.0f);
 		GadgetSliderSetPosition(sliderDrawDistance, val);
 	}
+
+	// GeneralsX @bugfix This screen was created hidden and never shown, so opening
+	// Extras rendered nothing at all. Every other menu in this directory unhides its
+	// layout and takes focus here — compare KeyboardOptionsMenuInit, which is pushed
+	// from the very same Options handler three lines away. Without the focus call the
+	// screen also never receives GWM_CHAR, so ExtrasMenuInput's ESC handler was dead
+	// too, leaving no way out even by keyboard.
+	layout->hide( FALSE );
+
+	GameWindow *parent = TheWindowManager->winGetWindowFromId(
+		nullptr, TheNameKeyGenerator->nameToKey( "ExtrasMenu.wnd:ExtrasMenuParent" ) );
+	if( parent != nullptr )
+		TheWindowManager->winSetFocus( parent );
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -128,6 +141,15 @@ void ExtrasMenuShutdown(WindowLayout *layout, void *userData)
 		delete pref;
 		pref = nullptr;
 	}
+
+	// GeneralsX @bugfix The Back button did nothing because this never told the shell
+	// the shutdown had finished. Shell::pop() hides the screen and then waits for
+	// shutdownComplete() before unlinking it and revealing what is underneath; 29 of
+	// the 30 menus in this directory make that call and this one did not, so the pop
+	// stalled permanently and the player was stuck on the screen. Both the Back and
+	// Accept paths route through here, so this fixes both.
+	layout->hide( TRUE );
+	TheShell->shutdownComplete( layout );
 }
 
 //-------------------------------------------------------------------------------------------------
