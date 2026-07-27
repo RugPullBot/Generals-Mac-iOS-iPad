@@ -313,7 +313,24 @@ void INI::prepFile( AsciiString filename, INILoadType loadType )
 	}
 
 	// open the file
-	File* file = TheFileSystem->openFile(filename.str(), File::READ);
+	// GeneralsX @build Claude 27/07/2026 WINDOWS HOOK for the SimID data identity.
+	// PROVABLY A NO-OP ON APPLE: File::BINARY is 0x40 (file.h) and LocalFile::open
+	// selects fopen mode "rb" instead of "r" (LocalFile.cpp, `mode = binary ? "rb" : "r"`),
+	// and on POSIX those are the same call - so the existing macOS/iOS m_iniCRC, and
+	// therefore the retail checkpoints 0xA1E7F8E6 (GeneralsMD GameEngine.cpp:581) and
+	// 0x6209AF6E (:660) in Zero Hour and 0x2E876341 (Generals GameEngine.cpp:501) /
+	// 0xD9A74E13 (:538) in Generals, plus the verifyNameKeyID calls behind them, are
+	// bit-for-bit preserved. Archive-backed files are unaffected either way:
+	// FileSystem::openFile passes a hardcoded access of 0 to TheArchiveFileSystem->openFile.
+	// On MSVC this stops text mode collapsing CRLF and stops readEntireAndClose below
+	// short-reading relative to m_readBufferUsed = file->size(), which would walk the
+	// parse loop off the end of the heap buffer.
+	//
+	// STILL UNSOLVED FOR WINDOWS: the INI file LIST is not canonicalised, so identical
+	// INI content still produces a different m_iniCRC on Windows than on Apple. See the
+	// windows-hook note for FileSystem::getFileListInDirectory - that fix moves the
+	// macOS CRC and must land together with re-deriving all four retail checkpoints.
+	File* file = TheFileSystem->openFile(filename.str(), File::READ | File::BINARY);
 	if( file == nullptr )
 	{
 

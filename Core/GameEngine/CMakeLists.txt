@@ -28,6 +28,7 @@ set(GAMEENGINE_SRC
 #    Include/Common/DamageFX.h
 #    Include/Common/DataChunk.h
     Include/Common/Debug.h
+    Include/Common/Diagnostic/SimulationId.h
     Include/Common/Diagnostic/SimulationMathCrc.h
 #    Include/Common/Dict.h
 #    Include/Common/Directory.h
@@ -572,6 +573,7 @@ set(GAMEENGINE_SRC
     Source/Common/crc.cpp
     Source/Common/CRCDebug.cpp
 #    Source/Common/DamageFX.cpp
+    Source/Common/Diagnostic/SimulationId.cpp
     Source/Common/Diagnostic/SimulationMathCrc.cpp
 #    Source/Common/Dict.cpp
 #    Source/Common/DiscreteCircle.cpp

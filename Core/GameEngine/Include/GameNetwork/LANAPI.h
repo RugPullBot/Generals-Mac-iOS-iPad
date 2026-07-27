@@ -33,6 +33,10 @@
 #include "GameNetwork/NetworkDefs.h"
 #include "GameNetwork/LANPlayer.h"
 #include "GameNetwork/LANGameInfo.h"
+// GeneralsX @feature Claude 27/07/2026 SimIdVerdict for the LANAPI members below.
+// No cycle: SimulationId.h only forward-declares struct SimIdWire, which is defined
+// further down this file inside the pack(1) region.
+#include "Common/Diagnostic/SimulationId.h"
 
 //static const Int g_lanPlayerNameLength = 20;
 static const Int g_lanPlayerNameLength = 12; // reduced length because of game option length
@@ -150,7 +154,32 @@ typedef uint16_t WideCharWindows;
 void CopyWcharToWindowsWideChar( WideCharWindows *dest, const WideChar *src, UnsignedInt len );
 wchar_t *GetWindowsWideCharAsWchar( WideCharWindows *src );
 
+// GeneralsX @feature Claude 27/07/2026 Presence sentinel for the join-time compatibility
+// identity. Written only when the local SimulationId is valid, so an engine that never
+// finished init can never present a comparable identity, and an old peer's uninitialised
+// stack bytes have a 2^-32 chance of reading as valid. Bump the last digit ('SID2')
+// whenever SimIdWire or the engineID recipe changes, so old and new builds refuse each
+// other with a distinct message instead of comparing incomparable hashes.
+const UnsignedInt SIMID_WIRE_TAG = 0x53494431u; // 'SID1'
+
 #pragma pack(push, 1)
+
+// GeneralsX @feature Claude 27/07/2026 On-the-wire form of the SimID. Lives inside the
+// pack(1) region so its 36 bytes carry no padding on any target, and so SimulationId.cpp
+// (which includes this header) and the LAN handlers agree on the layout byte for byte.
+struct SimIdWire
+{
+	UnsignedInt tag;         ///< SIMID_WIRE_TAG, or garbage/zero from a pre-SimID peer
+	UnsignedInt revision;    ///< GitRevision, informational only
+	UnsignedInt engineID;    ///< tier1
+	UnsignedInt sourceID;    ///< tier1, 0 == unknown provenance
+	UnsignedInt dataID;      ///< tier1
+	UnsignedInt ordinalID;   ///< tier1
+	UnsignedInt parseID;     ///< tier2 warn
+	UnsignedInt assetID;     ///< tier2 warn
+	UnsignedInt platformID;  ///< tier2 warn
+};
+
 struct LANMessage
 {
 	enum Type				          ///< What kind of message are we?
@@ -224,6 +253,12 @@ struct LANMessage
 			UnsignedInt exeCRC;
 			UnsignedInt iniCRC;
 			char serial[g_maxSerialLength];
+			// GeneralsX @feature Claude 27/07/2026 Appended into the union's dead bytes, so
+			// sizeof(LANMessage) is unchanged (GameInfo remains the largest arm). That is
+			// load-bearing: sendMessage always queues sizeof(LANMessage) and the receive path
+			// only tests length > 0 before blind-casting the buffer, so any size change would
+			// make a new build read its new fields out of memory past a short old-peer datagram.
+			SimIdWire sim;
 		} GameToJoin;
 
 		// GameJoined is sent with JOIN_ACCEPT
@@ -233,6 +268,10 @@ struct LANMessage
 			UnsignedInt gameIP;
 			UnsignedInt playerIP;
 			Int slotPosition;
+			// GeneralsX @feature Claude 27/07/2026 The host's identity, so the joiner can verify
+			// it independently - the host may be the un-upgraded machine. Appended last, so
+			// GameJoined.playerIP keeps its offset (72) that handleJoinDeny relies on.
+			SimIdWire sim;
 		} GameJoined;
 
 		// GameNotJoined is sent with JOIN_DENY
@@ -242,6 +281,10 @@ struct LANMessage
 			UnsignedInt gameIP;
 			UnsignedInt playerIP;
 			LANAPIInterface::ReturnType reason;
+			// GeneralsX @feature Claude 27/07/2026 The host's identity travels on the deny too, so
+			// the joiner's failure dialog can name the specific field that differs rather than
+			// just saying "version mismatch". Appended last for the same offset reason as above.
+			SimIdWire sim;
 		} GameNotJoined;
 
 		// Accept is sent with SET_ACCEPT
@@ -392,8 +435,31 @@ protected:
 
 	Bool								m_isActive;			///< is the game currently active?
 
+	// GeneralsX @feature Claude 27/07/2026 Join-time compatibility identity of the last peer
+	// we heard from, kept for the failure dialog (OnGameJoin's signature is part of the
+	// LANAPIInterface virtual contract and cannot take extra parameters). All are initialised
+	// in the constructor so no path can render stack garbage as a version number.
+	// m_remoteSimValid is not derivable from m_remoteSimVerdict: SimIdCompare returns
+	// SIMID_LOCAL_INVALID before it ever looks at the peer's tag, so on that path the
+	// verdict cannot tell you whether the peer sent a real identity or not. Currently
+	// written but not yet read - it exists so the dialog can distinguish "they are old"
+	// from "we are broken and never asked them".
+	Bool								m_remoteSimValid;
+	SimIdWire						m_remoteSim;
+	SimIdVerdict				m_remoteSimVerdict;
+	// Tier2 warnings cannot be printed at the moment they are discovered on the joining
+	// side: LANAPI::OnChat routes to listboxChatWindowLanGame, which LanGameOptionsMenuInit
+	// does not assign until Shell::update() instantiates the layout, so anything emitted from
+	// handleJoinAccept is dropped by OnChat's `if (chatWindow == nullptr) return;`. Stash and
+	// flush from update() once the listbox exists.
+	UnsignedInt					m_pendingSimWarnFlags;
+
 protected:
 	void sendMessage(LANMessage *msg, UnsignedInt ip = 0); // Convenience function
+	// GeneralsX @feature Claude 27/07/2026 Emits the stashed tier2 warnings once the LAN game
+	// options chat listbox exists; no-op while it does not. Defined in LANAPIhandlers.cpp,
+	// which already has the LANAPICallbacks.h declaration of that listbox.
+	void flushPendingSimWarnings();
 	void removePlayer(LANPlayer *player);
 	void removeGame(LANGameInfo *game);
 	void addPlayer(LANPlayer *player);

@@ -236,6 +236,60 @@ void ArchiveFileSystem::loadMods()
 	}
 }
 
+// GeneralsX @feature Claude 27/07/2026 Join-time SimID compatibility check - tier2 warn signal.
+// The map is keyed by the RAW insertion name, not by basename - loadMods inserts
+// TheGlobalData->m_modBIG verbatim above and loadBigFilesFromDirectory inserts
+// directory-prefixed names - so iterating the map in its own order and hashing
+// basenames would leave the ORDER path-dependent even though the VALUES are not. Two
+// installs holding the same archives under different roots would then produce
+// different fingerprints and warn forever. Collect, sort, then hash.
+//
+// Basename-only and lowercased so an install path can never itself cause a mismatch.
+// Both separators are stripped: '/' for Apple, '\\' for a future Windows build and for
+// the archive-internal form. Sizes are deliberately not hashed - that would make a
+// re-packaged iOS archive a permanent difference.
+UnsignedInt ArchiveFileSystem::computeMountedArchiveFingerprint() const
+{
+	UnsignedInt hash = 2166136261u;
+	try
+	{
+		std::vector<std::string> names;
+		names.reserve(m_archiveFileMap.size());
+
+		for (ArchiveFileMap::const_iterator it = m_archiveFileMap.begin(); it != m_archiveFileMap.end(); ++it)
+		{
+			std::string s(it->first.str() ? it->first.str() : "");
+			const size_t slash = s.find_last_of("/\\");
+			if (slash != std::string::npos)
+				s = s.substr(slash + 1);
+			for (size_t i = 0; i < s.size(); ++i)
+				s[i] = (char)tolower((unsigned char)s[i]);
+			names.push_back(s);
+		}
+
+		std::sort(names.begin(), names.end());
+
+		for (size_t n = 0; n < names.size(); ++n)
+		{
+			const std::string &s = names[n];
+			for (size_t i = 0; i < s.size(); ++i)
+			{
+				hash ^= (unsigned char)s[i];
+				hash *= 16777619u;
+			}
+			hash ^= (unsigned char)'\n';
+			hash *= 16777619u;
+		}
+	}
+	catch (...)
+	{
+		// Must not throw: the caller runs inside GameEngine::init's try block, and any
+		// escape would reach catch (...) and abort startup.
+		return 0u;
+	}
+	return hash;
+}
+
 Bool ArchiveFileSystem::doesFileExist(const Char *filename, FileInstance instance) const
 {
 	ArchivedDirectoryInfoResult result = const_cast<ArchiveFileSystem*>(this)->getArchivedDirectoryInfo(filename);

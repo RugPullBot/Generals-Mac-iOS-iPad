@@ -53,6 +53,7 @@
 #include "Common/NameKeyGenerator.h"
 #include "Common/ModuleFactory.h"
 #include "Common/Debug.h"
+#include "Common/Diagnostic/SimulationId.h"
 #include "Common/GameState.h"
 #include "Common/GameStateMap.h"
 #include "Common/Science.h"
@@ -397,6 +398,14 @@ void GameEngine::init()
 		XferCRC xferCRC;
 		xferCRC.open("lightCRC");
 
+		// GeneralsX @feature Claude 27/07/2026
+		// Ordinal checkpoints for the join-time compatibility identity. Declared here so
+		// they are in scope at both the capture points below and at the snapshot near
+		// xferCRC.close(). Zero-initialised: if a future edit ever moves the ScienceStore
+		// init out from between them, the identity degrades to a constant rather than to
+		// uninitialised garbage that would differ between two identical builds.
+		UnsignedInt nameKeyBeforeScience = 0, nameKeyAfterScience = 0;
+
 		initSubsystem(TheLocalFileSystem, "TheLocalFileSystem", createLocalFileSystem(), nullptr);
 		initSubsystem(TheArchiveFileSystem, "TheArchiveFileSystem", createArchiveFileSystem(), nullptr); // this MUST come after TheLocalFileSystem creation
 
@@ -502,7 +511,27 @@ void GameEngine::init()
 			TheNameKeyGenerator->verifyNameKeyID(1);
 #endif
 
+		// GeneralsX @feature Claude 27/07/2026
+		// Brackets exactly the ordinal range that goes on the wire. ScienceType IS a
+		// NameKey ordinal (Science.cpp), ControlBarCommandProcessing puts it on the wire
+		// as a raw integer in MSG_PURCHASE_SCIENCE, and GameLogicDispatch casts the
+		// received integer straight back to a ScienceType - so if these two counts differ
+		// the peers are already interpreting the same integer as different sciences.
+		// Read-only accessor, so this does not perturb xferCRC or the retail checkpoint
+		// immediately above.
+		nameKeyBeforeScience = TheNameKeyGenerator->getNextID();
+
 		initSubsystem(TheScienceStore,"TheScienceStore", MSGNEW("GameEngineSubsystem") ScienceStore(), &xferCRC, "Data\\INI\\Default\\Science", "Data\\INI\\Science");
+
+		// GeneralsX @feature Claude 27/07/2026 Closing bracket of the science ordinal range.
+		// Must stay immediately after the ScienceStore init: every key minted later (notably
+		// by TheFunctionLexicon and TheModuleFactory, which intern hundreds of GameClient and
+		// GameEngineDevice names the source digest deliberately excludes) has to stay OUT of
+		// the identity, or a pure client-side table edit would hard-deny a join. This is also
+		// why the second retail checkpoint further down (0xD9A74E13 / verifyNameKeyID(1586),
+		// just before TheUpgradeCenter) is deliberately NOT used as the closing bracket.
+		nameKeyAfterScience = TheNameKeyGenerator->getNextID();
+
 		initSubsystem(TheMultiplayerSettings,"TheMultiplayerSettings", MSGNEW("GameEngineSubsystem") MultiplayerSettings(), &xferCRC, "Data\\INI\\Default\\Multiplayer", "Data\\INI\\Multiplayer");
 		initSubsystem(TheTerrainTypes,"TheTerrainTypes", MSGNEW("GameEngineSubsystem") TerrainTypeCollection(), &xferCRC, "Data\\INI\\Default\\Terrain", "Data\\INI\\Terrain");
 		initSubsystem(TheTerrainRoads,"TheTerrainRoads", MSGNEW("GameEngineSubsystem") TerrainRoadCollection(), &xferCRC, "Data\\INI\\Default\\Roads", "Data\\INI\\Roads");
@@ -572,6 +601,30 @@ void GameEngine::init()
 		xferCRC.close();
 		TheWritableGlobalData->m_iniCRC = xferCRC.getCRC();
 		DEBUG_LOG(("INI CRC is 0x%8.8X", TheGlobalData->m_iniCRC));
+
+		// GeneralsX @feature Claude 27/07/2026
+		// Snapshot the join-time compatibility identity. The m_iniCRC assignment directly
+		// above is the only point at which m_iniCRC is final, and it is before any network
+		// subsystem exists (TheLAN is constructed later, from LanLobbyMenu), so the identity
+		// is always populated before a join can occur and never changes afterwards.
+		// Snapshotting rather than reading live also immunises it against the RTS_DEBUG
+		// backdoor in WOLLobbyMenu that overwrites m_exeCRC and m_iniCRC with a remote peer's
+		// advertised values. TheArchiveFileSystem->loadMods() has already run above, so the
+		// archive fingerprint includes mods. SagePatch.ini keeps its nullptr xfer and is
+		// deliberately not part of this - it is a per-device client-tuning file, and an iPad
+		// and a desktop legitimately want different camera limits.
+		// initialize() and computeMountedArchiveFingerprint() both fail closed and never
+		// throw, so neither can reach the catch (...) that wraps GameEngine::init.
+		//
+		// This must exist in the Generals build too, not just Zero Hour: SimulationId and the
+		// LANAPI files are Core sources compiled into both binaries, so a Generals build that
+		// skipped this would advertise valid == false and refuse every join and every host.
+		SimulationId::Inputs simIn;
+		simIn.iniCRC               = TheGlobalData->m_iniCRC;
+		simIn.nameKeyBeforeScience = nameKeyBeforeScience;
+		simIn.nameKeyAfterScience  = nameKeyAfterScience;
+		simIn.archiveFingerprint   = TheArchiveFileSystem->computeMountedArchiveFingerprint();
+		SimulationId::initialize( simIn );
 
 		TheSubsystemList->postProcessLoadAll();
 

@@ -113,6 +113,13 @@ public:
 	void verifyNameKeyID(UnsignedInt expectedNextID) const;
 #endif
 
+	// GeneralsX @feature Claude 27/07/2026
+	// Next ordinal to be handed out. Captured immediately before and immediately after
+	// initSubsystem(TheScienceStore, ...) in GameEngine::init and folded into the
+	// join-time compatibility identity. Deliberately OUTSIDE the RETAIL_COMPATIBLE_CRC
+	// guard above, unlike verifyNameKeyID: the identity has to work in every configuration.
+	UnsignedInt getNextID() const { return m_nextID; }
+
 private:
 
 	enum

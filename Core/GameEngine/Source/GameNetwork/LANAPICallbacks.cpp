@@ -31,6 +31,8 @@
 
 #include <cstdint>
 #include "strtok_r.h"
+// GeneralsX @feature Claude 27/07/2026 SimID join-time compatibility diagnostics.
+#include "Common/Diagnostic/SimulationId.h"
 #include "Common/GameEngine.h"
 #include "Common/GlobalData.h"
 #include "Common/MessageStream.h"
@@ -527,8 +529,105 @@ void LANAPI::OnGameJoin( ReturnType ret, LANGameInfo *theGame )
 	{
 		/// @todo: re-enable lobby controls?  Error msgs?
 		UnicodeString title, body;
-		title = TheGameText->fetch("LAN:JoinFailed");
-		body = getErrorStringFromReturnType(ret);
+		title = TheGameText->FETCH_OR_SUBSTITUTE("LAN:JoinFailed", L"Could not join the game");
+
+		// GeneralsX @feature Claude 27/07/2026 SimID join-failure diagnostics.
+		// getErrorStringFromReturnType is deliberately NOT changed. Its RET_CRC_MISMATCH
+		// branch fetches LAN:ErrorCRCMismatch, whose retail text is a mid-game desync notice
+		// that tells the reader their opponent may have cheated and points them at the Ignore
+		// List - the worst possible copy for "these two builds are not the same build".
+		// Every string below ships an English substitute via FETCH_OR_SUBSTITUTE, so the
+		// feature needs no modified CSF and nothing can render as "MISSING: 'label'".
+		if (ret == RET_CRC_MISMATCH)
+		{
+			const SimulationId &me = SimulationId::get();
+			switch (m_remoteSimVerdict)
+			{
+			case SIMID_LOCAL_INVALID:
+				body = TheGameText->FETCH_OR_SUBSTITUTE("LAN:SimIdLocalInvalid",
+					L"This copy of the game did not finish loading its data and cannot join or host a network game. Restart the game.");
+				break;
+
+			case SIMID_PEER_SILENT:
+				// No revision numbers here: on a pre-SimID peer that field is whatever
+				// happened to be in the sender's uninitialised stack, so quoting it would
+				// be worse than saying nothing.
+				body = TheGameText->FETCH_OR_SUBSTITUTE("LAN:SimIdPeerSilent",
+					L"Version mismatch, not a network problem. The other machine is running an older build of GeneralsX that cannot report its build identity. Update both machines to the same build.");
+				break;
+
+			case SIMID_ENGINE_DIFFERS:
+			case SIMID_SOURCE_DIFFERS:
+			case SIMID_DATA_DIFFERS:
+			case SIMID_ORDINAL_DIFFERS:
+			{
+				// Lead with the revision comparison so the reader immediately knows WHICH
+				// machine has to move, then append what actually differs.
+				if (m_remoteSim.revision == 0 || me.revision == 0)
+					body = TheGameText->FETCH_OR_SUBSTITUTE("LAN:SimIdWhoIsOldUnknown",
+						L"Version mismatch, not a network problem. One of these machines was built without git information, so I cannot tell which is newer. ");
+				else if (me.revision < m_remoteSim.revision)
+					body = TheGameText->FETCH_OR_SUBSTITUTE_FORMAT("LAN:SimIdWhoIsOldMine",
+						L"Version mismatch, not a network problem. This device is build %d, the other machine is build %d - THIS device is out of date. ",
+						(Int)me.revision, (Int)m_remoteSim.revision);
+				else if (me.revision > m_remoteSim.revision)
+					body = TheGameText->FETCH_OR_SUBSTITUTE_FORMAT("LAN:SimIdWhoIsOldTheirs",
+						L"Version mismatch, not a network problem. The other machine is build %d and this device is build %d - THEY need to update. ",
+						(Int)m_remoteSim.revision, (Int)me.revision);
+				else
+					body = TheGameText->FETCH_OR_SUBSTITUTE_FORMAT("LAN:SimIdWhoIsOldEqual",
+						L"Version mismatch, not a network problem. Both machines report build %d, so one of you has local changes or a different branch. ",
+						(Int)me.revision);
+
+				UnicodeString detail;
+				switch (m_remoteSimVerdict)
+				{
+				case SIMID_ENGINE_DIFFERS:
+					detail = TheGameText->FETCH_OR_SUBSTITUTE_FORMAT("LAN:SimIdEngine",
+						L"The two builds are configured differently (engine %08X vs %08X). Check that both were built the same way - same build type, same SAGE_USE_GLM setting, both 64-bit.",
+						me.engineID, m_remoteSim.engineID);
+					break;
+				case SIMID_SOURCE_DIFFERS:
+					detail = TheGameText->FETCH_OR_SUBSTITUTE_FORMAT("LAN:SimIdSource",
+						L"The simulation source code or build configuration differs (source %08X vs %08X). One of you has changes under GameLogic, Common, GameNetwork, WWMath, Core/Libraries/Include or the cmake configuration that the other does not.",
+						me.sourceID, m_remoteSim.sourceID);
+					break;
+				case SIMID_DATA_DIFFERS:
+					detail = TheGameText->FETCH_OR_SUBSTITUTE_FORMAT("LAN:SimIdData",
+						L"The game data differs (data %08X vs %08X). One of you has different INI files or a mod loaded.",
+						me.dataID, m_remoteSim.dataID);
+					break;
+				default:
+					detail = TheGameText->FETCH_OR_SUBSTITUTE("LAN:SimIdOrdinal",
+						L"The internal science IDs differ between these builds. This always desyncs; the builds are not interchangeable.");
+					break;
+				}
+				body.concat(detail);
+				break;
+			}
+
+			default:
+				// Belt and braces: no verdict value, present or future, may ever produce an
+				// empty dialog. SIMID_OK lands here too - it means the mismatch came from
+				// the retail CRC path rather than from SimID.
+				body = getErrorStringFromReturnType(ret);
+				break;
+			}
+		}
+		else if (ret == RET_TIMEOUT)
+		{
+			// handleRequestJoin returns silently on any request whose GameToJoin.gameIP does
+			// not match, so a genuinely incompatible peer very often presents as a timeout
+			// rather than as an explicit refusal.
+			body = getErrorStringFromReturnType(ret);
+			body.concat(TheGameText->FETCH_OR_SUBSTITUTE("LAN:SimIdTimeoutHint",
+				L" If the host is running a different build of GeneralsX it may be ignoring this request entirely."));
+		}
+		else
+		{
+			body = getErrorStringFromReturnType(ret);
+		}
+
 		MessageBoxOk(title, body, nullptr);
 	}
 }
@@ -614,6 +713,17 @@ void LANAPI::OnGameCreate( ReturnType ret )
 				break;
 			case RET_BUSY:
 				GadgetListBoxAddEntryText(listboxChatWindow, TheGameText->fetch("LAN:ErrorBusy"), chatSystemColor, -1, -1);
+				break;
+			// GeneralsX @feature Claude 27/07/2026 RequestGameCreate's SimID pre-flight guard
+			// reports RET_CRC_MISMATCH. Without this case it falls through to default: and
+			// prints LAN:ErrorUnknown, which tells the user nothing actionable. Hosting is
+			// always initiated from the LAN lobby, so listboxChatWindow is live here - the
+			// enclosing if(m_inLobby) has already established that.
+			case RET_CRC_MISMATCH:
+				GadgetListBoxAddEntryText(listboxChatWindow,
+					TheGameText->FETCH_OR_SUBSTITUTE("LAN:SimIdLocalInvalid",
+						L"This copy of the game did not finish loading its data and cannot join or host a network game. Restart the game."),
+					chatSystemColor, -1, -1);
 				break;
 			default:
 				GadgetListBoxAddEntryText(listboxChatWindow, TheGameText->fetch("LAN:ErrorUnknown"), chatSystemColor, -1, -1);
@@ -772,3 +882,10 @@ void LANAPI::OnChat( UnicodeString player, UnsignedInt ip, UnicodeString message
 	}
 	GadgetListBoxSetItemData(chatWindow, (void *)-1, index);
 }
+
+// GeneralsX @feature Claude 27/07/2026 The deferred tier2 SimID warnings that OnChat above
+// cannot print at discovery time (listboxChatWindowLanGame does not exist until Shell::update()
+// instantiates the layout) are emitted by LANAPI::flushPendingSimWarnings, which lives in
+// LANAPIhandlers.cpp next to PostSimWarningsToChat. Keeping it there is deliberate: the host
+// prints the same four warnings inline from handleRequestJoin, and one shared emitter is the
+// only way the two wordings cannot drift apart.

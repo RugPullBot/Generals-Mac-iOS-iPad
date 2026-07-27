@@ -31,6 +31,7 @@
 #include "Common/Registry.h"
 #include "GameNetwork/IPEnumeration.h"
 #include "GameNetwork/LANAPI.h"
+#include "Common/Diagnostic/SimulationId.h"
 #include "GameNetwork/networkutil.h"
 #include "Common/GlobalData.h"
 #include "Common/RandomValue.h"
@@ -114,6 +115,13 @@ LANAPI::LANAPI() : m_transport(nullptr)
 	m_lastUpdate = 0;
 	m_transport = new Transport;
 	m_isActive = TRUE;
+
+	// GeneralsX @feature Claude 27/07/2026 Uninitialised members would otherwise be formatted
+	// into the user-facing join-failure dialog as if they were a real peer's version numbers.
+	m_remoteSimValid = FALSE;
+	memset(&m_remoteSim, 0, sizeof(m_remoteSim));
+	m_remoteSimVerdict = SIMID_OK;
+	m_pendingSimWarnFlags = 0;
 }
 
 LANAPI::~LANAPI()
@@ -346,6 +354,13 @@ extern Bool LANbuttonPushed;
 extern Bool LANSocketErrorDetected;
 void LANAPI::update()
 {
+	// GeneralsX @feature Claude 27/07/2026 Deferred tier2 warnings for the joining side. Must
+	// run before both early returns: LANbuttonPushed stays TRUE from OnGameJoin(RET_OK) until
+	// LanGameOptionsMenuInit clears it, and the 200 ms throttle below returns just as early -
+	// that window is exactly when the chat listbox comes into existence.
+	if (m_pendingSimWarnFlags != 0)
+		flushPendingSimWarnings();
+
 	if(LANbuttonPushed)
 		return;
 	static const UnsignedInt LANAPIUpdateDelay = 200;
@@ -660,12 +675,32 @@ void LANAPI::RequestGameJoin( LANGameInfo *game, UnsignedInt ip /* = 0 */ )
 		return;
 	}
 
+	// GeneralsX @feature Claude 27/07/2026 Set the verdict BEFORE calling OnGameJoin, or the
+	// dialog's switch has no matching case and will either render empty or quote a stale peer
+	// that was never contacted. This fires when GameEngine::init threw between the XferCRC and
+	// the m_iniCRC assignment and was swallowed by the handlers at the bottom of init.
+	if (!SimulationId::get().valid)
+	{
+		m_remoteSimValid = FALSE;
+		memset(&m_remoteSim, 0, sizeof(m_remoteSim));
+		m_remoteSimVerdict = SIMID_LOCAL_INVALID;
+		OnGameJoin( RET_CRC_MISMATCH, nullptr );
+		return;
+	}
+
 	LANMessage msg;
+	// GeneralsX @feature Claude 27/07/2026 The appended sim field must not ship stack garbage.
+	// This memset must stay HERE and must NOT be hoisted into fillInLANMessage: this function
+	// and RequestLocations both set messageType BEFORE calling fillInLANMessage, and
+	// MSG_REQUEST_LOCATIONS is enum value 0, so a memset in there would silently rewrite every
+	// join request into a location request.
+	memset(&msg, 0, sizeof(msg));
 	msg.messageType = LANMessage::MSG_REQUEST_JOIN;
 	fillInLANMessage( &msg );
 	msg.GameToJoin.gameIP = game->getSlot(0)->getIP();
 	msg.GameToJoin.exeCRC = TheGlobalData->m_exeCRC;
 	msg.GameToJoin.iniCRC = TheGlobalData->m_iniCRC;
+	SimulationId::get().toWire( msg.GameToJoin.sim );
 
 	AsciiString s;
 	GetStringFromRegistry("\\ergc", "", s);
@@ -899,6 +934,20 @@ void LANAPI::RequestGameCreate( UnicodeString gameName, Bool isDirectConnect )
 {
 	// No games of the same name should exist...  Ignore that for now.
 	/// @todo: make sure LAN games with identical names don't crash things like in RA2.
+
+	// GeneralsX @feature Claude 27/07/2026 Same pre-flight as RequestGameJoin - a
+	// half-initialised engine must not be able to host either, and the verdict must be set
+	// before the callback. Without this, a build whose identity never initialised can still
+	// host: it writes tag=0, every joiner sees SIMID_PEER_SILENT and is told the HOST is too
+	// old, which is the wrong diagnosis.
+	if (!SimulationId::get().valid)
+	{
+		m_remoteSimValid = FALSE;
+		memset(&m_remoteSim, 0, sizeof(m_remoteSim));
+		m_remoteSimVerdict = SIMID_LOCAL_INVALID;
+		OnGameCreate(LANAPIInterface::RET_CRC_MISMATCH);
+		return;
+	}
 
 	if ((!m_inLobby || m_currentGame) && !isDirectConnect)
 	{

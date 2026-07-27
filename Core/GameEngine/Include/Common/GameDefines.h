@@ -118,6 +118,18 @@
 #define RETAIL_COMPATIBLE_AIGROUP (1) // AIGroup logic is expected to be CRC compatible with retail Generals 1.08, Zero Hour 1.04
 #endif
 
+// GeneralsX @feature Claude 27/07/2026
+// Manual escape hatch for the join-time compatibility identity (SimID).
+// The automatic source digest is the primary detector and you should normally never
+// touch this; bump it only when you knowingly change simulation behaviour from a file
+// OUTSIDE the digested paths (Core/GameEngine's Common, GameLogic and GameNetwork
+// trees, Core/Libraries/Include, WWMath, the two game trees' equivalents, and the
+// build configuration under cmake/, triplets/, CMakePresets.json and the vcpkg files).
+// Nothing depends on you remembering to bump it.
+#ifndef SIMID_EPOCH
+#define SIMID_EPOCH (1)
+#endif
+
 #ifndef ENABLE_GAMETEXT_SUBSTITUTES
 #define ENABLE_GAMETEXT_SUBSTITUTES (1) // The code can provide substitute texts when labels and strings are missing in the STR or CSF translation file
 #endif

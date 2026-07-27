@@ -49,6 +49,16 @@ if (NOT IS_VS6_BUILD)
         add_compile_options(/MP)
         # Enforce strict __cplusplus version
         add_compile_options(/Zc:__cplusplus)
+        # GeneralsX @build Claude 27/07/2026 SimID WINDOWS HOOK - not exercised by any
+        # current target (every Windows preset in CMakePresets.json is 32-bit Win32 and
+        # no x64 preset exists yet). Nothing in the SimID identity measures
+        # floating-point behaviour at runtime, so the flags have to be right at build
+        # time. The non-MSVC arm below already carries -ffp-contract=off; without this,
+        # an MSVC build could contract multiply-adds that Apple clang does not and
+        # desync while reporting a fully matching engineID. This is a prerequisite for
+        # the Windows port, not a fix that makes cross-play work - see platformID in
+        # Core/GameEngine/Source/Common/Diagnostic/SimulationId.cpp.
+        add_compile_options(/fp:precise)
     else()
         add_compile_options(-Wsuggest-override)
         # GeneralsX @build fbraz 03/05/2026 Disable FMA contraction to avoid

@@ -37,6 +37,7 @@
 #include "Common/QuotedPrintable.h"
 #include "Common/UserPreferences.h"
 #include "GameNetwork/LANAPI.h"
+#include "Common/Diagnostic/SimulationId.h"
 #include "GameNetwork/LANAPICallbacks.h"
 #include "GameClient/MapUtil.h"
 
@@ -342,6 +343,32 @@ static Bool ContainsAnyReadableChars(const WideChar* playerName)
 	return false;
 }
 
+// GeneralsX @feature Claude 27/07/2026 Tier2 SimID warnings. Both peers see the same wording
+// from one place: the host emits them inline from handleRequestJoin, the joiner has to defer
+// its copy until its chat listbox exists (see LANAPI::flushPendingSimWarnings below), and the
+// two must not be allowed to drift apart. These are warnings, not denials - the pair is still
+// allowed to play, so the text says what to suspect if the game does desync.
+static void PostSimWarningsToChat( LANAPI *lan, UnsignedInt warn, UnsignedInt localIP )
+{
+	if (warn & SIMID_WARN_ASSET)
+		lan->OnChat(UnicodeString::TheEmptyString, localIP,
+			UnicodeString(L"Warning: the other machine has a different set of game archives loaded (mods?). Changed unit models can desync."),
+			LANAPIInterface::LANCHAT_SYSTEM);
+	if (warn & SIMID_WARN_PARSE)
+		lan->OnChat(UnicodeString::TheEmptyString, localIP,
+			UnicodeString(L"Warning: the other machine parses INI decimal numbers differently. If the game desyncs, this is the likely cause."),
+			LANAPIInterface::LANCHAT_SYSTEM);
+	if (warn & SIMID_WARN_PLATFORM)
+		lan->OnChat(UnicodeString::TheEmptyString, localIP,
+			UnicodeString(L"Warning: the other machine uses a different system math library. Cross-platform play has not been validated."),
+			LANAPIInterface::LANCHAT_SYSTEM);
+	// Release-visible on purpose: a degraded detector must never be mistaken for a passing check.
+	if (warn & SIMID_WARN_SOURCE_UNKNOWN)
+		lan->OnChat(UnicodeString::TheEmptyString, localIP,
+			UnicodeString(L"Warning: one of these builds has no git information, so its source code could not be compared."),
+			LANAPIInterface::LANCHAT_SYSTEM);
+}
+
 void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 {
 	if (msg->GameToJoin.gameIP != m_localIP)
@@ -349,6 +376,13 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 		return; // Not us.  Ignore it.
 	}
 	LANMessage reply;
+	// GeneralsX @feature Claude 27/07/2026 `reply` carries every deny AND the accept in this
+	// function, and only the RET_GAME_FULL branch fills GameNotJoined.gameName. The
+	// RET_GAME_STARTED branch, both RET_DUPLICATE_NAME branches and the RET_GAME_GONE branch
+	// all shipped ~34 bytes of uninitialised stack that handleJoinDeny then feeds straight into
+	// LookupGame(). Zeroing here is a prerequisite for the appended sim field being trustworthy
+	// and independently fixes an existing stack leak onto the LAN broadcast.
+	memset(&reply, 0, sizeof(reply));
 	fillInLANMessage( &reply );
 	if (!m_inLobby && m_currentGame && m_currentGame->getIP(0) == m_localIP)
 	{
@@ -365,28 +399,63 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 			int player;
 			Bool canJoin = true;
 
-			// see if the CRCs match
-#if defined(RTS_DEBUG)
-			if (TheGlobalData->m_netMinPlayers > 0) {
-#endif
-// TheSuperHackers @todo Enable CRC checks!
-#if !RTS_ZEROHOUR
-			if (msg->GameToJoin.iniCRC != TheGlobalData->m_iniCRC ||
-					msg->GameToJoin.exeCRC != TheGlobalData->m_exeCRC)
+			// GeneralsX @feature Claude 27/07/2026 Join-time build/data compatibility check.
+			// Unconditional on purpose: both retail guards had to go, not just the inner one.
+			// RTS_ZEROHOUR=1 compiled the inner CRC check away entirely in Zero Hour, and the
+			// outer RTS_DEBUG plus m_netMinPlayers guard left it skipped in every release build,
+			// so in practice nothing was ever compared. TheGlobalData->m_iniCRC/m_exeCRC are no
+			// longer consulted here - the immutable snapshot in SimulationId is what is compared,
+			// because the RTS_DEBUG backdoor in WOLLobbyMenu can overwrite the GlobalData copies
+			// with a remote peer's advertised values. The joiner still sends the legacy
+			// exeCRC/iniCRC fields untouched, for old peers that only understand those.
+			// This runs before the player-name validation and the open-slot scan below, so the
+			// build check is the first gate.
+			const SimIdVerdict simVerdict = SimIdCompare( msg->GameToJoin.sim );
+			if (simVerdict != SIMID_OK)
 			{
-				DEBUG_LOG(("LANAPI::handleRequestJoin - join denied because of CRC mismatch. CRCs are them/us INI:%X/%X exe:%X/%X",
-					msg->GameToJoin.iniCRC, TheGlobalData->m_iniCRC,
-					msg->GameToJoin.exeCRC, TheGlobalData->m_exeCRC));
-				reply.messageType = LANMessage::MSG_JOIN_DENY;
-				reply.GameNotJoined.reason = LANAPIInterface::RET_CRC_MISMATCH;
-				reply.GameNotJoined.gameIP = m_localIP;
+				reply.messageType            = LANMessage::MSG_JOIN_DENY;
+				reply.GameNotJoined.reason   = LANAPIInterface::RET_CRC_MISMATCH;
+				reply.GameNotJoined.gameIP   = m_localIP;
 				reply.GameNotJoined.playerIP = senderIP;
+				CopyWcharToWindowsWideChar(reply.GameNotJoined.gameName, m_currentGame->getName().str(),
+					ARRAY_SIZE(reply.GameNotJoined.gameName) - 1);
+				// Give the joiner our identity so it can name the specific field too.
+				SimulationId::get().toWire( reply.GameNotJoined.sim );
 				canJoin = false;
+
+				// Release-visible, unlike the DEBUG_LOG this replaces. The host is already inside
+				// LanGameOptionsMenu with the listbox live, so this reaches the screen.
+				const SimulationId &me = SimulationId::get();
+				UnicodeString sysMsg;
+				if (simVerdict == SIMID_LOCAL_INVALID)
+				{
+					// Blaming the joiner here would be the wrong diagnosis - we are the broken
+					// machine. RequestGameCreate refuses to host in this state, so reaching this
+					// means a future caller found a way to host without going through it.
+					sysMsg.format(L"%ls could not join: THIS machine did not finish loading its data and cannot host a network game. Restart the game.",
+						GetWindowsWideCharFieldAsWchar(msg->name));
+				}
+				else if (simVerdict == SIMID_PEER_SILENT)
+				{
+					sysMsg.format(L"%ls could not join: their build is too old to report a build identity.",
+						GetWindowsWideCharFieldAsWchar(msg->name));
+				}
+				else
+				{
+					sysMsg.format(L"%ls could not join: build mismatch. Theirs build %u / engine %08X / source %08X / data %08X / ordinal %08X; yours build %u / %08X / %08X / %08X / %08X.",
+						GetWindowsWideCharFieldAsWchar(msg->name),
+						msg->GameToJoin.sim.revision, msg->GameToJoin.sim.engineID,
+						msg->GameToJoin.sim.sourceID,  msg->GameToJoin.sim.dataID,
+						msg->GameToJoin.sim.ordinalID,
+						me.revision, me.engineID, me.sourceID, me.dataID, me.ordinalID);
+				}
+				OnChat(UnicodeString::TheEmptyString, m_localIP, sysMsg, LANAPIInterface::LANCHAT_SYSTEM);
 			}
-#endif
-#if defined(RTS_DEBUG)
-			}
-#endif
+			// The tier2 warnings for a peer that passes are NOT emitted here: this function is
+			// reached by every MSG_REQUEST_JOIN datagram, including duplicates and requests that
+			// are about to be refused for a duplicate name or a full game. They are emitted from
+			// the JOIN_ACCEPT branch below instead, so they appear exactly once, and only about
+			// a peer that actually got into a slot.
 
 // TheSuperHackers @tweak Disables the duplicate serial check
 #if 0
@@ -477,6 +546,10 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 					reply.GameJoined.slotPosition = player;
 					reply.GameJoined.gameIP = m_localIP;
 					reply.GameJoined.playerIP = senderIP;
+					// GeneralsX @feature Claude 27/07/2026 The accept carries the host's identity so
+					// the joiner can verify it too - the host is the machine that may be stale, and
+					// its own check above only proves the joiner matches whatever the host is.
+					SimulationId::get().toWire( reply.GameJoined.sim );
 
 					LANGameSlot newSlot;
 					// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
@@ -490,6 +563,12 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 
 					// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
 					OnPlayerJoin(player, UnicodeString(GetWindowsWideCharFieldAsWchar(msg->name)));
+
+					// GeneralsX @feature Claude 27/07/2026 Host side tier2 warnings, posted only
+					// now that the peer is genuinely in a slot. The LanGameOptionsMenu listbox is
+					// already live on this side, so unlike the joiner (see flushPendingSimWarnings)
+					// these can go straight out.
+					PostSimWarningsToChat( this, SimIdWarnFlags( msg->GameToJoin.sim ), m_localIP );
 
 					break;
 				}
@@ -534,6 +613,31 @@ void LANAPI::handleJoinAccept( LANMessage *msg, UnsignedInt senderIP )
 	{
 		if (m_pendingAction == ACT_JOIN) // Are we trying to join?
 		{
+			// GeneralsX @feature Claude 27/07/2026 The host may be the un-upgraded machine:
+			// handleRequestJoin's only pre-SimID check was wrapped in #if defined(RTS_DEBUG) and
+			// #if !RTS_ZEROHOUR, so a stale host accepts happily and the desync surfaces around
+			// frame 100. Verify the host's identity here, independently. Runs before LookupGame
+			// below, so no game state is mutated on a rejected accept.
+			m_remoteSim        = msg->GameJoined.sim;
+			m_remoteSimValid   = (m_remoteSim.tag == SIMID_WIRE_TAG);
+			m_remoteSimVerdict = SimIdCompare( m_remoteSim );
+			if (m_remoteSimVerdict != SIMID_OK)
+			{
+				// Free the slot the host already reserved rather than leaving a ghost player.
+				LANMessage leaveMsg;
+				memset(&leaveMsg, 0, sizeof(leaveMsg));
+				leaveMsg.messageType = LANMessage::MSG_REQUEST_GAME_LEAVE;
+				fillInLANMessage( &leaveMsg );
+				CopyWcharToWindowsWideChar(leaveMsg.PlayerInfo.playerName, m_name.str(),
+					ARRAY_SIZE(leaveMsg.PlayerInfo.playerName) - 1);
+				sendMessage(&leaveMsg, senderIP);
+				m_pendingAction = ACT_NONE;
+				m_expiration = 0;
+				OnGameJoin(RET_CRC_MISMATCH, nullptr);
+				return;
+			}
+			m_pendingSimWarnFlags = SimIdWarnFlags( m_remoteSim );
+
 			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
 			m_currentGame = LookupGame(UnicodeString(GetWindowsWideCharFieldAsWchar(msg->GameJoined.gameName)));
 
@@ -579,12 +683,51 @@ void LANAPI::handleJoinAccept( LANMessage *msg, UnsignedInt senderIP )
 	}
 }
 
+// GeneralsX @feature Claude 27/07/2026 Joining side only. handleJoinAccept discovers the tier2
+// warnings, but cannot print them: OnChat routes to listboxChatWindowLanGame once we are in a
+// game setup, and LanGameOptionsMenuInit does not assign that window until Shell::update()
+// instantiates the layout - Shell::push only records m_pendingPush - so anything emitted from
+// handleJoinAccept is dropped by OnChat's `if (chatWindow == nullptr) return;`. LANAPI::update()
+// calls this every tick while flags are pending. Lives in this file rather than LANAPI.cpp
+// because LANAPICallbacks.h, which declares the listbox, is already included here.
+void LANAPI::flushPendingSimWarnings()
+{
+	if (m_pendingSimWarnFlags == 0)
+		return;
+
+	// Nothing left to attach the message to: the join was abandoned before the menu appeared,
+	// we are back in the lobby, or the match has already started. Drop the warnings rather than
+	// let them surface later in an unrelated game.
+	if (m_inLobby || m_currentGame == nullptr || m_currentGame->isGameInProgress())
+	{
+		m_pendingSimWarnFlags = 0;
+		return;
+	}
+
+	// Keep waiting rather than lose the message.
+	if (listboxChatWindowLanGame == nullptr)
+		return;
+
+	const UnsignedInt warn = m_pendingSimWarnFlags;
+	m_pendingSimWarnFlags = 0;   // cleared first, so nothing OnChat does can print these twice
+	PostSimWarningsToChat( this, warn, m_localIP );
+}
+
 void LANAPI::handleJoinDeny( LANMessage *msg, UnsignedInt senderIP )
 {
 	if (msg->GameJoined.playerIP == m_localIP) // Is it for us?
 	{
 		if (m_pendingAction == ACT_JOIN) // Are we trying to join?
 		{
+			// GeneralsX @feature Claude 27/07/2026 OnGameJoin cannot take extra parameters without
+			// changing the LANAPIInterface virtual contract, so stash the host's identity here for
+			// the failure dialog to format. Note this function reads msg->GameJoined.playerIP out
+			// of a JOIN_DENY, which works because both union arms keep playerIP at the same
+			// offset - the appended sim field is last in each arm and does not disturb that.
+			m_remoteSim        = msg->GameNotJoined.sim;
+			m_remoteSimValid   = (m_remoteSim.tag == SIMID_WIRE_TAG);
+			m_remoteSimVerdict = SimIdCompare( m_remoteSim );
+
 			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
 			OnGameJoin(msg->GameNotJoined.reason, LookupGame(UnicodeString(GetWindowsWideCharFieldAsWchar(msg->GameNotJoined.gameName))));
 			m_pendingAction = ACT_NONE;

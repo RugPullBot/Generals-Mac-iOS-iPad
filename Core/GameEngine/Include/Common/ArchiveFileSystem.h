@@ -148,6 +148,11 @@ public:
 
 	void loadMods();
 
+	// GeneralsX @feature Claude 27/07/2026
+	/// FNV-1a over the SORTED, lowercased basenames of every mounted archive.
+	/// Tier2 warn-only signal for the SimID join check. No file I/O.
+	UnsignedInt computeMountedArchiveFingerprint() const;
+
 	ArchivedDirectoryInfo* friend_getArchivedDirectoryInfo(const Char* directory);
 
 protected:
