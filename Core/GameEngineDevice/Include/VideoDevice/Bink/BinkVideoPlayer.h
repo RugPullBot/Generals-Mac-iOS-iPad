@@ -48,10 +48,22 @@
 #include "GameClient/VideoPlayer.h"
 // GeneralsX @TheSuperHackers @build BenderAI 11/02/2026 Stub Bink for Phase 1 (proprietary SDK)
 // TODO Phase 3: Replace with FFmpeg or skip videos gracefully
-// #include "bink.h"
-
+//
+// GeneralsX @bugfix Claude 27/07/2026 Take the real header back on Windows.
+//
+// Commenting out bink.h left HBINK as a pointer to an incomplete type, which is enough to declare
+// the class but not to compile BinkVideoPlayer.cpp - BinkOpen, BinkDoFrame, BINKSURFACE32 and the
+// rest all vanish with it (33 errors). Zero Hour's copy of this header, three directories away,
+// never lost the include, which is why only Generals broke. The header is supplied by the
+// bink-sdk-stub the root CMakeLists now fetches on Windows, so this resolves; off Windows there is
+// no bink.h to find and the forward declaration is all the non-Windows build ever needs, since it
+// builds BinkVideoPlayerStub.cpp instead of BinkVideoPlayer.cpp.
+#ifdef _WIN32
+#include "bink.h"
+#else
 // Bink type stubs (proprietary SDK not available)
 typedef struct BINK* HBINK;
+#endif
 
 //----------------------------------------------------------------------------
 //           Forward References
