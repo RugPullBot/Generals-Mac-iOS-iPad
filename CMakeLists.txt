@@ -131,8 +131,20 @@ endif()
 # SagePatch (casual QoL extras: screenshot, cursor lock, brightness, etc.)
 # Must be added before the game targets so sage_patch target exists when we
 # declare the dependency below.
-if(RTS_BUILD_OPTION_SAGE_PATCH)
+# GeneralsX @bugfix Claude 27/07/2026 Also require SDL3, instead of letting SagePatch FATAL_ERROR.
+#
+# SagePatch's own first statement is `if(NOT SAGE_USE_SDL3) message(FATAL_ERROR ...)`, and it hooks
+# events through DYLD __interpose on macOS and LD_PRELOAD+dlsym on Linux - neither of which exists
+# on Windows, where the engine uses the native Win32 device layer rather than SDL3. Since
+# SAGE_USE_SDL3 defaults OFF (cmake/config-build.cmake:14) and no Windows preset turns it on, a
+# Windows configure hit that FATAL_ERROR and stopped before reaching any real target.
+#
+# Guarding here rather than relaxing SagePatch's own check: the check is correct, SagePatch really
+# does need SDL3. What was wrong is offering it on a configuration that cannot satisfy that.
+if(RTS_BUILD_OPTION_SAGE_PATCH AND SAGE_USE_SDL3)
     add_subdirectory(Patches/SagePatch)
+elseif(RTS_BUILD_OPTION_SAGE_PATCH)
+    message(STATUS "SagePatch skipped: needs SAGE_USE_SDL3=ON (not available on this configuration)")
 endif()
 
 # Add main build targets
