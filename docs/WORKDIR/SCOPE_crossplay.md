@@ -38,7 +38,7 @@ on a wiped tree, observing 16 concurrent cl.exe, to prove the objects were genui
 NOT covered by this: the mod tools (cb.bat forces RTS_BUILD_*_TOOLS=OFF; never configured at x64),
 and nothing has ever been RUN. See blocker 2.
 
-### 2. Windows must RUN  *(BOOTS — verified 2026-07-27)*
+### 2. Windows must RUN  *(DONE — boots AND plays a skirmish, verified 2026-07-27. Audio/video still stubbed.)*
 **It boots.** `generalszh.exe` initialises all 42 engine subsystems in order — through `TheGameClient`,
 `TheAI`, `TheGameLogic`, `TheGameState` — past `W3DDisplay::init()` (windowed), into the shell UI and
 `ShellMenuScheme`, with 0 error lines and DXVK actively rendering (`Device : NVIDIA GeForce RTX 5090`,
@@ -75,8 +75,18 @@ script inside that same session — you cannot see a session-1 window from an SS
 **The windowed pillarbox reproduces on Windows too** — the scene is rendered inset with a border,
 matching the known open problem. Workaround remains fullscreen, or `-win -xres 1600 -yres 900`.
 
-**NOT yet proven: loads a map, plays a skirmish.** Boot is not gameplay. That is the remaining part
-of this blocker — drive the menu at the console, or fix `-autoload`.
+**Skirmish plays — test ladder step 3 is DONE.** Driven end to end by synthetic input in session 1:
+main menu -> SOLO PLAY -> SKIRMISH -> PLAY GAME. The match runs, with the clock at `00:00:28.22`,
+a GLA command centre and infantry on a fully textured map, `$10000` credits, command bar and radar
+populated, 30 FPS, working set climbing 756 -> 845 MB as the map loaded. Screenshots at every step.
+
+The menu is fully interactive: the skirmish setup screen lists the real host name `r0se-DESKTOP`,
+loads the map cache and renders a map preview (`[RANK] AKAs Magic ZH v1 map (2)`).
+
+Technique worth keeping — a session-1 window is invisible from an SSH session, so both the clicking
+and the screenshotting must happen inside a script that `schtasks /it` runs in that session. Desktop
+is 1920x1080 there; `SystemInformation.VirtualScreen` queried from session 0 misreports it as
+1024x768, so do not compute click coordinates from an SSH-side query.
 
 Still open within this blocker — audio and video are stubbed BY CONSTRUCTION, so the Windows build
 currently boots **silent, with no intro movies**: the build links `miles-sdk-stub` and `bink-sdk-stub`,
@@ -179,7 +189,7 @@ Two peers has worked. Three has never been tried, and the lobby keys on IP.
 
 1. Mac <-> Mac (two instances, different ports) — cheapest SimID smoke test
 2. Mac <-> iPad — known-good baseline; proves nothing regressed
-3. Windows solo — boots, loads a map, plays a skirmish
+3. Windows solo — boots, loads a map, plays a skirmish  *(DONE 2026-07-27)*
 4. Mac <-> Windows — the real unknown. Play to a CRC interval, then to completion
 5. All three — the goal
 6. A full match with no desync
