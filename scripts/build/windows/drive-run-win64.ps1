@@ -47,9 +47,40 @@ public class Mouse {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+
     public static RECT Window(IntPtr h) { RECT r; GetWindowRect(h, out r); return r; }
     public static POINT Cursor() { POINT p; GetCursorPos(out p); return p; }
     public static IntPtr Foreground() { return GetForegroundWindow(); }
+
+    // Force the game window to the foreground and REPORT whether it worked.
+    //
+    // A bare SetForegroundWindow from a background process is silently ignored by Windows' focus
+    // steal prevention - it returns without error and nothing moves. When that happens every
+    // subsequent click lands on whatever window is actually on top, and the run fails in a way that
+    // looks like the game ignored the input. Observed for real: an entire join sequence was typed
+    // into a browser sitting over the game, and the only evidence was a screenshot showing a web
+    // page where the lobby should have been.
+    //
+    // Attaching our input queue to the current foreground window's thread lifts the restriction for
+    // the duration of the call, which is the long-standing workaround.
+    public static bool ForceForeground(IntPtr h) {
+        IntPtr fg = GetForegroundWindow();
+        if (fg == h) return true;
+        uint fgThread = GetWindowThreadProcessId(fg, IntPtr.Zero);
+        uint myThread = GetCurrentThreadId();
+        if (fgThread != myThread) AttachThreadInput(myThread, fgThread, true);
+        ShowWindow(h, 9);          // SW_RESTORE, in case it is minimised
+        BringWindowToTop(h);
+        SetForegroundWindow(h);
+        if (fgThread != myThread) AttachThreadInput(myThread, fgThread, false);
+        System.Threading.Thread.Sleep(400);
+        return GetForegroundWindow() == h;
+    }
 
     // Reports where the cursor ACTUALLY is at each stage of a click, plus which window owns
     // focus. If the game captures or re-centres the cursor, SetCursorPos will not stick and the
@@ -250,6 +281,15 @@ if ($Clicks -ne "") {
         $s = [Mouse]::ToScreen($hwnd, [int]$xy[0], [int]$xy[1])
         if ($hoverOnly) { [Mouse]::SetCursorPos($s.X, $s.Y) | Out-Null }
         else {
+            # Re-assert focus before EVERY click and abort loudly if it cannot be won. A click
+            # delivered while another window is on top does not go to the game at all, and that
+            # failure is otherwise invisible in the logs.
+            if (-not [Mouse]::ForceForeground($hwnd)) {
+                Note ("  click$i ABORTED - could not bring the game to the foreground (fg=$([Mouse]::Foreground()) game=$hwnd). Something else is on top; leave the desktop alone during a run.")
+                Shot ("step" + $i + "-nofocus")
+                break
+            }
+
             # Approach from an offset so a real MOVE is generated, settle onto the target, then
             # DWELL before pressing. The logic runs at 30 Hz, so 900 ms is ~27 frames - far more
             # than the shell needs to recompute the hovered control, and cheap next to a run.
