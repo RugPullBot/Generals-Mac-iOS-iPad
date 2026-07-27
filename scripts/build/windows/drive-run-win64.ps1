@@ -82,15 +82,27 @@ public class Mouse {
 
     const uint MOVE = 0x0001, LDOWN = 0x0002, LUP = 0x0004, ABS = 0x8000, VDESK = 0x4000;
 
-    public static uint ClickAtomic(int x, int y, int vx, int vy, int vw, int vh) {
+    public static uint MoveAbs(int x, int y, int vx, int vy, int vw, int vh) {
         int nx = (int)(((double)(x - vx)) * 65535.0 / (vw - 1));
         int ny = (int)(((double)(y - vy)) * 65535.0 / (vh - 1));
-        INPUT[] seq = new INPUT[3];
-        for (int i = 0; i < 3; i++) { seq[i].type = 0; seq[i].mi.dx = nx; seq[i].mi.dy = ny; }
+        INPUT[] seq = new INPUT[1];
+        seq[0].type = 0; seq[0].mi.dx = nx; seq[0].mi.dy = ny;
         seq[0].mi.dwFlags = MOVE | ABS | VDESK;
-        seq[1].mi.dwFlags = MOVE | ABS | VDESK | LDOWN;
-        seq[2].mi.dwFlags = MOVE | ABS | VDESK | LUP;
-        return SendInput(3, seq, Marshal.SizeOf(typeof(INPUT)));
+        return SendInput(1, seq, Marshal.SizeOf(typeof(INPUT)));
+    }
+
+    // Press and release ONLY - no movement. The move must already have happened, several frames
+    // earlier. The shell resolves which control is under the pointer once per frame and then
+    // handles the click against THAT control, so bundling the move with the button events in one
+    // SendInput batch presses before the hover has been recomputed and the click is attributed to
+    // the previously hovered control. That is why clicking MULTIPLAYER worked (already hovered
+    // after settle) while clicking NETWORK immediately afterwards did nothing, and why a human
+    // click - which is always a move followed many frames later by a press - worked every time.
+    public static uint PressRelease() {
+        INPUT[] seq = new INPUT[2];
+        seq[0].type = 0; seq[0].mi.dwFlags = LDOWN;
+        seq[1].type = 0; seq[1].mi.dwFlags = LUP;
+        return SendInput(2, seq, Marshal.SizeOf(typeof(INPUT)));
     }
 
     public static string ClickTraced(int x, int y) {
@@ -238,14 +250,18 @@ if ($Clicks -ne "") {
         $s = [Mouse]::ToScreen($hwnd, [int]$xy[0], [int]$xy[1])
         if ($hoverOnly) { [Mouse]::SetCursorPos($s.X, $s.Y) | Out-Null }
         else {
-            # Hover first so the shell updates its highlighted control (it tracks that from mouse
-            # MOVE events), then land the click atomically.
-            [Mouse]::SetCursorPos($s.X, $s.Y - 60) | Out-Null
-            Start-Sleep -Milliseconds 150
-            $sent = [Mouse]::ClickAtomic($s.X, $s.Y, $vs.X, $vs.Y, $vs.Width, $vs.Height)
+            # Approach from an offset so a real MOVE is generated, settle onto the target, then
+            # DWELL before pressing. The logic runs at 30 Hz, so 900 ms is ~27 frames - far more
+            # than the shell needs to recompute the hovered control, and cheap next to a run.
+            [Mouse]::MoveAbs($s.X, $s.Y - 60, $vs.X, $vs.Y, $vs.Width, $vs.Height) | Out-Null
+            Start-Sleep -Milliseconds 250
+            $mv = [Mouse]::MoveAbs($s.X, $s.Y, $vs.X, $vs.Y, $vs.Width, $vs.Height)
+            Start-Sleep -Milliseconds 900
+            $hoverAt = [Mouse]::Cursor()
+            $sent = [Mouse]::PressRelease()
             Start-Sleep -Milliseconds 200
             $after = [Mouse]::Cursor()
-            Note ("  click$i aimed=($($s.X),$($s.Y)) sendInput=$sent landed=($($after.X),$($after.Y))")
+            Note ("  click$i aimed=($($s.X),$($s.Y)) move=$mv press=$sent hoverAt=($($hoverAt.X),$($hoverAt.Y)) after=($($after.X),$($after.Y))")
         }
         Start-Sleep -Seconds $Between
         Shot ("step" + $i)
