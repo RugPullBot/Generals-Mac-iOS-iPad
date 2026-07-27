@@ -38,10 +38,39 @@ on a wiped tree, observing 16 concurrent cl.exe, to prove the objects were genui
 NOT covered by this: the mod tools (cb.bat forces RTS_BUILD_*_TOOLS=OFF; never configured at x64),
 and nothing has ever been RUN. See blocker 2.
 
-### 2. Windows must RUN  *(NOW THE FIRST REAL BLOCKER)*
-Never attempted - the executables have never been launched.
+### 2. Windows must RUN  *(BOOTS — verified 2026-07-27)*
+**It boots.** `generalszh.exe` initialises all 42 engine subsystems in order — through `TheGameClient`,
+`TheAI`, `TheGameLogic`, `TheGameState` — past `W3DDisplay::init()` (windowed), into the shell UI and
+`ShellMenuScheme`, with 0 error lines and DXVK actively rendering (`Device : NVIDIA GeForce RTX 5090`,
+6404 log lines, ~720 MB resident, ~10 s CPU in 45 s).
 
-Audio and video are stubbed BY CONSTRUCTION: the build links `miles-sdk-stub` and `bink-sdk-stub`,
+Reproduce with `scripts/build/windows/setup-run-win64.ps1 -Launch`. Three things had to be true, and
+each failed silently and misleadingly on the way:
+
+1. **The Miles/Bink stub DLLs must be staged beside the exe.** They are x64 DLLs built from source
+   and deliberately named `mss32.dll` / `binkw32.dll` so they satisfy the import table. Retail Miles
+   and Bink are 32-bit (`14C machine (x86)`) and can never load into an x64 process. Without the
+   stubs the process dies at **`0xC0000135 STATUS_DLL_NOT_FOUND` before `WinMain`**, with zero bytes
+   on stdout and stderr and nothing in the event log.
+2. **`CNC_GENERALS_ZH_PATH` needs a TRAILING BACKSLASH.**
+   `Win32LocalFileSystem::getFileListInDirectory` (`Win32LocalFileSystem.cpp:131-137`) builds its
+   search as `originalDirectory + currentDirectory + searchName` with **no separator inserted**.
+   Without it the mask becomes `...Zero Hour*.big`, `FindFirstFile` matches nothing, and the engine
+   says `did not provide BIG files` then dies in INI loading. This is a real footgun worth fixing in
+   source — see the note under blocker 3.
+3. **It must run in the INTERACTIVE session.** Launched over SSH you land in session 0, where DXVK
+   enumerates **zero** adapters and `W3DDisplay::init()` dies at `0xC0000005`. A transient
+   `schtasks /it` task reaches the logged-on session; the script creates and deletes it.
+
+Steam install proven untouched across every run: 404 files / 3,073,628,958 B,
+`MANIFEST-SHA256 9793E5EE7FCEDAF250C7403B6D7D01C0426F993B260EB233E49B079A27134033` identical before
+and after (`scripts/build/windows/steam-manifest.ps1`).
+
+**NOT yet proven: loads a map, plays a skirmish.** Boot is not gameplay. That is the remaining part
+of this blocker and needs someone at the console to drive the menu, or a working `-autoload`.
+
+Still open within this blocker — audio and video are stubbed BY CONSTRUCTION, so the Windows build
+currently boots **silent, with no intro movies**: the build links `miles-sdk-stub` and `bink-sdk-stub`,
 whose functions return and do nothing. Real Miles and Bink are 32-bit only and can never be dropped
 in at x64, so Windows needs the OpenAL + FFmpeg path the Apple builds use. Note
 `Core/GameEngineDevice/CMakeLists.txt` adds `Source/VideoDevice/FFmpeg/FFmpegFile.cpp`
@@ -84,15 +113,36 @@ What ControlBar Pro 1440 actually is: 38 `.wnd` layouts plus 22 `HeaderTemplate.
 `Language.ini` files - a UI re-authored for high-DPI. This is very likely a genuine fix for the
 "UI looks low-res" complaint, independent of the pillarbox issue.
 
-**ONE FILE STILL UNRESOLVED.** Mac and iPad have `Data/INI/INIZH.big`; the PC does not (41 vs 40).
-It is a genuinely different archive from the root `INIZH.big` - different hash AND different size
-(18,682,040 vs 18,764,687) - so it is not a stray copy. It is not referenced by any deploy script
-and is not in git, so its provenance is unknown. It IS loaded: `StdBIGFileSystem.cpp:658` passes
-`searchSubdirectories = TRUE` to `getFileListInDirectory`.
+**~~ONE FILE STILL UNRESOLVED~~ — RESOLVED 2026-07-27. Action required: none.**
 
-Do not resolve this by guessing. Copying an unidentified INI archive into the Steam install, or
-deleting one the Mac build may depend on, are both bad blind moves. Identify its contents first
-(the BIG header lists entries; a small parser is enough), then decide.
+`Data/INI/INIZH.big` is a **retail SKU artifact**, and the engine **already skips it by name**.
+
+The previous note said "It IS loaded: `StdBIGFileSystem.cpp:658` passes `searchSubdirectories = TRUE`".
+That was wrong. `searchSubdirectories` makes it *found*, not *loaded* — the very next thing the loop
+does is skip it, at `StdBIGFileSystem.cpp:663-671` (and the Win32 twin at `Win32BIGFileSystem.cpp:661`):
+
+```cpp
+#if RTS_ZEROHOUR
+// TheSuperHackers @bugfix bobtista 18/11/2025 Skip duplicate INIZH.big in Data\INI to prevent CRC mismatches.
+// English, Chinese, and Korean SKUs shipped with two INIZH.big files (one in Run directory, one in Run\Data\INI).
+if (it->endsWithNoCase("Data\\INI\\INIZH.big") || it->endsWithNoCase("Data/INI/INIZH.big")) {
+    it++; continue;          // <-- before openArchiveFile is ever called
+}
+#endif
+```
+
+Verified rather than assumed: `RTS_ZEROHOUR=1` is set at `GeneralsMD/Code/CMakeLists.txt:46,49`, and
+both guard string literals are present in all three shipped binaries (macOS, iOS, **and** the Windows
+x64 exe).
+
+Its contents corroborate the SKU-duplicate explanation exactly: 99 entries, **every one of them also
+present** in the root archive's 135, with 37 files at *older, different* content (`Armor.ini`,
+`CommandSet.ini`, `ObjectCreationList.ini`, `Locomotor.ini`, and every General file). It is the stale
+shipped duplicate, which is precisely why upstream added the skip.
+
+**Therefore: do not copy it to the PC and do not delete it from the Apple side.** It contributes
+nothing to `m_iniCRC` because it is never opened, and `INI::loadDirectory` masks on `*.ini` anyway so
+a `.big` cannot reach the CRC by name either. The 41-vs-40 archive count is harmless and expected.
 
 ### 5. Mac <-> Windows determinism — unmeasured
 Mac <-> iPad is proven. Mac <-> Windows is **not**, and nobody upstream has ever built x64 Windows to
