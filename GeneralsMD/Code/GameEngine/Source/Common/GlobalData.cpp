@@ -1186,6 +1186,22 @@ void GlobalData::reset()
 //-------------------------------------------------------------------------------------------------
 /** Parse GameData entry */
 //-------------------------------------------------------------------------------------------------
+// GeneralsX @bugfix Claude 27/07/2026 The five client-only fields SagePatch.ini may set.
+// See the note on the declaration in GlobalData.h. Every field here is camera framing, keyboard
+// scroll speed or terrain draw distance - all client presentation, none of it read by GameLogic,
+// so two peers may legitimately differ (an iPad wants a different camera ceiling than a desktop).
+/*static*/ const FieldParse GlobalData::s_SagePatchFieldParseTable[] =
+{
+	{ "MaxCameraHeight",           INI::parseReal, nullptr, offsetof( GlobalData, m_maxCameraHeight ) },
+	{ "MinCameraHeight",           INI::parseReal, nullptr, offsetof( GlobalData, m_minCameraHeight ) },
+	{ "EnforceMaxCameraHeight",    INI::parseBool, nullptr, offsetof( GlobalData, m_enforceMaxCameraHeight ) },
+	{ "KeyboardScrollSpeedFactor", INI::parseReal, nullptr, offsetof( GlobalData, m_keyboardScrollFactor ) },
+	{ "TerrainDrawDistanceScale",  INI::parseReal, nullptr, offsetof( GlobalData, m_terrainDrawDistanceScale ) },
+	{ nullptr, nullptr, nullptr, 0 }
+};
+
+/*static*/ Bool GlobalData::s_restrictToSagePatchFields = FALSE;
+
 void GlobalData::parseGameDataDefinition( INI* ini )
 {
 	if( TheWritableGlobalData && ini->getLoadType() != INI_LOAD_MULTIFILE)
@@ -1209,7 +1225,8 @@ void GlobalData::parseGameDataDefinition( INI* ini )
 	// If we're multifile, then continue loading stuff into the Global Data as normal.
 
 	// parse the ini weapon definition
-	ini->initFromINI( TheWritableGlobalData, s_GlobalDataFieldParseTable );
+	ini->initFromINI( TheWritableGlobalData,
+		s_restrictToSagePatchFields ? s_SagePatchFieldParseTable : s_GlobalDataFieldParseTable );
 
 
 	// override INI values with user preferences

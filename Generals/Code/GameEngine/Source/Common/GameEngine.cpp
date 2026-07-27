@@ -447,6 +447,12 @@ void GameEngine::init()
 
 		if (TheLocalFileSystem->doesFileExist(sagePatchPath.str()))
 		{
+			// GeneralsX @bugfix Claude 27/07/2026 Restrict this load to the five client-tuning
+			// fields. SagePatch.ini opens a "GameData" block, and without this it could set any
+			// field in that block - including Gravity, which GameLogic integrates every frame on
+			// every peer. See GlobalData.h for the full note.
+			//
+			GlobalData::SagePatchFieldScope restrictToClientTuningFields;
 			ini.load(sagePatchPath, INI_LOAD_OVERWRITE, nullptr);
 		}
 	}

@@ -585,6 +585,39 @@ private:
 
 	static const FieldParse s_GlobalDataFieldParseTable[];
 
+	// GeneralsX @bugfix Claude 27/07/2026 Restricted field table for SagePatch.ini.
+	//
+	// SagePatch.ini is auto-created in the user data directory and opens a "GameData" block, which
+	// meant it could set ANY field in s_GlobalDataFieldParseTable - including simulation constants.
+	// "Gravity = -0.5" in a user-editable text file desyncs every network game the user joins
+	// (Locomotor.cpp integrates m_gravity every frame on every peer) and is a trivial cheat that no
+	// CRC catches until the next mismatch check. The file is meant to carry five client-only
+	// comfort settings, so it now gets a table containing exactly those five.
+	//
+	// Fields outside the table are silently ignored in release (INI::initFromINI reports an unknown
+	// field via DEBUG_CRASH only), so an existing SagePatch.ini keeps working and simply stops
+	// being able to reach the simulation.
+	static const FieldParse s_SagePatchFieldParseTable[];
+	static Bool s_restrictToSagePatchFields;
+
+public:
+
+	// RAII scope for the restriction above. A nested class may touch the enclosing class's
+	// private members, so the flag and the table stay private and the only way to engage the
+	// restriction is a scope guard that cannot be left set - ini.load throws on a malformed
+	// file, and a leaked flag would silently clamp every later GameData load (including
+	// Data/INI/GameDataDebug) to five fields.
+	class SagePatchFieldScope
+	{
+	public:
+		SagePatchFieldScope()  { GlobalData::s_restrictToSagePatchFields = TRUE;  }
+		~SagePatchFieldScope() { GlobalData::s_restrictToSagePatchFields = FALSE; }
+		SagePatchFieldScope( const SagePatchFieldScope & ) = delete;
+		SagePatchFieldScope &operator=( const SagePatchFieldScope & ) = delete;
+	};
+
+private:
+
 	// this is private, since we read the info from Windows and cache it for
 	// future use. No one is allowed to change it, ever. (srj)
 	AsciiString m_userDataDir;
