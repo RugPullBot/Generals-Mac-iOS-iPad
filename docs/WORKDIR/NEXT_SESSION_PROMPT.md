@@ -4,22 +4,77 @@ Paste everything below the line into a fresh session.
 
 ---
 
-Read these three files first, in this order, before doing anything else:
+Read these first, in this order, before doing anything else:
 
-- `~/GeneralsX-src/docs/WORKDIR/SCOPE_crossplay.md` — the goal, the six blockers, the test ladder
-- `~/GeneralsX-src/docs/WORKDIR/STATE_2026-07-27.md` — where the build stands and how it got here
-- `git -C ~/GeneralsX-src log --oneline -20` — the commit messages carry the *why*, not just the what
+- `~/GeneralsX-src/docs/WORKDIR/STATE_2026-07-27_step4.md` — what happened last session and the
+  measurement that matters. Start here.
+- `~/GeneralsX-src/docs/WORKDIR/SCOPE_crossplay.md` — the goal and the six blockers. Blockers 1-4
+  are done; ignore its "blocker 5 is unmeasured" line, that is now stale.
+- `git -C ~/GeneralsX-src log --oneline -12` — the commit messages carry the *why*.
 
 **Goal:** my Mac, my iPad and my Windows PC — all on the same WiFi — sit in one LAN lobby, start a
 match, and play it to completion without desyncing. Nothing short of that counts.
 
-**All three machines are mine and reachable right now:**
+## Where things actually stand
 
-- Mac mini M4 — you are on it. Repo `~/GeneralsX-src`, game data `~/GeneralsX/GeneralsZH/`
-- iPad Air 11-inch (M3) — paired, `available` per `xcrun devicectl list devices`. Needs my hands:
-  there is no way to drive a physical iOS device's touchscreen synthetically.
-- Windows 11 `r0se-desktop` — `ssh User@192.168.10.89`, key auth, PowerShell is the default shell
-  (use `;` not `&&`). Clone at `C:\dev\GeneralsX`, build `cmd /c C:\dev\cb.bat win64 x64`
+**Test ladder step 4 is DONE, and it gave a negative result.** Mac and Windows discovered each
+other, the join was accepted, the match started, both players built a unit and a structure — and
+then they desynced. Measured identically on both peers:
+
+```
+[CRC] MISMATCH frame=105 crcs=2 players=2
+[CRC]   player=2 crc=FF47FF63
+[CRC]   player=3 crc=471A6F1A
+[CRC] DESYNC CONFIRMED - divergence frame~=100 noticedAtFrame=105 runAhead=4
+```
+
+`crcs=2 players=2` means **both peers reported** — this is a real state divergence, not a lost
+message. Blocker 5 is no longer the unknown; it is the problem.
+
+Everything else is verified in place: both peers build `source=47E7D750` from the same clean commit,
+40 archives each, `assetID 8E504171` on both, and SimID accepts the join with only the tier-2
+platform warning.
+
+## THE task: blocker 5 — Mac↔Windows float determinism
+
+**Do this first, before bisecting anything:** de-fold `SimulationMathCrc` (make its inputs
+`volatile` — 10 of its 17 libm call sites are constant-folded at -O2, so today it measures the
+compiler rather than libm) and compare the value across the two peers. That single measurement
+separates "Apple libm and MSVC UCRT disagree" from "something else diverged", and it is much cheaper
+than hunting frames.
+
+Two hard constraints when you try to get finer resolution:
+
+* **The CRC interval cannot go below 100 in a shipping build.** `NET_CRC_INTERVAL` is 1 under
+  DEBUG_CRC and 100 otherwise (`Core/.../Network.cpp:57-60`), `GameInfo::setCRCInterval` clamps to
+  <=100 (`GameInfo.h:219`), and `-NetCRCInterval`'s parse body *and* table entry are both inside
+  `#ifdef DEBUG_CRC`. So frame 105 is just the first time anyone looked — the divergence may be at
+  frame 1.
+* **You cannot enable DEBUG_CRC on one side to see more.** The `TheModuleFactory` block at
+  `GameLogic.cpp:4293-4305` is inside `#ifdef DEBUG_CRC`, so such a build hashes different bytes and
+  mismatches a release peer *by construction*. Any added resolution must be release-safe — lower the
+  clamp, or fprintf-only output that never touches the xfer stream.
+
+Also: `GameLogic::getCRC` calls `setFPMode()` (`GameLogic.cpp:4222`), and
+`docs/architecture/GAME_LOGIC.md:785` says arm64 cannot reproduce the x87 `_PC_24` baseline. Expect
+to locate the divergence, not to fix it with an FPU-mode tweak.
+
+## The three machines
+
+- **Mac mini M4** — you are on it. Repo `~/GeneralsX-src`, game data `~/GeneralsX/GeneralsZH/`,
+  LAN IP `192.168.10.51` (en0). Build: `./scripts/build/macos/build-macos-zh.sh --build-only`
+  then `./scripts/build/macos/deploy-macos-zh.sh`. Launch: `cd ~/GeneralsX/GeneralsZH && ./run.sh -win -xres 1600 -yres 900`.
+  Drive it with **`cliclick`** (installed, `/opt/homebrew/bin/cliclick`) plus `screencapture -x`.
+  Window lands at (61,30) size 1600x932, so **client origin is (61,62)**; menu buttons are at client
+  x=1287, y=200/260/320/... Raise it with
+  `osascript -e 'tell application "System Events" to set frontmost of (first process whose name is "GeneralsXZH") to true'`.
+- **Windows 11 `r0se-desktop`** — `ssh User@192.168.10.89`, key auth, PowerShell default (use `;`
+  not `&&`), SSH session is elevated. Clone `C:\dev\GeneralsX`, build `cmd /c C:\dev\cb.bat win64 x64`.
+  Run folder `C:\dev\GeneralsX-run\`. **Use `scripts/build/windows/drive-run-win64.ps1`** — read its
+  header, it documents four failure modes that each cost an hour.
+- **iPad Air 11-inch (M3)** — currently on an OLD build and therefore **correctly refused** at the
+  join ("their build is too old to report a build identity"). Rebuild and redeploy it before step 5.
+  Needs Karl's hands; a physical iOS touchscreen cannot be driven synthetically.
 
 ## Rules I care about
 
@@ -27,114 +82,62 @@ match, and play it to completion without desyncing. Nothing short of that counts
 2. **Verify before claiming.** Invoke `verification-before-completion` before saying anything is
    done — including anything a subagent reports. Gate on **exit codes**, never on grep counts.
 3. **When something behaves unexpectedly, invoke `systematic-debugging` before your second theory.**
-   Two wrong theories in a row means the tooling is lying. This paid for itself twice last session.
+   It paid for itself twice again last session.
 4. **Keep work in background workflows** so it continues between turns.
 5. **Never let the Mac or iOS build regress.** Prove it with the build script's exit code.
 6. **Count the game processes you launch.** `pkill -f GeneralsXZH`, then confirm with
-   `pgrep -f GeneralsXZH | wc -l`. NOTE: macOS `pgrep` has **no `-c` flag** — the form in
-   `~/.claude/CLAUDE.md` errors out and the usage message reads like "no processes".
-7. **Never write into the Steam folder on Windows.** Generals Online + EAC live there.
+   `pgrep -f GeneralsXZH | wc -l`. macOS `pgrep` has **no `-c` flag**.
+7. **Never write into the Steam folder on Windows.** Run `scripts/build/windows/steam-manifest.ps1`
+   before and after; baseline `MANIFEST-SHA256 9793E5EE7FCEDAF250C7403B6D7D01C0426F993B260EB233E49B079A27134033`.
 
-## What landed last session (12 commits, `ef5fe51c6..011afed38`, all pushed)
+## Machine state that is NOT in git
 
-- **Blocker 1 (Windows links) — re-verified independently**, not taken on report. Pure-mirror sync,
-  `--target clean`, CONFIGURE 0 / BUILD 0, 0 errors, 1909 steps, both exes `8664 machine (x64)`.
-- **Blocker 2 (Windows RUNS) — DONE.** Boots through all 42 subsystems and **plays a skirmish**
-  (match clock `00:00:28.22`, 30 FPS, RTX 5090). Test ladder step 3 complete.
-- **Blocker 4's open `Data/INI/INIZH.big` question — RESOLVED.** It is a retail SKU duplicate the
-  engine already skips by name (`StdBIGFileSystem.cpp:663-671`, `Win32BIGFileSystem.cpp:661`).
-  Nothing to copy, nothing to delete. The old doc claim that it "IS loaded" was wrong.
-- **SimID instrumentation landed and proven at runtime** — it was computed and never surfaced.
-- **Blocker 3 — MEASURED, and the premise did not hold.** See below.
-- Four real bugs fixed: ccache `OFF` being a no-op, the asset-path trailing separator, the INI list
-  ordering, and a Windows double-mount of the base-Generals archives.
-
-## Where to pick up: TEST LADDER STEP 4 — Mac ↔ Windows LAN match
-
-This is the next thing and it is the *only* remaining unknown that matters. Everything it depends on
-is verified in place:
-
-```
-Mac      engine=4D31F2F2 source=F2CD5A84 data=FEAAE3F3 ordinal=9F43F7B5 asset=8E504171 platform=BF013216
-Windows  engine=4D31F2F2 source=F2CD5A84 data=FEAAE3F3 ordinal=9F43F7B5 asset=8E504171 platform=7480F925
-```
-
-* All four **tier-1 deny** fields match → `SimIdCompare` returns `SIMID_OK` → **the join will be
-  accepted, not refused.** Only `platformID` differs and that is tier-2 warn by design.
-* `sizeof(LANMessage)=471` and `sizeof(SimIdWire)=36` on both → no wire-packing divergence between
-  Apple clang arm64 and MSVC x64.
-* Archive sets are now identical (40 mounted each), so **a desync can no longer be blamed on
-  mismatched data — it points squarely at floating point, which is blocker 5.**
-
-Host on one side, join from the other, play to a CRC interval, then to completion. The Windows side
-can be driven headlessly with the harness described below; the Mac side needs equivalent driving.
-
-## Open issues, in the order I would take them
-
-1. **Blocker 5 — Mac↔Windows float determinism. THE remaining unknown.** Unmeasured. If step 4
-   desyncs, this is why. The scope doc's plan: de-fold `SimulationMathCrc` (make its inputs
-   `volatile`; 10 of its 17 libm call sites are constant-folded at -O2, so today it measures the
-   compiler rather than libm) and compare across peers.
-2. **Blocker 6 — three-way lobby.** Never tried, and the lobby keys on IP. **Not implied by two-peer
-   success.** Needs the iPad physically present. Note Mac↔iPad is *bit-identical*
-   (`SimulationMathCrc` `__text` byte-identical, 15/15 libm probes match), so the iPad is a clone of
-   the Mac for determinism purposes — if Mac↔Windows holds, iPad↔Windows follows for free. The iPad
-   is needed for the **lobby**, not for the math.
-3. **Windows boots silent, no movies.** Audio/video are stubbed by construction (`SAGE_USE_OPENAL=OFF`
-   at x64; Miles/Bink are 32-bit-only). Needs the OpenAL + FFmpeg path the Apple builds use. Quality
-   gap, not a cross-play blocker — but it is the first thing anyone will notice playing on the PC.
-4. **Render FPS / vsync (task #6).** The render-side unlock **already exists**: `changeMaxRenderFps`
-   (`CommandXlat.cpp:186`) cycles through presets including `RenderFpsPreset::UncappedFpsValue`,
-   bound to `MSG_META_*_MAX_RENDER_FPS` and mirrored in the Debug screen. The displayed `30` is just
-   the `FramesPerSecondLimit` default from `GameData.ini`. What is missing is **refresh-rate / vsync
-   matching**. **HARD CONSTRAINT: `LOGICFRAMES_PER_SECOND = WWSyncPerSecond = 30`
-   (`WWCommon.h:70`, `GameCommon.h:68`) must NOT change** — it is lockstep-critical and is exactly
-   why Generals Online (60 Hz logic + 2× multiplier) can never cross-play. Also do **not** raise it
-   by editing `GameData.ini`: that file feeds `xferCRC`, so it moves `dataID` and every peer must
-   then match byte for byte.
-5. **The four retail checkpoints (task #5).** I argued they do **not** need re-deriving: `dataID`
-   stayed `FEAAE3F3` across the canonicalisation, so the whole byte stream — and therefore every
-   prefix of it, including all four mid-stream checkpoints — is unchanged. That is an argument, not
-   a direct measurement, which is why the task is still open. If you want it measured, the corrected
-   line numbers are GeneralsMD `GameEngine.cpp:597` / `:694` and Generals `:522` / `:579` (the ones
-   in the old scope doc were stale). Note **on CRC mismatch nothing happens at all** — no log, no
-   assert, no `else` branch — so these are a dev-time canary, not a runtime gate.
-6. **Windowed pillarbox** — reproduces on Windows too, so it is not Apple-specific. Workaround:
-   fullscreen, or `-win -xres 1600 -yres 900`.
-7. **`-autoload` crash** — still undiagnosed. Would make Windows testing much cheaper if fixed.
-
-## Tooling built last session — use it, do not re-derive it
-
-* `scripts/build/windows/setup-run-win64.ps1 -Launch` — stages the exe, DXVK x64 DLLs, the Miles/Bink
-  **stub** DLLs and a launcher into `C:\dev\GeneralsX-run\`, then runs it in the interactive session.
-* `scripts/build/windows/steam-manifest.ps1` — read-only integrity manifest of the Steam install.
-  Run before and after; `MANIFEST-SHA256` must be identical. Baseline: 404 files, 3,073,628,958 B,
-  `9793E5EE7FCEDAF250C7403B6D7D01C0426F993B260EB233E49B079A27134033`. ~3 s, no excuse to skip it.
-* Release-visible traces now exist: `[SIMID]`, `[ARCHIVES]`, `[ARCHPATH]`, `[ASSET_ROOT]`, `[INI]`.
+* **Windows Firewall rule is active and required:** `GeneralsX LAN test (Claude, removable)` —
+  inbound UDP 8086+8088, program-scoped to `C:\dev\GeneralsX-run\generalszh.exe`, RemoteAddress
+  192.168.10.0/24. Without it the Mac's announcements are dropped silently
+  (`DefaultInboundAction=Block` on all three profiles). Remove with
+  `Remove-NetFirewallRule -DisplayName "GeneralsX LAN test (Claude, removable)"`.
+* **Windows `Options.ini` `IPAddress` was `10.5.0.2`** — the NordVPN NordLynx address, which is a
+  live interface, so the game matched it and announced itself somewhere the Mac cannot reach. Now
+  `192.168.10.89`; original at `Options.ini.bak-claude` under
+  `C:\Users\User\Documents\Command and Conquer Generals Zero Hour Data\`. **Check this first if
+  discovery ever breaks again.**
 
 ## Traps that cost real time — do not rediscover these
 
-* **`DEBUG_LOG` is `((void)0)` in every shipping preset.** `DEBUG_LOGGING` needs `ALLOW_DEBUG_UTILS`
-  needs `RTS_DEBUG`, and both Apple and Windows presets build with `-DNDEBUG -DRTS_RELEASE`. Any
-  diagnostic you want to see in a real run must be `fprintf(stderr, ...)`.
-* **A GUI/Vulkan app must run in the INTERACTIVE session.** Over SSH you land in session 0, where
-  DXVK enumerates **zero** adapters and `W3DDisplay::init()` dies at `0xC0000005`. Use a transient
-  `schtasks /it` task and delete it afterwards. A session-1 window is invisible from an SSH session,
-  so clicking *and* screenshotting must both happen inside a script running in that session. The
-  desktop there is 1920x1080; `SystemInformation.VirtualScreen` queried from session 0 misreports
-  1024x768, so never compute click coordinates from an SSH-side query.
-* **The SimID source digest hashes `git ls-tree` at HEAD PLUS a dirty-file overlay.** A build from a
-  dirty tree gets a different `sourceID` than one from the clean commit. This looked exactly like a
-  platform divergence twice. **Compare only builds made at the same clean commit** (check `rev=`).
-* **Grepping build logs for `ERROR` matches `WW3D_ERROR_OK`**, which is a *success* line, and invents
-  a phantom error on a clean boot. Use `\bERROR\b`.
-* **`grep -c` exits 0 when it finds matches**, so `build && grep -c error && commit` commits on
-  failure. Gate on the build's own exit code.
-* **The Windows clone must be a pure mirror**: `git fetch && git reset --hard origin/main && git clean -fd`,
-  never `pull`.
-* **Fixing a silent failure can expose a second bug it was masking.** The trailing-separator fix
-  turned a dead code path live, which revealed a pre-existing double-mount. Expect this pattern.
+* **`DEBUG_LOG` is `((void)0)` in every shipping preset.** Anything you need to see in a real run
+  must be `fprintf(stderr, ...)`. `[SIMID]`, `[LAN]`, `[CRC]`, `[ARCHIVES]`, `[INI]` already exist.
+* **Never capture the game's stderr through a pipe.** `ProcessStartInfo` + `RedirectStandardError`
+  plus a `Task.Run` drain HANGS THE GAME: a PowerShell scriptblock cast to `[Action]` runs on a
+  thread-pool thread with no runspace, so the body never executes, nothing reads the pipe, its buffer
+  fills, and the child blocks on its next stderr write — a live process at ~80 MB, flat CPU, titled
+  "(Not Responding)". Redirect to a file with the shell.
+* **The Windows game window does not land in the same place twice** — three launches, three
+  positions. Use client-relative coordinates via `ClientToScreen`.
+* **A move and a press in one `SendInput` batch clicks the WRONG control.** The shell resolves the
+  hovered control once per frame, so pressing in the same batch hits the *previously* hovered one.
+  Clicking NETWORK's coordinate that way opened ONLINE. Move, dwell ~900 ms, then press separately.
+  A human click works because it is always a move followed many frames later by a press.
+* **`SendInput` silently returns 0** if the INPUT struct size is wrong. Do not hand-pad it.
+* **Windows desktop is 3640x1920 across two monitors with `VirtualScreen Y=-475`** (DISPLAY2 is a
+  portrait 1080x1920 at y=-475), so **screenshot pixel = screen coord + 475**. Queried over SSH from
+  session 0 it lies and reports 1024x768 — never compute coordinates from an SSH-side query.
+* **A GUI/Vulkan app must run in the INTERACTIVE session** via a transient `schtasks /it` task;
+  clicking and screenshotting must both happen inside that session.
+* **`DXVK_LOG_LEVEL=none` on Windows too** — otherwise DXVK writes one stderr line per frame
+  (17,253 lines in a run that never left the main menu) and buries the traces.
+* **The SimID source digest hashes `git ls-tree` at HEAD PLUS a dirty-file overlay**, but only over
+  simulation paths (`resources/gitinfo/simsourcedigest_watcher.cmake:66-105`) — docs commits are
+  free, a dirty tree is not. **Compare only builds made at the same clean commit.**
+* **Grepping build logs for `ERROR` matches `WW3D_ERROR_OK`**, a success line. Use `\bERROR\b`.
+* **`grep -c` exits 0 when it finds matches.** Gate on the build's own exit code.
+* **The Windows clone must be a pure mirror**: `git fetch && git reset --hard origin/main && git clean -fd`.
 
-## Deferred, not in scope
+## Known issues, not blockers
 
-Keybind remapping UI in settings. Real feature, wants its own design pass after cross-play works.
+* **Windows renders no in-game cursor** — hand-driving the PC is near impossible, so use the
+  synthetic driver. `UseAlternateMouse` is NOT the fix; it is the alternate *control scheme*.
+* Windows boots silent with no movies — audio/video stubbed by construction at x64.
+* Windowed pillarbox reproduces on Windows too. Workaround: fullscreen, or `-win -xres 1600 -yres 900`.
+* `-autoload` crash still undiagnosed.
+* Keybind remapping UI — deferred, wants its own design pass after cross-play works.
