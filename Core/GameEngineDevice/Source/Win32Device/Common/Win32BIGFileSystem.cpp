@@ -279,8 +279,23 @@ static Bool tryLoadBigFiles(TBigFileSystem* fileSystem, const AsciiString& direc
 		return FALSE;
 	}
 
+	// GeneralsX @bugfix Claude 27/07/2026 Guarantee the trailing separator.
+	//
+	// Win32LocalFileSystem::getFileListInDirectory builds its search string as
+	// originalDirectory + currentDirectory + searchName with NO separator inserted
+	// (Win32LocalFileSystem.cpp:131-137). A configured asset root without a trailing
+	// backslash therefore produces the mask "...Zero Hour*.big", FindFirstFile matches
+	// nothing, and the engine reports "did not provide BIG files" and later dies loading
+	// INI. Nothing in that chain mentions a separator, so it reads as missing game data.
+	// Costing a user hours over one absent character is not an acceptable failure mode.
+	AsciiString dirWithSep = directory;
+	const char lastCh = dirWithSep.getCharAt(dirWithSep.getLength() - 1);
+	if (lastCh != '\\' && lastCh != '/') {
+		dirWithSep.concat('\\');
+	}
+
 	DEBUG_LOG(("Win32BIGFileSystem::init - trying '%s' assets directory: %s", sourceTag, directory.str()));
-	const Bool loaded = fileSystem->loadBigFilesFromDirectory(directory, "*.big", overwrite);
+	const Bool loaded = fileSystem->loadBigFilesFromDirectory(dirWithSep, "*.big", overwrite);
 	if (loaded) {
 		DEBUG_LOG(("Win32BIGFileSystem::init - loaded BIG files from %s (%s)", directory.str(), sourceTag));
 	}

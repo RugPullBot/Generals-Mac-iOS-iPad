@@ -29,5 +29,16 @@ if(SAGE_USE_CCACHE)
         message(STATUS "ccache not found, building without compiler cache")
     endif()
 else()
-    message(STATUS "ccache disabled (SAGE_USE_CCACHE=OFF)")
+    # GeneralsX @bugfix Claude 27/07/2026 Actually disable it.
+    #
+    # The ON branch above sets these with CACHE STRING, so they PERSIST in CMakeCache.txt.
+    # Printing "ccache disabled" while leaving CMAKE_CXX_COMPILER_LAUNCHER pointing at
+    # ccache.exe made -DSAGE_USE_CCACHE=OFF a no-op on any pre-existing build directory:
+    # the configure log and the cache said opposite things. That matters more than a stale
+    # flag normally would, because this option is the tool used to prove that a rebuild
+    # genuinely recompiled rather than replaying a cache - so the bug quietly weakened the
+    # one check that exists against a fake "clean rebuild".
+    unset(CMAKE_C_COMPILER_LAUNCHER CACHE)
+    unset(CMAKE_CXX_COMPILER_LAUNCHER CACHE)
+    message(STATUS "ccache disabled (SAGE_USE_CCACHE=OFF), compiler launchers cleared")
 endif()

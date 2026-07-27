@@ -266,9 +266,47 @@ UnsignedInt INI::loadDirectory( AsciiString dirName, INILoadType loadType, Xfer 
 		throw INI_INVALID_DIRECTORY;
 	}
 
-	FilenameList filenameList;
+	FilenameList rawList;
 	dirName.concat('\\');
-	TheFileSystem->getFileListInDirectory(dirName, "*.ini", filenameList, subdirs);
+	TheFileSystem->getFileListInDirectory(dirName, "*.ini", rawList, subdirs);
+
+	// GeneralsX @bugfix Claude 27/07/2026 Canonicalise separators before the CRC sees this list.
+	//
+	// FileSystem::getFileListInDirectory merges two producers into one set: the local filesystem
+	// and the archives. On Apple the local side emits '/' while archives emit '\', and the set is
+	// std::set<AsciiString, less_than_nocase> - which folds case but NOT separators. So '/' (0x2F)
+	// and '\' (0x5C) sort differently AND compare unequal, which costs us twice:
+	//   * ORDER: the two sort into different positions, and the loops below feed xferCRC in exactly
+	//     set order, so m_iniCRC depends on which platform built the list.
+	//   * SET: a loose override that also exists inside a .big is ONE entry on Windows and TWO on
+	//     Apple, so the file is parsed twice on Apple and the CRCs can never agree.
+	// Both make dataID platform-dependent, and SimIdCompare denies on dataID - so an identical
+	// install would be refused a join with no remedy the user could apply.
+	//
+	// Normalising to FORWARD slash is the only workable direction: the archive lookup already
+	// tokenises on "\\/" (ArchiveFileSystem.cpp:319-320), Win32 accepts '/' in paths, and Apple's
+	// local filesystem cannot accept '\'. It is a 1:1 substitution, so every length is unchanged
+	// and the `(*it).str() + dirName.getLength()` prefix arithmetic below still lands correctly.
+	//
+	// Deliberately done HERE and not at the FileSystem::getFileListInDirectory merge point, even
+	// though that is the single place both producers meet: other consumers of that call parse the
+	// separator out of the returned strings by hand - ReplayMenu.cpp:287 does reverseFind('\\') -
+	// and would get NULL on Windows. The CRC is the only caller that needs cross-platform identity.
+	FilenameList filenameList;
+	for (FilenameList::const_iterator raw = rawList.begin(); raw != rawList.end(); ++raw)
+	{
+		AsciiString canon = *raw;
+		if (strchr(canon.str(), '\\') != NULL)
+		{
+			std::string tmp(canon.str());
+			for (std::string::size_type i = 0; i < tmp.size(); ++i)
+				if (tmp[i] == '\\')
+					tmp[i] = '/';
+			canon = tmp.c_str();
+		}
+		filenameList.insert(canon);
+	}
+
 	// Load the INI files in the dir now, in a sorted order.  This keeps things the same between machines
 	// in a network game.
 	FilenameList::const_iterator it = filenameList.begin();

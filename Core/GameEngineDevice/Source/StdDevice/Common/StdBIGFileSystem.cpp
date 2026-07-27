@@ -281,8 +281,22 @@ static Bool tryLoadBigFiles(TBigFileSystem* fileSystem, const AsciiString& direc
 		return FALSE;
 	}
 
+	// GeneralsX @bugfix Claude 27/07/2026 Guarantee the trailing separator.
+	//
+	// StdLocalFileSystem::getFileListInDirectory concatenates directory + searchName with no
+	// separator inserted, exactly like its Win32 twin. A configured asset root without a
+	// trailing slash therefore searches for "...Zero Hour*.big", matches nothing, and the
+	// engine reports "did not provide BIG files" before dying in INI loading - a failure that
+	// names neither the separator nor the real cause. Cost real debugging time on Windows;
+	// fixed on both arms so it cannot resurface on either.
+	AsciiString dirWithSep = directory;
+	const char lastCh = dirWithSep.getCharAt(dirWithSep.getLength() - 1);
+	if (lastCh != '/' && lastCh != '\\') {
+		dirWithSep.concat('/');
+	}
+
 	DEBUG_LOG(("StdBIGFileSystem::init - trying '%s' assets directory: %s", sourceTag, directory.str()));
-	const Bool loaded = fileSystem->loadBigFilesFromDirectory(directory, "*.big", overwrite);
+	const Bool loaded = fileSystem->loadBigFilesFromDirectory(dirWithSep, "*.big", overwrite);
 	if (loaded) {
 		DEBUG_LOG(("StdBIGFileSystem::init - loaded BIG files from %s (%s)", directory.str(), sourceTag));
 	}
