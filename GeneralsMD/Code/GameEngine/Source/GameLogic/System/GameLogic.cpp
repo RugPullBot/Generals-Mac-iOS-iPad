@@ -1033,12 +1033,29 @@ static void populateRandomStartPosition( GameInfo *game )
 		Int team = slot->getTeamNumber();
 		if( !hasStartSpotBeenPicked )
 		{	// We're the first real spot.  Pick randomly.
+			// GeneralsX @diag Claude 28/07/2026 Start positions decide where every player's opening
+			// units are placed, and they are drawn from the SYNCHRONISED logic RNG - so both peers
+			// must pick the same index. Measured with the trig fix in place: all 320 map-scenery
+			// objects hash identically while objects 321-323 (the players' starting units) sit at
+			// MIRRORED coordinates, mac (2903.8, 367.9) vs win (389.2, 2944.3). That is a swapped
+			// start spot, not a rounding difference - the deltas are ~24 million ULP, and only the
+			// translation components of the transform differ.
+			//
+			// Printing the seed alongside the choice separates the two possible causes: if the seed
+			// already differs the RNG diverged earlier and this is a symptom, but if the seed
+			// matches and the index does not, the fault is here.
+			fprintf(stderr, "[GXPOS] slot=%d numPlayers=%d seedCRC=%u (before random pick)\n",
+				i, numPlayers, (unsigned)GetGameLogicRandomSeedCRC());
+			fflush(stderr);
 			while (posIdx == -1)
 			{	// This while loop shouldn't be neccessary, since we're first.  Why not, though?
 				posIdx = GameLogicRandomValue(0, numPlayers-1);
 				if (game->isStartPositionTaken(posIdx))
 					posIdx = -1;
 			}
+			fprintf(stderr, "[GXPOS] slot=%d RANDOM picked posIdx=%d seedCRC=%u (after)\n",
+				i, posIdx, (unsigned)GetGameLogicRandomSeedCRC());
+			fflush(stderr);
 			DEBUG_LOG(("Setting start position %d to %d (random choice)", i, posIdx));
 			hasStartSpotBeenPicked = TRUE;
 			slot->setStartPos(posIdx);
