@@ -14,7 +14,7 @@ for the first step of it.
 |---|---|
 | Mac mini M4 / 16 GB | build host, canonical repo at `~/GeneralsX-src`, game data at `~/GeneralsX/GeneralsZH/` |
 | iPad Air 11-inch (M3), `iPad15,3` | paired; shows `unavailable` until plugged in and trusted |
-| Windows 11 PC | `User@192.168.10.89`, SSH key auth, MSVC 14.44 + ATL, clone at `C:\dev\GeneralsX` |
+| Windows 11 PC (`r0se-desktop`) | Karl's own machine. `User@192.168.10.89`, SSH key auth, MSVC 14.44 + ATL, clone at `C:\dev\GeneralsX` |
 
 All three on one WiFi, so LAN discovery is available and the relay is not needed for this goal.
 
@@ -54,13 +54,30 @@ all four hardcoded retail checkpoints: `0xA1E7F8E6` and `0x6209AF6E` (GeneralsMD
 `GameEngine.cpp:581`/`:660`), `0x2E876341` and `0xD9A74E13` (Generals `:501`/`:538`). Miss that and
 `verifyNameKeyID` silently stops firing.
 
-### 4. Archive parity
-The PC has four archives the Mac does not:
-`!HotkeysLeikezeIndicatorsZH.big`, `!HotkeysLeikezeZH.big`,
-`340_ControlBarPro-Fix1440ZH.big`, `340_ControlBarPro1440ZH.big`.
-Base data **is** identical — `INIZH.big` SHA-256 matches across both. SimID will (correctly) refuse
-until the sets match. Karl's call which direction; copying to the Mac also brings the high-resolution
-ControlBar Pro art the render work wanted.
+### 4. Archive parity  *(largely DONE)*
+All four community archives are now installed on Mac and iPad, SHA-256 verified against the PC
+originals: `!HotkeysLeikezeIndicatorsZH.big`, `!HotkeysLeikezeZH.big`,
+`340_ControlBarPro-Fix1440ZH.big`, `340_ControlBarPro1440ZH.big`. Mac and iPad are byte-for-byte
+identical at 41 archives; the Mac launches clean with them (3775 log lines, 0 INI errors).
+
+Decision taken: ship all four everywhere by default. The `CommandButton.ini` inside the Leikeze
+indicators archive was the one desync candidate, because ScienceType is a NameKey ordinal shipped
+raw over the wire - but that risk comes from peers MISMATCHING, not from the mod. Identical on all
+three peers means identical ordinals, so shipping it everywhere is safer than having it on one.
+
+What ControlBar Pro 1440 actually is: 38 `.wnd` layouts plus 22 `HeaderTemplate.ini` /
+`Language.ini` files - a UI re-authored for high-DPI. This is very likely a genuine fix for the
+"UI looks low-res" complaint, independent of the pillarbox issue.
+
+**ONE FILE STILL UNRESOLVED.** Mac and iPad have `Data/INI/INIZH.big`; the PC does not (41 vs 40).
+It is a genuinely different archive from the root `INIZH.big` - different hash AND different size
+(18,682,040 vs 18,764,687) - so it is not a stray copy. It is not referenced by any deploy script
+and is not in git, so its provenance is unknown. It IS loaded: `StdBIGFileSystem.cpp:658` passes
+`searchSubdirectories = TRUE` to `getFileListInDirectory`.
+
+Do not resolve this by guessing. Copying an unidentified INI archive into the Steam install, or
+deleting one the Mac build may depend on, are both bad blind moves. Identify its contents first
+(the BIG header lists entries; a small parser is enough), then decide.
 
 ### 5. Mac <-> Windows determinism — unmeasured
 Mac <-> iPad is proven. Mac <-> Windows is **not**, and nobody upstream has ever built x64 Windows to
@@ -96,7 +113,7 @@ Two peers has worked. Three has never been tried, and the lobby keys on IP.
 ## Open questions for Karl
 
 1. Archive parity direction — copy the four mods to the Mac, or remove them from the PC?
-2. Is his friend's PC in scope for this round, or only Karl's three devices?
+2. ~~Friend's PC~~ - ANSWERED: there is no friend's PC. Three devices, all Karl's, all on one LAN.
 3. If Mac <-> Windows desyncs on floating point, how far to chase it? Adopting deterministic math is
    a multi-week project against an unmerged upstream PR.
 
@@ -107,3 +124,27 @@ Two peers has worked. Three has never been tried, and the lobby keys on IP.
 * Log the peer's SimID on refusal, with which field differed.
 * Run the de-folded `SimulationMathCrc` at startup and log it, so a three-way float mismatch is
   visible before a match rather than inferred from a desync.
+
+## Windows must run in its own folder — do not contaminate the Steam install
+
+Karl plays Generals Online on the side, which runs `EAC_LaunchGeneralsOnline.exe` (Easy Anti-Cheat)
+against their signed `GeneralsOnlineZH.exe` in the Steam directory.
+
+**Never place our unsigned DXVK `d3d8.dll`/`d3d9.dll` beside that exe.** Best case Generals Online
+breaks; worst case EAC flags the account. The plan is:
+
+    C:\dev\GeneralsX-run\        our exe + our DXVK DLLs + our dxvk.conf + our logs
+    Steam\...\Zero Hour\         READ-ONLY, untouched, EAC-clean
+
+The engine supports this already - asset resolution consults `CNC_GENERALS_ZH_PATH` first
+(`StdBIGFileSystem.cpp:326`), and user data resolves to Documents via `FOLDERID_Documents`
+(`GlobalData.cpp:1397+`), not the install directory.
+
+Still to pin down and verify, rather than assume: the DXVK shader cache, `*_d3d9.log`, and the map
+cache - anything defaulting to the working directory. Verification standard: hash the Steam folder
+before and after a run; a single changed byte is a bug.
+
+## Deferred feature (not in scope for cross-play)
+
+Keybind remapping UI in settings - let players rebind keys themselves. Real feature, wants its own
+design pass. Karl raised it while deciding to ship the Leikeze hotkey archive.
