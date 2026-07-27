@@ -76,7 +76,11 @@ RegistryClass::RegistryClass( const char * sub_key, bool create ) :
 	IsValid( false )
 {
 	HKEY key;
-	assert( sizeof(HKEY) == sizeof(int) );
+	// GeneralsX @bugfix Claude 27/07/2026 HKEY is a pointer, so it is 8 bytes on x64 and the old
+	// sizeof(HKEY)==sizeof(int) claim silently truncated the handle stored in RegistryClass::Key.
+	// Key is now intptr_t; assert the real invariant at compile time so a future ABI change cannot
+	// reintroduce the truncation (a runtime assert() would compile away in release anyway).
+	static_assert( sizeof(HKEY) == sizeof(intptr_t), "RegistryClass::Key must be wide enough to hold an HKEY" );
 
 	LONG result = -1;
 
@@ -90,7 +94,7 @@ RegistryClass::RegistryClass( const char * sub_key, bool create ) :
 
 	if (ERROR_SUCCESS == result) {
 		IsValid = true;
-		Key = (int)key;
+		Key = (intptr_t)key;
 	}
 }
 

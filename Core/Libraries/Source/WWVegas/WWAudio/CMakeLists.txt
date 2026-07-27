@@ -52,6 +52,14 @@ target_sources(corei_wwaudio INTERFACE ${WWAUDIO_SRC})
 
 target_include_directories(corei_wwaudio INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# GeneralsX @bugfix Claude 27/07/2026
+# The non-Windows shim headers now live in compat/ (see compat/mmsystem.h for why). The include
+# entry that exposes them is NOT here: this directory is not how the WWAudio path reaches the tree.
+# corei_wwaudio has only ~40 consumers, whereas ../CMakeLists.txt lists WWAudio on core_wwcommon,
+# which is what puts it on 2190 translation units - including WW3D2's dx8caps.cpp and
+# textureloader.cpp, the actual <mmsystem.h> users. compat/ is added next to it there so the two
+# entries stay together and cover the same targets.
+
 target_link_libraries(corei_wwaudio INTERFACE
     core_wwcommon
 )

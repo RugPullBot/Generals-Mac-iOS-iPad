@@ -25,6 +25,18 @@
 #include <cstddef>
 #ifdef _WIN32
 #include <winsock.h>
+// GeneralsX @bugfix Claude 27/07/2026
+// The POSIX arm below gets strlcpy/strlcat, ARRAY_SIZE and socklen_t for free out of
+// windows_compat.h, so FTP.cpp and Download.cpp were written against them unconditionally.
+// Nothing supplied those names on the Windows arm, which left both sources referencing
+// identifiers that only exist off-Windows. Mirror the same vocabulary here from the engine's
+// own headers so the two arms of this header agree on what a socket TU can rely on.
+#include "WWLib/stringex.h"   // strlcpy / strlcat
+#include "WWLib/WWCommon.h"   // ARRAY_SIZE
+// Winsock 1.1 has no socklen_t; it first appears in <ws2tcpip.h>, which cannot be used here
+// because it drags winsock2.h in on top of winsock.h and the two collide. The Winsock 1.1
+// getsockname()/accept() prototypes take int*, so this is the same typedef <ws2tcpip.h> makes.
+typedef int socklen_t;
 #else
 #include "windows_compat.h"  // Includes socket_compat.h on Linux
 #endif

@@ -353,8 +353,17 @@ int									WWProfileManager::FrameCounter = 0;
 __int64								WWProfileManager::ResetTime = 0;
 
 // GeneralsX @bugfix BenderAI 24/02/2026 Phase 5 - ThreadID type must match THREAD_ID on all platforms
+// GeneralsX @bugfix Claude 27/07/2026 thread_compat.h is the POSIX threading shim in
+// CompatLib/Include; that directory is deliberately kept off the Windows include path because its
+// windows.h shadowed the real Windows SDK. Win32 already has ::GetCurrentThreadId() returning DWORD,
+// so no shim is needed there - match the stock upstream declaration instead. Same guard style as
+// WWLib/thread.cpp and GameEngine Debug.cpp, the other two consumers of this header.
+#ifdef _WIN32
+static unsigned int				ThreadID = static_cast<unsigned int>(-1);
+#else
 #include "thread_compat.h"
 static THREAD_ID				ThreadID = {};  // Default-initialized thread ID (platform-specific)
+#endif
 
 
 /***********************************************************************************************

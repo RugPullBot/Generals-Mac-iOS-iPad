@@ -84,6 +84,9 @@ GeneralsX-macos-*.zip
 GeneralsXZH-macos-*.zip
 GeneralsX-linux-*.tar.gz
 GeneralsXZH-linux-*.tar.gz
+# GeneralsX @build Claude 27/07/2026 iOS packages are build output, not source - the signed
+# GeneralsXZH-ios.ipa carries the full game assets and runs to 2 GB.
+*.ipa
 
 # flatpak build files (exclude staging/build dirs but track scripts and manifests)
 .flatpak-builder/

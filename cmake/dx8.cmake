@@ -18,6 +18,31 @@
 
 set(DXVK_VERSION "v2.6")
 
+# GeneralsX @bugfix Claude 27/07/2026 Give SAGE_USE_DX8 an actual default on Windows.
+#
+# Nothing in the tree ever declared this variable - no option(), no set(). The only places that
+# mention it are the linux64-deploy / macos-vulkan / ios-vulkan presets, and all three set it OFF.
+# Every Windows preset (vc6, win32, win32-vcpkg, mingw-w64-i686) left it undefined, so the branch
+# below evaluated false and Windows silently fell through to the LINUX arm at the bottom of this
+# file, unpacking dxvk-native-2.6-steamrt-sniper.tar.gz.
+#
+# That tarball is DXVK's Linux build, and its include/dxvk directory ships DXVK's stand-in for the
+# Win32 API - including <windows.h> and <windows_base.h>. CompatLib hangs that directory off the
+# d3d8lib INTERFACE, so it landed on the -I line of every translation unit ahead of the real
+# Windows SDK: the same shadowing failure as the CompatLib shim windows.h, and the direct source of
+# the C2371 'ULONG'/'DWORD' redefinitions against WWLib/bittype.h (windows_base.h:25 and :103).
+#
+# DXVK on Windows is not a header package at all - the official release is a drop-in d3d8.dll /
+# d3d9.dll pair with no headers - and dx8wrapper.cpp resolves Direct3DCreate8 through
+# LoadLibrary("D3D8.DLL") + GetProcAddress, so Windows needs DirectX 8 headers to COMPILE against
+# and nothing more. min-dx8-sdk is exactly that, and Core/CMakeLists.txt already anticipates it
+# creating the d3d8lib target ("Only create if not already created by min-dx8-sdk CMakeLists").
+#
+# Guarded on WIN32, so macOS / iOS / Linux configure identically to before.
+if(WIN32 AND NOT DEFINED SAGE_USE_DX8)
+  set(SAGE_USE_DX8 ON CACHE BOOL "Use the native DirectX 8 SDK headers/libs (Windows only)")
+endif()
+
 if(SAGE_USE_DX8)
   # Windows: Fetch min-dx8-sdk for native DirectX 8
   FetchContent_Declare(
@@ -26,7 +51,24 @@ if(SAGE_USE_DX8)
     GIT_TAG        7bddff8c01f5fb931c3cb73d4aa8e66d303d97bc
   )
   FetchContent_MakeAvailable(dx8)
-  message(STATUS "Using DirectX 8 SDK (Windows native)")
+
+  # min-dx8-sdk carries its own CMakeLists that creates the d3d8lib INTERFACE target and points its
+  # include/link dirs at the SDK root. Nothing else here needs to configure d3d8lib on Windows.
+
+  # GeneralsX @bugfix Claude 27/07/2026 Pin d3dx8.lib by absolute path under MSVC.
+  #
+  # min-dx8-sdk requests it as the bare name "d3dx8". GeneralsMD/Code/CompatLib/CMakeLists.txt
+  # creates an EMPTY INTERFACE target literally named d3dx8 on 32-bit Windows - its real d3dx8
+  # sources are gated on Win64/macOS/Linux - and a CMake target always wins over a library file
+  # name. The bare reference therefore resolves to that empty target and d3dx8.lib drops off the
+  # link line entirely, leaving D3DXCreateTexture / D3DXCreateTextureFromFileExA / D3DXFilterTexture
+  # / D3DXLoadSurfaceFromSurface / D3DXGetFVFVertexSize unresolved. An absolute path can never be
+  # mistaken for a target name. Remove this once CompatLib stops creating the stub on Windows.
+  if(MSVC AND EXISTS "${dx8_SOURCE_DIR}/d3dx8.lib")
+    target_link_libraries(d3d8lib INTERFACE "${dx8_SOURCE_DIR}/d3dx8.lib")
+  endif()
+
+  message(STATUS "Using DirectX 8 SDK (Windows native): ${dx8_SOURCE_DIR}")
 
 elseif(APPLE AND SAGE_USE_MOLTENVK)
   # macOS: Build DXVK 2.6 from source using Meson + MoltenVK
@@ -244,6 +286,20 @@ Cflags: -I\${includedir}
   set(dxvk_SOURCE_DIR "${DXVK_SOURCE_DIR}" CACHE PATH "DXVK source directory (macOS)")
   message(STATUS "DXVK source directory: ${DXVK_SOURCE_DIR}")
   message(STATUS "DXVK d3d8 library:     ${DXVK_D3D8_LIB}")
+
+elseif(WIN32)
+  # GeneralsX @bugfix Claude 27/07/2026 Fail loudly instead of falling through to the Linux arm.
+  # Reaching here means someone forced -DSAGE_USE_DX8=OFF on a Windows target. The arm below would
+  # then put DXVK's Linux <windows.h>/<windows_base.h> on the include path of every translation
+  # unit and shadow the real Windows SDK. That silent fallthrough is what this file used to do by
+  # default, and it is not a configuration anyone can build.
+  message(FATAL_ERROR
+    "SAGE_USE_DX8=OFF is not a supported Windows configuration.\n"
+    "DXVK's native tarball is a Linux package: its include/dxvk ships DXVK's own windows.h and "
+    "windows_base.h, which shadow the Windows SDK and break every translation unit.\n"
+    "On Windows, DXVK is a drop-in d3d8.dll/d3d9.dll placed next to the game exe - it contributes "
+    "no headers. Build with SAGE_USE_DX8=ON (the default) so the DirectX 8 headers come from "
+    "min-dx8-sdk.")
 
 else()
   # Linux: Fetch pre-built DXVK native binary for DirectX→Vulkan translation

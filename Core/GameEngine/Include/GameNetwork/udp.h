@@ -31,6 +31,13 @@
 #ifdef _WIN32
 #include <winsock.h>
 #include <io.h>
+// GeneralsX @bugfix Claude 27/07/2026
+// udp.cpp passes socklen_t to getsockname()/getsockopt(). The POSIX arm below picks that type up
+// from <sys/socket.h>; Winsock 1.1 has no equivalent - socklen_t only appears in <ws2tcpip.h>,
+// which cannot be pulled in here because it drags winsock2.h in on top of winsock.h and the two
+// redeclare each other. The Winsock 1.1 prototypes take int*, so this is byte-for-byte the typedef
+// <ws2tcpip.h> would have made, and stays compatible if that header ever does get included.
+typedef int socklen_t;
 //#define close _close
 //#define read  _read
 //#define write _write

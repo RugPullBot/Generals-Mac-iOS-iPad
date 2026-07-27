@@ -37,6 +37,12 @@
 #include <io.h>
 #include "winsock.h"
 #include <direct.h>
+// GeneralsX @bugfix Claude 27/07/2026
+// These two are only reached on the POSIX arm below (<sys/stat.h> explicitly, <time.h> via
+// windows_compat.h), yet Prepare_Directories()/FindFile() call _chmod with _S_IREAD/_S_IWRITE
+// and time() on every platform. Include them here so the Windows arm declares them too.
+#include <sys/stat.h>
+#include <time.h>
 #else
 #include "windows_compat.h"  // Includes socket_compat.h (Winsock → POSIX BSD sockets)
 #include <unistd.h>
