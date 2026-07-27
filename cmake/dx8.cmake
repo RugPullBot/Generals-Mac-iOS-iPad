@@ -64,8 +64,42 @@ if(SAGE_USE_DX8)
   # link line entirely, leaving D3DXCreateTexture / D3DXCreateTextureFromFileExA / D3DXFilterTexture
   # / D3DXLoadSurfaceFromSurface / D3DXGetFVFVertexSize unresolved. An absolute path can never be
   # mistaken for a target name. Remove this once CompatLib stops creating the stub on Windows.
-  if(MSVC AND EXISTS "${dx8_SOURCE_DIR}/d3dx8.lib")
+  #
+  # GeneralsX @bugfix Claude 27/07/2026 32-bit only - see the x64 block below for why.
+  if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 4 AND EXISTS "${dx8_SOURCE_DIR}/d3dx8.lib")
     target_link_libraries(d3d8lib INTERFACE "${dx8_SOURCE_DIR}/d3dx8.lib")
+  endif()
+
+  # GeneralsX @bugfix Claude 27/07/2026 Keep min-dx8-sdk's x86 import libraries off the x64 link.
+  #
+  # All four archives min-dx8-sdk bundles - d3d8.lib, d3dx8.lib, dinput8.lib, dxguid.lib - report
+  # "14C machine (x86)" under dumpbin. DirectX 8 predates x64 and no 64-bit build of these was ever
+  # shipped. Handing any of them to a x64 link is a hard LNK1112 ("module machine type x86 conflicts
+  # with target machine type x64"), and min-dx8-sdk's own CMakeLists puts its source dir on the link
+  # search path with BEFORE, so its x86 copies would win over the Windows SDK's real x64 ones.
+  #
+  # At x64 the correct providers are:
+  #   dinput8 / dxguid - the Windows SDK ships x64 imports (Lib/<ver>/um/x64), so simply removing
+  #                      the min-dx8-sdk directory from the search path resolves them properly.
+  #   d3dx8            - GeneralsMD/Code/CompatLib builds the real STATIC d3dx8 target at x64
+  #                      exactly because the bundled .lib is unusable; the bare "d3dx8" reference
+  #                      min-dx8-sdk makes resolves to that target, which is what we want.
+  #   d3d8             - has no x64 provider anywhere, and needs none: dx8wrapper.cpp:581 resolves
+  #                      Direct3DCreate8 through LoadLibrary("D3D8.DLL") + GetProcAddress at
+  #                      runtime, so nothing references d3d8.lib at link time.
+  #
+  # Headers are untouched - dx8_SOURCE_DIR stays on the include path via INTERFACE_INCLUDE_DIRECTORIES.
+  if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    get_target_property(_dx8_link_dirs d3d8lib INTERFACE_LINK_DIRECTORIES)
+    if(_dx8_link_dirs)
+      list(REMOVE_ITEM _dx8_link_dirs "${dx8_SOURCE_DIR}")
+      set_target_properties(d3d8lib PROPERTIES INTERFACE_LINK_DIRECTORIES "${_dx8_link_dirs}")
+    endif()
+    get_target_property(_dx8_link_libs d3d8lib INTERFACE_LINK_LIBRARIES)
+    if(_dx8_link_libs)
+      list(REMOVE_ITEM _dx8_link_libs "d3d8")
+      set_target_properties(d3d8lib PROPERTIES INTERFACE_LINK_LIBRARIES "${_dx8_link_libs}")
+    endif()
   endif()
 
   message(STATUS "Using DirectX 8 SDK (Windows native): ${dx8_SOURCE_DIR}")

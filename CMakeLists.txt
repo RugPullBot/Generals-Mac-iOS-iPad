@@ -60,7 +60,24 @@ if(MINGW)
 endif()
 
 # Find/Add build dependencies and stubs shared by all projects
-if((WIN32 OR "${CMAKE_SYSTEM}" MATCHES "Windows") AND ${CMAKE_SIZEOF_VOID_P} EQUAL 4)
+# GeneralsX @bugfix Claude 27/07/2026 Fetch the Miles/Bink stubs on 64-bit Windows too.
+#
+# The gate used to also demand CMAKE_SIZEOF_VOID_P EQUAL 4, but every consumer of these two targets
+# is gated on plain WIN32 with no word-size test: Core/Libraries/Source/WWVegas/CMakeLists.txt links
+# milesstub into core_wwcommon, Core/GameEngineDevice links binkstub + milesstub, and both game
+# Main/CMakeLists.txt list them under if(WIN32). At x64 the targets therefore did not exist while
+# still being named, so mss.h was missing from the include path (Core/.../WWAudio/AudibleSound.h:42,
+# 32 translation units) and CMake passed "milesstub"/"binkstub" through to the linker as bare
+# library names.
+#
+# Nothing in either stub is 32-bit-only: both are C sources compiled from scratch (miles-sdk-stub
+# miles.c + cleanup.c, bink-sdk-stub bink.c), the handles in mss.h are all pointer typedefs, and
+# __stdcall simply degrades to the default convention at x64. The stdcall-decorated miles.def and
+# bink_mingw.def are not referenced by the MSVC build - bink-sdk-stub's own CMakeLists already
+# guards its .def on CMAKE_SIZEOF_VOID_P EQUAL 4.
+#
+# Guarded on Windows, so macOS / iOS / Linux never reach this.
+if(WIN32 OR "${CMAKE_SYSTEM}" MATCHES "Windows")
     include(cmake/miles.cmake)
     include(cmake/bink.cmake)
 endif()

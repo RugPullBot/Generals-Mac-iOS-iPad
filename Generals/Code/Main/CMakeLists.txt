@@ -14,7 +14,6 @@ if(WIN32)
     target_link_libraries(g_generals PRIVATE
         binkstub
         comctl32
-        d3d8
         dinput8
         dxguid
         imm32
@@ -22,6 +21,13 @@ if(WIN32)
         vfw32
         winmm
     )
+    # GeneralsX @bugfix Claude 27/07/2026 d3d8.lib exists only as the x86 archive bundled with
+    # min-dx8-sdk; the Windows SDK has never shipped one and a x64 link of it is LNK1112. Nothing
+    # needs it either way - dx8wrapper.cpp:581 loads D3D8.DLL and resolves Direct3DCreate8 with
+    # GetProcAddress at runtime. See the x64 block in cmake/dx8.cmake.
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        target_link_libraries(g_generals PRIVATE d3d8)
+    endif()
 endif()
 
 # Cross-platform core libraries

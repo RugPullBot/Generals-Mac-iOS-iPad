@@ -34,8 +34,34 @@ endif()
 
 # d3dx8 needs bittype.h from WWLib for Win32 types (DWORD, BYTE, UINT, etc.)
 # Add only WWLib directory (not full core_wwcommon to avoid d3d8.h conflicts from WWAudio)
-target_include_directories(d3dx8 PUBLIC 
-    ${CMAKE_CURRENT_SOURCE_DIR}/Include
+#
+# GeneralsX @bugfix Claude 27/07/2026 Publish the d3dx8-only staging dir, not CompatLib/Include.
+#
+# This target_include_directories is PUBLIC and d3dx8 is linked by core_wwcommon consumers, the
+# game Main targets and (via d3d8lib) practically everything else, so whatever it names lands on
+# the -I line of nearly every translation unit in the tree - ahead of the Windows SDK.
+#
+# CompatLib/Include is the POSIX shim: its windows.h routes into windows_compat.h, which includes
+# <pthread.h>/<unistd.h>/<sys/time.h> unguarded, and its types_compat.h re-typedefs DWORD and ULONG
+# to types that disagree with WWLib/bittype.h. Publishing it is exactly the shadowing failure
+# commits cc6ba925d / ab4bce060 removed from the gi_always / zi_always interfaces - it just leaked
+# back in through here, which is why it only showed up at x64: the else() arm below makes d3dx8 an
+# empty INTERFACE library with no include dirs at all on 32-bit Windows, so there was nothing to
+# leak. At x64 min-dx8-sdk's d3dx8.lib is unusable (it is a machine-14C x86 archive), so the real
+# STATIC d3dx8 has to be built and the leak became live.
+#
+# GeneralsMD/Code/CMakeLists.txt already stages the four d3dx8 headers - the only ones a modern
+# Windows install genuinely lacks - into a private directory and exports its path as
+# GX_COMPATLIB_INCLUDE_DIR. Reuse that. Off Windows GX_COMPATLIB_INCLUDE_DIR is set to
+# GeneralsMD/Code/CompatLib/Include, i.e. byte-for-byte the path this used to hardcode, so macOS,
+# iOS and Linux see no change at all.
+if(NOT GX_COMPATLIB_INCLUDE_DIR)
+    # Root CMakeLists.txt adds this directory directly when only Generals is built on UNIX; that
+    # path never runs GeneralsMD/Code/CMakeLists.txt, so fall back to the shim as before.
+    set(GX_COMPATLIB_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Include")
+endif()
+target_include_directories(d3dx8 PUBLIC
+    ${GX_COMPATLIB_INCLUDE_DIR}
     ${CMAKE_SOURCE_DIR}/Core/Libraries/Source/WWVegas/WWLib
 )
 
