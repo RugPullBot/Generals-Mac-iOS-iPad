@@ -280,6 +280,10 @@ UnsignedInt ArchiveFileSystem::computeMountedArchiveFingerprint() const
 		fprintf(stderr, "[ARCHIVES] mounted=%u\n", (UnsignedInt)names.size());
 		for (size_t n = 0; n < names.size(); ++n)
 			fprintf(stderr, "[ARCHIVES]   %s\n", names[n].c_str());
+		// Full map keys too: the basename is what gets hashed, but only the full path shows
+		// whether a repeated basename is two different archives or the SAME file mounted twice.
+		for (ArchiveFileMap::const_iterator it = m_archiveFileMap.begin(); it != m_archiveFileMap.end(); ++it)
+			fprintf(stderr, "[ARCHPATH] %s\n", it->first.str() ? it->first.str() : "(null)");
 		fflush(stderr);
 
 		for (size_t n = 0; n < names.size(); ++n)
