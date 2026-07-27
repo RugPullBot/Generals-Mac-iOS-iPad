@@ -1792,6 +1792,31 @@ FontCharsClass::Create_Freetype_Font (const char *font_name)
 		return false;
 	}
 
+	// GeneralsX @bugfix Claude 27/07/2026 Select the v35 TrueType interpreter.
+	//
+	// FreeType defaults to interpreter v40 ("minimal" hinting), which deliberately does NOT
+	// grid-fit horizontal stems - it only hints vertically and leaves horizontal positioning to
+	// subpixel-accurate antialiasing. That is the right default for a modern compositor rendering
+	// at 2x or with subpixel RGB coverage. It is the wrong default here: this engine rasterises
+	// grayscale into a 4-bit alpha glyph atlas at small pixel sizes, so a v40 stem lands as ~2px
+	// of partial coverage with no fully-opaque pixel anywhere in it, and the 4-bit quantisation
+	// then throws away most of what little contrast remains. Measured at the sizes this game
+	// actually uses, a 12pt 'l' has zero solid pixels. v35 grid-fits both axes and puts a 1px
+	// solid stem back.
+	//
+	// Windows never hit this: that path goes through GDI (Create_GDI_Font), which grid-fits.
+	// So this is a port regression, and it is why the in-code Debug menu - hardcoded 10/12pt with
+	// no resolution scaling - reads worst of all.
+	//
+	// Set on FTLibrary rather than globally because Create_Freetype_Font builds a fresh FT_Library
+	// per font; a one-time global call would only ever affect whichever font happened to be first.
+	{
+		FT_UInt interpreterVersion = TT_INTERPRETER_VERSION_35;
+		// Failure is not fatal - a FreeType built without TT_CONFIG_OPTION_BYTECODE_INTERPRETER
+		// simply keeps its default, which is the behaviour we had before this call existed.
+		FT_Property_Set( FTLibrary, "truetype", "interpreter-version", &interpreterVersion );
+	}
+
 	//
 	//	Handle "Generals" font mapping to Arial
 	//

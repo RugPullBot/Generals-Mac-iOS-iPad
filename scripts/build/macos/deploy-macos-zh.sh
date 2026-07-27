@@ -75,6 +75,16 @@ fi
 mkdir -p "${RUNTIME_DIR}"
 
 echo "  Copying GeneralsXZH..."
+# GeneralsX @bugfix Claude 27/07/2026 Unlink before copying, so the new binary lands on a fresh
+# inode.
+#
+# The engine is ad-hoc "linker-signed". Overwriting such a binary in place keeps the inode, and
+# the kernel still holds the previously-executed cdhash for it, so the next launch is killed by
+# taskgated with SIGKILL "Code Signature Invalid" before main() runs. It presents as the game
+# dying instantly with an empty log and a crash report that names a signature fault, which sends
+# you hunting a signing problem that does not exist — the signature verifies fine with
+# `codesign --verify`. Deleting first sidesteps the stale cache entirely.
+rm -f "${RUNTIME_DIR}/GeneralsXZH"
 cp -v "${BINARY_SRC}" "${RUNTIME_DIR}/GeneralsXZH"
 chmod +x "${RUNTIME_DIR}/GeneralsXZH"
 
@@ -233,6 +243,17 @@ fi
 # launched via absolute path (Finder, gtimeout, full-path invocation) misses
 # every loose INI / asset and only sees what is bundled inside the BIG files.
 cd "\${SCRIPT_DIR}"
+
+# GeneralsX @tweak Claude 27/07/2026 Silence DXVK's stderr stream by default.
+#
+# dxvk.conf's "dxvk.logLevel = none" only governs the log FILE; the same messages still go to
+# stderr. The engine issues SetRenderState(D3DRS_PATCHSEGMENTS) every frame and the D3D8 layer
+# warns on each one, so a single session emits five figures of "Unimplemented render state" —
+# measured 10712 lines in one short run to the main menu — and every one is a synchronous write
+# on the render thread. ios/config already runs quiet; this brings macOS in line.
+#
+# Override for a debugging session: DXVK_LOG_LEVEL=warn ./run.sh
+export DXVK_LOG_LEVEL="\${DXVK_LOG_LEVEL:-none}"
 
 exec "./GeneralsXZH" "\$@"
 WRAPPER

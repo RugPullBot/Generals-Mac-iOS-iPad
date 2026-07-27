@@ -47,6 +47,10 @@
 #if defined(SAGE_USE_FREETYPE) && !defined(_WIN32)
     #include <ft2build.h>
     #include FT_FREETYPE_H
+    // GeneralsX @bugfix Claude 27/07/2026 ftmodapi.h for FT_Property_Set, ftdriver.h for
+    // TT_INTERPRETER_VERSION_35. See the hinting note in Create_Freetype_Font.
+    #include <freetype/ftmodapi.h>
+    #include <freetype/ftdriver.h>
     #if defined(__APPLE__)
         #include <TargetConditionals.h>
     #endif
