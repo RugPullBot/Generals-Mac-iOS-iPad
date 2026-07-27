@@ -25,12 +25,27 @@ touch input during single-device UI testing only.
 
 ## Blockers, in dependency order
 
-### 1. Windows x64 must link  *(in progress)*
-Tracked by the `win64-drive-to-link` workflow. See `STATE_2026-07-27.md` for how the error count
-came down and the two process traps that cost rebuilds.
+### 1. Windows x64 must link  *(DONE — verified 2026-07-27 18:12)*
+Both executables link at commit `be9491781`. Independently re-verified, not taken on report:
+CONFIGURE EXIT 0, BUILD EXIT 0, 0 compiler errors, 0 LNK, 0 FAILED, last step
+`Linking CXX executable GeneralsMD\Release\generalszh.exe`.
+`generalszh.exe` 7,492,096 B and `generalsv.exe` 6,978,048 B, both `8664 machine (x64)` per dumpbin.
+macOS and iOS both still build with exit 0. 5529 errors -> 0.
 
-### 2. Windows must RUN
-Never attempted. Game data is present at
+The implementing agent also caught its own fast build (~96 s) and re-ran with `SAGE_USE_CCACHE=OFF`
+on a wiped tree, observing 16 concurrent cl.exe, to prove the objects were genuinely compiled.
+
+NOT covered by this: the mod tools (cb.bat forces RTS_BUILD_*_TOOLS=OFF; never configured at x64),
+and nothing has ever been RUN. See blocker 2.
+
+### 2. Windows must RUN  *(NOW THE FIRST REAL BLOCKER)*
+Never attempted - the executables have never been launched.
+
+Audio and video are stubbed BY CONSTRUCTION: the build links `miles-sdk-stub` and `bink-sdk-stub`,
+whose functions return and do nothing. Real Miles and Bink are 32-bit only and can never be dropped
+in at x64, so Windows needs the OpenAL + FFmpeg path the Apple builds use. Note
+`Core/GameEngineDevice/CMakeLists.txt` adds `Source/VideoDevice/FFmpeg/FFmpegFile.cpp`
+unconditionally whenever `SAGE_USE_OPENAL` is set, and the Windows configure has no FFmpeg yet. Game data is present at
 `C:\Program Files (x86)\Steam\steamapps\common\Command & Conquer Generals - Zero Hour`.
 Expect a second wave of failures here that compilation cannot predict — asset path resolution, the
 D3D8 entry point resolving to DXVK's `d3d8.dll` (drop the official x64 DLLs beside the exe; no
