@@ -199,7 +199,11 @@ SoundSceneClass::Collect_Logical_Sounds (unsigned int milliseconds, int listener
 				//	Is the sound ready to notify?
 				//
 				if (sound_obj->Allow_Notify (timestamp)) {
-					listener->On_Event (AudioCallbackClass::EVENT_LOGICAL_HEARD, (uint32)listener, (uint32)sound_obj);
+					// GeneralsX @build 27/07/2026 On_Event takes uint32 params, so route the pointers
+					// through uintptr_t first. Identical on 32-bit Windows; on 64-bit this keeps the
+					// same (already discarded - On_Event ignores param1/param2) low word without
+					// tripping -Wpointer-to-int-cast.
+					listener->On_Event (AudioCallbackClass::EVENT_LOGICAL_HEARD, (uint32)(uintptr_t)listener, (uint32)(uintptr_t)sound_obj);
 				}
 			}
 		}
