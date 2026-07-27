@@ -78,6 +78,7 @@
 #include "GameLogic/PartitionManager.h"
 #include "GameLogic/TerrainLogic.h"
 
+#include "GameNetwork/GameInfo.h"
 #include "GameNetwork/NetworkDefs.h"
 
 #include <algorithm>
@@ -356,27 +357,52 @@ static WindowMsgHandledType DebugMenuInput( GameWindow *window, UnsignedInt msg,
 	* What remains here is only the set of states in which appending a message is not legal at all.
 	* Note what is deliberately NOT tested: TheNetwork, isInMultiplayerGame() and getGameMode(). */
 //-------------------------------------------------------------------------------------------------
-static Bool debugSyncedCheatsAllowed( void )
+static const WideChar *debugSyncedCheatsRefusal( void )
 {
 	if( TheGameLogic == nullptr || ThePlayerList == nullptr || TheMessageStream == nullptr )
-		return FALSE;
+		return L"no live match";
 
 	// GameMessage's constructor dereferences ThePlayerList->getLocalPlayer() unconditionally
 	// (MessageStream.cpp:54). A null there is a release-build crash, not an assert.
 	if( ThePlayerList->getLocalPlayer() == nullptr )
-		return FALSE;
+		return L"no local player";
 
 	if( TheGameLogic->isInGame() == FALSE )
-		return FALSE;
+		return L"no live match";
 	if( TheGameLogic->isInShellGame() )
-		return FALSE;
+		return L"shell map, not a match";
 
 	// A replay feeds TheCommandList straight from the recording; an injected order would be a
 	// divergence from the file rather than a cheat.
 	if( TheGameLogic->isInReplayGame() )
-		return FALSE;
+		return L"this is a replay";
 
-	return TRUE;
+	// GeneralsX @feature Claude 27/07/2026 In a network game, only the host may cheat.
+	//
+	// This is a house rule, not a sync requirement - the orders replicate correctly from any peer,
+	// which is exactly the problem. Whoever opens the overlay can hand themselves cash or kill the
+	// other side, and the victim sees a legitimate, CRC-clean order arrive. Restricting it to slot 0
+	// gives the lobby one accountable operator.
+	//
+	// TheNetwork is the test for "is this a networked match" rather than isInMultiplayerGame(),
+	// because a skirmish against AI is multiplayer by that definition and has no host to defer to.
+	// TheGameInfo is installed at game start (GameLogic.cpp:1297-1323) and for LAN resolves to
+	// TheLAN->GetMyGame(); amIHost() compares the local IP against slot 0.
+	if( TheNetwork != nullptr )
+	{
+		if( TheGameInfo == nullptr )
+			return L"network game with no game info";
+		if( TheGameInfo->amIHost() == FALSE )
+			return L"host only - you are not the lobby host";
+	}
+
+	return nullptr;
+}
+
+//-------------------------------------------------------------------------------------------------
+static Bool debugSyncedCheatsAllowed( void )
+{
+	return debugSyncedCheatsRefusal() == nullptr;
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -504,6 +530,26 @@ static void applySlidersToPrefs( void )
 		}
 
 		(*s_pref)[ s_sliderSpecs[i].prefKey ] = prefString;
+	}
+
+	// GeneralsX @bugfix Claude 27/07/2026 Push the camera settings into the live view.
+	// The view does not read TheGlobalData per frame. View::View snapshots the height limits
+	// (View.cpp:99-100) and the default pitch (View.cpp:104) at construction, and W3DView only
+	// recomputes them inside setCameraHeightAboveGroundLimitsToDefault/setDefaultPitch. Writing
+	// the global alone left these three sliders with no visible effect until the next GameLogic
+	// reset re-created the view. OptionsMenu.cpp:891 re-applies the limits the same way after a
+	// resolution change.
+	if( TheTacticalView != nullptr )
+	{
+		TheTacticalView->setCameraHeightAboveGroundLimitsToDefault();
+		TheTacticalView->setDefaultPitch( DEG_TO_RADF( TheGlobalData->m_cameraPitch ) );
+
+		// setZoom re-derives m_heightAboveGround from the new max (W3DView.cpp:2287) so the camera
+		// moves now rather than on the player's next zoom input. It also calls
+		// stopDoingScriptedCamera, which is why it stays out of the shell: the shell map is running
+		// a scripted camera and killing it leaves the menu background frozen.
+		if( TheGameLogic != nullptr && TheGameLogic->isInGame() && !TheGameLogic->isInShellGame() )
+			TheTacticalView->setZoom( TheTacticalView->getZoom() );
 	}
 
 	s_pref->write();
@@ -1004,9 +1050,12 @@ static GameMessage *beginCheatOrder( GameMessage::Type type, Int &targetOut )
 {
 	targetOut = -1;
 
-	if( debugSyncedCheatsAllowed() == FALSE )
+	const WideChar *refusal = debugSyncedCheatsRefusal();
+	if( refusal != nullptr )
 	{
-		setCheatResult( L"Refused: not in a live, non-replay match." );
+		UnicodeString msg;
+		msg.format( L"Refused: %s.", refusal );
+		setCheatResult( msg );
 		return nullptr;
 	}
 
@@ -1929,10 +1978,12 @@ static void refreshSpawnTarget( void )
 	// This pane has no equivalent of the Cheats pane's status line, so it carries the "why is
 	// everything greyed" answer here rather than leaving four dead buttons unexplained. Asked before
 	// the target, because a replay has a perfectly good target and still refuses every order.
-	if( debugSyncedCheatsAllowed() == FALSE )
+	const WideChar *spawnRefusal = debugSyncedCheatsRefusal();
+	if( spawnRefusal != nullptr )
 	{
-		GadgetStaticTextSetText( s_spawnTargetInfo, UnicodeString(
-			L"Disabled: no live match, or this is a replay. Spawn and Delete stay greyed." ) );
+		UnicodeString msg;
+		msg.format( L"Disabled (%s). Spawn and Delete stay greyed.", spawnRefusal );
+		GadgetStaticTextSetText( s_spawnTargetInfo, msg );
 		return;
 	}
 
@@ -2067,8 +2118,20 @@ void DebugMenuUpdate( void )
 
 	// Cheats can become legal or illegal without the screen closing (start a skirmish with the
 	// overlay up), so the gate is re-evaluated here rather than once at build time.
-	const Bool cheats = debugSyncedCheatsAllowed();
+	const WideChar *refusal = debugSyncedCheatsRefusal();
+	const Bool cheats = ( refusal == nullptr );
 	const Bool client = debugClientToolsAllowed();
+
+	// GeneralsX @feature Claude 27/07/2026 Say why the row is dead before it is clicked. A guest in a
+	// LAN game sees seven greyed buttons and no reason; the result line is otherwise only written on
+	// a click, which a disabled button never delivers. Only written while refusing, so it does not
+	// stomp the outcome text of a cheat that just went through.
+	if( refusal != nullptr && s_cheatResult != nullptr )
+	{
+		UnicodeString msg;
+		msg.format( L"Disabled: %s.", refusal );
+		GadgetStaticTextSetText( s_cheatResult, msg );
+	}
 
 	if( s_buttonGiveCash )		s_buttonGiveCash->winEnable( cheats );
 	if( s_buttonSetCash )			s_buttonSetCash->winEnable( cheats );

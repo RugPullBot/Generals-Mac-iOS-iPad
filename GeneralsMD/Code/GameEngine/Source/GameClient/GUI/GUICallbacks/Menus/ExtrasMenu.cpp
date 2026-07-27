@@ -42,6 +42,8 @@
 #include "GameClient/KeyDefs.h"
 #include "GameClient/WindowLayout.h"
 #include "GameClient/Display.h"
+#include "GameClient/View.h"
+#include "GameLogic/GameLogic.h"
 
 // Widget IDs and pointers
 static NameKeyType sliderMaxCameraHeightID = NAMEKEY_INVALID;
@@ -198,6 +200,18 @@ static void saveExtras()
 		AsciiString prefString;
 		prefString.format("%d", val);
 		(*pref)["TerrainDrawDistanceScale"] = prefString;
+	}
+
+	// GeneralsX @bugfix Claude 27/07/2026 Push the camera settings into the live view. Same defect
+	// as the Debug menu sliders: the view caches the height limits and the default pitch at
+	// construction and never re-reads TheGlobalData, so writing the global here did nothing until
+	// the next game start re-created the view. See DebugMenu.cpp for the full note.
+	if (TheTacticalView != nullptr) {
+		TheTacticalView->setCameraHeightAboveGroundLimitsToDefault();
+		TheTacticalView->setDefaultPitch(DEG_TO_RADF(TheGlobalData->m_cameraPitch));
+
+		if (TheGameLogic != nullptr && TheGameLogic->isInGame() && !TheGameLogic->isInShellGame())
+			TheTacticalView->setZoom(TheTacticalView->getZoom());
 	}
 }
 
