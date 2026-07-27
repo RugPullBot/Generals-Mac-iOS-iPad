@@ -211,6 +211,34 @@ EnumeratedIP * IPEnumeration::getAddresses()
 	return m_IPlist;
 }
 
+// GeneralsX @bugfix Claude 27/07/2026 A link-local (APIPA, 169.254.0.0/16) address must never win
+// the default interface election. The list is kept in ascending numeric order and LanLobbyMenuInit
+// takes the HEAD of it whenever Options.ini's IPAddress does not match a live interface, but
+// 169.254.x.x (0xA9FE....) sorts BELOW every private range a real LAN uses - 172.16 (0xAC10....),
+// 192.168 (0xC0A8....) - so any machine holding an idle second NIC announced an unroutable address
+// and broadcast to 169.254.255.255. The lobby then stayed empty with no diagnostic of any kind,
+// because every LAN log line in this path is DEBUG_LOG and compiles away in a shipping build.
+// Measured on the Mac mini: en10 held 169.254.77.30 while the real LAN was en0 192.168.10.51.
+// Rank by class first, then numerically within the class, so routable addresses always precede
+// link-local ones while a link-local host with nothing else still enumerates normally.
+static UnsignedInt ipSortClass( UnsignedInt ip )
+{
+	return ((ip & 0xFFFF0000) == 0xA9FE0000) ? 1 : 0;
+}
+
+static Bool ipSortsBefore( UnsignedInt lhs, UnsignedInt rhs )
+{
+	const UnsignedInt lhsClass = ipSortClass(lhs);
+	const UnsignedInt rhsClass = ipSortClass(rhs);
+
+	if (lhsClass != rhsClass)
+	{
+		return lhsClass < rhsClass;
+	}
+
+	return lhs < rhs;
+}
+
 void IPEnumeration::addNewIP( UnsignedByte a, UnsignedByte b, UnsignedByte c, UnsignedByte d, UnsignedInt broadcastIP )
 {
 	UnsignedInt ip = AssembleIp(a, b, c, d);
@@ -233,7 +261,7 @@ void IPEnumeration::addNewIP( UnsignedByte a, UnsignedByte b, UnsignedByte c, Un
 
 	DEBUG_LOG(("IP: 0x%8.8X (%s) broadcast 0x%8.8X", ip, str.str(), broadcastIP));
 
-	// Add the IP to the list in ascending order
+	// Add the IP to the list in ascending order, routable addresses ahead of link-local ones.
 	if (!m_IPlist)
 	{
 		m_IPlist = newIP;
@@ -241,7 +269,7 @@ void IPEnumeration::addNewIP( UnsignedByte a, UnsignedByte b, UnsignedByte c, Un
 	}
 	else
 	{
-		if (newIP->getIP() < m_IPlist->getIP())
+		if (ipSortsBefore(newIP->getIP(), m_IPlist->getIP()))
 		{
 			newIP->setNext(m_IPlist);
 			m_IPlist = newIP;
@@ -249,7 +277,7 @@ void IPEnumeration::addNewIP( UnsignedByte a, UnsignedByte b, UnsignedByte c, Un
 		else
 		{
 			EnumeratedIP *p = m_IPlist;
-			while (p->getNext() && p->getNext()->getIP() < newIP->getIP())
+			while (p->getNext() && ipSortsBefore(p->getNext()->getIP(), newIP->getIP()))
 			{
 				p = p->getNext();
 			}
@@ -257,6 +285,14 @@ void IPEnumeration::addNewIP( UnsignedByte a, UnsignedByte b, UnsignedByte c, Un
 			p->setNext(newIP);
 		}
 	}
+
+	// GeneralsX @feature Claude 27/07/2026 Release-visible. DEBUG_LOG above is ((void)0) in every
+	// shipping preset, so without this the chosen interface is unobservable and a dead lobby looks
+	// identical to a firewall drop.
+	fprintf(stderr, "[LAN] enumerated %s broadcast=%d.%d.%d.%d class=%s\n",
+		str.str(), PRINTF_IP_AS_4_INTS(broadcastIP),
+		ipSortClass(ip) ? "link-local" : "routable");
+	fflush(stderr);
 }
 
 AsciiString IPEnumeration::getMachineName()
