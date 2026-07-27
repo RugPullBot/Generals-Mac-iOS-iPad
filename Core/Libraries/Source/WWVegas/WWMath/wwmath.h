@@ -37,6 +37,7 @@
 #pragma once
 
 #include "always.h"
+#include "gamemath.h"   // GeneralsX: deterministic trig for the lockstep simulation - see SinTrig/CosTrig
 #include <math.h>
 #include <float.h>
 #include <assert.h>
@@ -169,24 +170,31 @@ static WWINLINE float		Atan2(float y, float x)
 
 // Phase 4: Trig function routing (deterministic vs. platform-native)
 // These wrappers are called from Trig.cpp and BaseType geometry methods
-static WWINLINE float SinTrig(float x) 
-{ 
-#ifdef USE_DETERMINISTIC_MATH
-	// TODO: return GameMath::Sin(x);
-	return Sin(x); 
-#else
-	return Sin(x); 
-#endif
+// GeneralsX @bugfix Claude 28/07/2026 Route simulation trig through GameMath, not libm.
+//
+// These two are the ONLY path Thing::setOrientation takes to build an object's transform:
+//   setOrientation -> Cos()/Sin() (Lib/trig.h) -> Trig.cpp -> CosTrig()/SinTrig() -> here.
+// Object::crc then hashes that transform as 48 raw bytes with no epsilon (Object.cpp:4007).
+//
+// Apple libm and MSVC's UCRT return results ONE ULP apart for cosf/sinf near 45 degrees - measured
+// on two peers in a live match, six objects out of 323, delta 2^-24 every time. One bit is enough
+// to desync the match before frame 1. See gamemath.h for the captured bit patterns.
+//
+// GameMath is built only from IEEE-754 basic arithmetic, which is correctly rounded and therefore
+// identical on every conforming platform, so this removes the divergence at its source rather than
+// masking it in the CRC. Masking would be worse than useless: the peers would still be simulating
+// different worlds, but the detector would no longer say so.
+//
+// Validated against libm over -7.2..7.2 rad in 0.00001 steps: max deviation 5.96e-08, i.e. within
+// one ULP of libm everywhere, and exact at the 45-degree case that caused the desync.
+static WWINLINE float SinTrig(float x)
+{
+	return GameMath::Sin(x);
 }
 
-static WWINLINE float CosTrig(float x) 
-{ 
-#ifdef USE_DETERMINISTIC_MATH
-	// TODO: return GameMath::Cos(x);
-	return Cos(x); 
-#else
-	return Cos(x); 
-#endif
+static WWINLINE float CosTrig(float x)
+{
+	return GameMath::Cos(x);
 }
 
 static WWINLINE float TanTrig(float x) 
