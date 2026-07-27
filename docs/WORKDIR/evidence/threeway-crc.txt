@@ -1,0 +1,6 @@
+[GXCRC] f=105 v=7D62933B
+[CRC] MISMATCH frame=105 crcs=3 players=3
+[CRC]   player=2 crc=7D62933B
+[CRC]   player=3 crc=7D62933B
+[CRC]   player=4 crc=9745AC99
+[GX-ISSUE144] WinCreate default font localized name=Times New Roman size=17 bold=0 window=0x7baf7e540
