@@ -66,8 +66,17 @@ Steam install proven untouched across every run: 404 files / 3,073,628,958 B,
 `MANIFEST-SHA256 9793E5EE7FCEDAF250C7403B6D7D01C0426F993B260EB233E49B079A27134033` identical before
 and after (`scripts/build/windows/steam-manifest.ps1`).
 
+**Visually confirmed at the main menu** (screenshot captured from the interactive session): the
+animated 3D shell map renders at 30 FPS with SOLO PLAY / MULTIPLAYER / LOAD / OPTIONS / CREDITS /
+EXIT GAME, window title `GeneralsX 2055 By RugPullBot for Command & Conquer (TM) Generals Zero Hour
+Version 1.04`. To reproduce the capture, run the game under `schtasks /it` and screenshot from a
+script inside that same session — you cannot see a session-1 window from an SSH session.
+
+**The windowed pillarbox reproduces on Windows too** — the scene is rendered inset with a border,
+matching the known open problem. Workaround remains fullscreen, or `-win -xres 1600 -yres 900`.
+
 **NOT yet proven: loads a map, plays a skirmish.** Boot is not gameplay. That is the remaining part
-of this blocker and needs someone at the console to drive the menu, or a working `-autoload`.
+of this blocker — drive the menu at the console, or fix `-autoload`.
 
 Still open within this blocker — audio and video are stubbed BY CONSTRUCTION, so the Windows build
 currently boots **silent, with no intro movies**: the build links `miles-sdk-stub` and `bink-sdk-stub`,
