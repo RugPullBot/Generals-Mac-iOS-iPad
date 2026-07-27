@@ -4334,7 +4334,12 @@ UnsignedInt GameLogic::getCRC( Int mode, AsciiString deepCRCFileName )
 	// Release-visible by necessity: the CRCGEN_LOG calls that already bracket these sections are
 	// {} in every shipping preset, and DEBUG_CRC cannot be turned on to reach them because it
 	// changes what is hashed (the TheModuleFactory block below) and would desync by construction.
-	const Bool traceObjects = isInGameLogicUpdate() && m_frame >= 7 && m_frame <= 10;
+	// Widened to start at frame 0. The first window (7..10) was chosen from Alpine Assault, where
+	// frames 7 and 8 were clean and a TrainTank diverged at 9 - which made it look like a moving
+	// object was to blame. On a second map the FIRST traced frame already differed, and in a
+	// GenericTree: static scenery that never moves. So the divergence starts earlier than 7 and is
+	// not about movement at all, and the window has to reach frame 0 to find its real origin.
+	const Bool traceObjects = isInGameLogicUpdate() && m_frame <= 10;
 
 	marker = "MARKER:Objects";
 	xferCRC->xferAsciiString(&marker);
