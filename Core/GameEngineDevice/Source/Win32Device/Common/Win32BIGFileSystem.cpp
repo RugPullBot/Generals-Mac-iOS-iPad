@@ -481,13 +481,34 @@ static void loadBaseGeneralsAssetsForZH(TBigFileSystem* fileSystem, const AsciiS
 	}
 
 	if (zhAssetDirectory.isNotEmpty()) {
-		AsciiString siblingGenerals = zhAssetDirectory;
+		// GeneralsX @bugfix Claude 27/07/2026 Join on a separator-free base.
+		//
+		// zhAssetDirectory is whatever the asset-root resolver selected, and a configured
+		// root very commonly ends with a separator ("...Zero Hour\\"). Concatenating
+		// "/ZH_Generals" straight onto that yields "...Zero Hour\\/ZH_Generals" - which
+		// opens fine, but is a DIFFERENT STRING from the "...Zero Hour\\ZH_Generals" that
+		// the recursive scan of the ZH root already produced. m_archiveFileMap is keyed by
+		// that string, so the same 15 base-Generals archives got mounted TWICE under two
+		// spellings: 55 mounts for 40 files on disk. That moved the SimID assetID and made
+		// an otherwise identical PC disagree with the Mac.
+		//
+		// Previously masked: without a trailing separator the search became
+		// "...ZH_Generals*.big", matched nothing, and the whole path failed silently.
+		AsciiString base = zhAssetDirectory;
+		while (base.getLength() > 0) {
+			const char c = base.getCharAt(base.getLength() - 1);
+			if (c != '/' && c != '\\')
+				break;
+			base.truncateBy(1);
+		}
+
+		AsciiString siblingGenerals = base;
 		siblingGenerals.concat("/../Generals");
 		if (tryLoadBigFiles(fileSystem, siblingGenerals, "default-sibling-generals")) {
 			return;
 		}
 
-		AsciiString steamGenerals = zhAssetDirectory;
+		AsciiString steamGenerals = base;
 		steamGenerals.concat("/ZH_Generals");
 		if (tryLoadBigFiles(fileSystem, steamGenerals, "default-zh-generals")) {
 			return;
