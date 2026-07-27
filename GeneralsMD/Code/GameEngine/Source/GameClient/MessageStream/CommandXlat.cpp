@@ -5553,6 +5553,18 @@ static Bool isSystemMessage( const GameMessage *msg )
 		case GameMessage::MSG_SET_REPLAY_CAMERA:
 		case GameMessage::MSG_FRAME_TICK:
 		case GameMessage::MSG_META_DEMO_INSTANT_QUIT:
+		// GeneralsX @feature LAN-safe cheats must survive a scripted no-input window.
+		// CommandTranslator::translateGameMessage (:2476, gate at :2481) runs at priority 70,
+		// BEFORE the network gate, and returns DESTROY_MESSAGE for anything at all while
+		// !TheInGameUI->getInputEnabled(). Without these cases the Debug screen's cheat buttons
+		// are silently eaten during any scripted no-input window - no effect, and no log line.
+		case GameMessage::MSG_GX_CHEAT_GIVE_MONEY:
+		case GameMessage::MSG_GX_CHEAT_SET_MONEY:
+		case GameMessage::MSG_GX_CHEAT_REVEAL_MAP:
+		case GameMessage::MSG_GX_CHEAT_KILL_PLAYER:
+		case GameMessage::MSG_GX_CHEAT_KILL_OBJECTS:
+		case GameMessage::MSG_GX_CHEAT_SPAWN_UNIT:
+		case GameMessage::MSG_GX_CHEAT_DELETE_OBJECTS:
 			return TRUE;
 	}
 	return FALSE;

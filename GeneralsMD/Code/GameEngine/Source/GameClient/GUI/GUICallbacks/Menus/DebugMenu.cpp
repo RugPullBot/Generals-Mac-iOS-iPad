@@ -23,27 +23,37 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 // FILE: DebugMenu.cpp /////////////////////////////////////////////////////////////////////////////
-// Desc:   Code-built Debug overlay: stats, cheats, camera tuning, config and saves
+// Desc:   Code-built Debug overlay: stats, live player panel, LAN-safe cheats, camera tuning,
+//         config and saves
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
 #include "Common/ArchiveFile.h"
 #include "Common/ArchiveFileSystem.h"
+#include "Common/Energy.h"
 #include "Common/FileSystem.h"
 #include "Common/FramePacer.h"
+#include "Common/GameCommon.h"
 #include "Common/GameEngine.h"
 #include "Common/GameState.h"
+#include "Common/GameUtility.h"
 #include "Common/GlobalData.h"
 #include "Common/LocalFileSystem.h"
+#include "Common/MessageStream.h"
 #include "Common/Money.h"
 #include "Common/NameKeyGenerator.h"
 #include "Common/OptionPreferences.h"
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
+#include "Common/PlayerTemplate.h"
+#include "Common/Radar.h"
 #include "Common/ThingFactory.h"
+#include "Common/ThingSort.h"
+#include "Common/ThingTemplate.h"
 
 #include "GameClient/CodeGui.h"
+#include "GameClient/CodeGuiSearchField.h"
 #include "GameClient/CommandXlat.h"
 #include "GameClient/DebugMenu.h"
 #include "GameClient/Display.h"
@@ -70,6 +80,8 @@
 
 #include "GameNetwork/NetworkDefs.h"
 
+#include <algorithm>
+
 //-------------------------------------------------------------------------------------------------
 // Layout, in the 800x600 authoring space the stock .wnd files use. CodeGuiScale* maps it onto the
 // real backbuffer; runtime-created windows get none of the parser's CREATIONRESOLUTION scaling.
@@ -88,10 +100,19 @@ enum
 	DBG_FOOTER_BTN_W = 130, DBG_FOOTER_BTN_H = 30
 };
 
+// GeneralsX @feature Claude 27/07/2026 Spawn is its OWN tab, not another block on Cheats.
+//
+// The panes are a fixed contentH = 520 - 76 - 40*... == 390 authoring-Y units tall, and the Cheats
+// pane already ran to 354 of them. A template picker needs a listbox, a search row, two steppers and
+// four action buttons - roughly another 200. Squeezing that in would have put controls PAST the
+// bottom of the pane, and a child outside its parent's rect is not merely ugly: winPointInWindow
+// hit-tests against the parent first, so an off-pane button is invisible AND unclickable.
 enum
 {
 	DBG_TAB_STATS = 0,
+	DBG_TAB_PLAYERS,
 	DBG_TAB_CHEATS,
+	DBG_TAB_SPAWN,
 	DBG_TAB_CAMERA,
 	DBG_TAB_CONFIG,
 	DBG_TAB_SAVES,
@@ -101,15 +122,43 @@ enum
 enum { DBG_NUM_STAT_LINES = 9 };
 enum { DBG_NUM_SLIDERS = 5 };
 
+/// One row per player slot. MAX_PLAYER_COUNT is 16 (GameCommon.h); the neutral player is skipped, so
+/// this is always one row more than we can fill, which costs eight windows and buys not having to
+/// care whether a map ever ships with a full sixteen.
+enum { DBG_PL_ROWS = MAX_PLAYER_COUNT };
+enum { DBG_PL_COLS = 8 };
+
 /// Read-only config report and the pref editor share one refresh; both are capped so a fat install
 /// cannot spend a second building a listbox nobody scrolls to the bottom of.
 enum { DBG_MAX_REPORT_ROWS = 200 };
 
+/// How many template rows the picker will actually put in the listbox at once.
+///
+/// Not a cosmetic cap. GadgetListBoxAddEntryText allocates a DisplayString per row and calls
+/// setText on it, which lays the glyphs out immediately (GadgetListBox.cpp addEntry), and the list
+/// is rebuilt on EVERY keystroke of the search field. Zero Hour ships a few thousand Object
+/// templates, so an uncapped refill would re-lay out thousands of strings per character typed.
+/// Anything past the cap is reported as a "... N more" row instead, which is also the honest UI:
+/// if the answer is off the end of two hundred rows, scrolling is not how you were going to find it.
+enum { DBG_MAX_SPAWN_ROWS = 200 };
+
+/// The handler's own clamp, GX_CHEAT_MAX_SPAWN_COUNT in GameLogicDispatch.cpp. Mirrored here rather
+/// than shared because that constant is a file static in a .cpp; the UI clamps so the user sees the
+/// real number they are about to get instead of silently asking for more than the wire will honour.
+enum { DBG_MAX_SPAWN_COUNT = 50 };
+
 //-------------------------------------------------------------------------------------------------
 static const WideChar *s_tabLabels[ DBG_TAB_COUNT ] =
 {
-	L"Stats", L"Cheats", L"Camera", L"Config", L"Saves"
+	L"Stats", L"Players", L"Cheats", L"Spawn", L"Camera", L"Config", L"Saves"
 };
+
+/// Count ladder for the spawn/delete stepper. A plain +1/-1 step would be forty taps to reach the
+/// ceiling on a touch screen; this is the same "step one preset" idiom the render-cap buttons on the
+/// Stats tab already use. The last rung IS DBG_MAX_SPAWN_COUNT, so the top of the ladder is exactly
+/// the wire's ceiling and the UI can never ask for a number the handler will quietly reduce.
+static const Int s_spawnCountSteps[] = { 1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 40, DBG_MAX_SPAWN_COUNT };
+enum { DBG_NUM_SPAWN_COUNTS = sizeof( s_spawnCountSteps ) / sizeof( s_spawnCountSteps[0] ) };
 
 struct DebugSliderSpec
 {
@@ -163,8 +212,95 @@ static GameWindow *s_cheatStatus		= nullptr;
 static GameWindow *s_cheatResult		= nullptr;
 static GameWindow *s_buttonGiveCash	= nullptr;
 static GameWindow *s_buttonReveal		= nullptr;
-static GameWindow *s_buttonSpawn		= nullptr;
-static GameWindow *s_entrySpawn			= nullptr;
+
+// Cheats - target selection and the networked actions
+static GameWindow *s_listCheatTarget	= nullptr;
+static GameWindow *s_cheatTargetInfo	= nullptr;
+static GameWindow *s_entryCashAmount	= nullptr;
+static GameWindow *s_buttonSetCash		= nullptr;
+static GameWindow *s_buttonUnreveal		= nullptr;
+static GameWindow *s_buttonForceRadar	= nullptr;
+static GameWindow *s_buttonKillPlayer	= nullptr;
+static GameWindow *s_buttonKillUnits	= nullptr;
+static GameWindow *s_buttonKillAll		= nullptr;
+
+/// Listbox row -> player index. Same pattern as s_prefRowKeys: the listbox item-data slot is a raw
+/// void* and must not be handed anything with a lifetime.
+static std::vector<Int> s_cheatTargetIndex;
+
+/// Change detection for the target listbox. Rebuilding a listbox four times a second would reset the
+/// selection under the user's finger, so the list is only rebuilt when the roster actually changed.
+/// NameKeyType is an Int, so this caches integers - never Player pointers, which would dangle across
+/// a match transition and be compared after the fact.
+static Int					s_cheatRosterCount							= -1;
+static NameKeyType	s_cheatRosterKey[ MAX_PLAYER_COUNT ]	= { NAMEKEY_INVALID };
+
+/// Client-side radar force. See toggleForceRadar() for why this is not a cheat message.
+/// s_forceRadarShown is what the button's label currently says (-1 == unknown, i.e. freshly built);
+/// GadgetButtonSetText posts a GGM_SET_LABEL, so it is only worth doing when the state changed.
+static Bool s_forceRadar			= FALSE;
+static Int	s_forceRadarShown	= -1;
+
+//-------------------------------------------------------------------------------------------------
+// Spawn tab
+//
+// GeneralsX @feature Claude 27/07/2026 A searchable template picker instead of a text box.
+//
+// Typing "AmericaVehicleHumvee" exactly right is not a thing anyone can do on a phone keyboard, and
+// getting it wrong produced a one-line "no such template" and nothing else to go on. The picker
+// enumerates the ThingFactory once and lets CodeGuiSearchField filter it.
+//
+// THE SELECTION'S BACKING VALUE IS THE INI NAME, not the numeric template id and not a row index.
+// Rows move under the filter, and template ids are handed out by an incrementing counter during INI
+// parsing (ThingFactory.cpp) and are therefore reassigned whenever the data is reloaded - a map .ini
+// with object overrides is enough. The name is the only identity that survives both, and it is
+// resolved to an id at PRESS time, one line before the message is opened.
+//-------------------------------------------------------------------------------------------------
+struct DebugSpawnEntry
+{
+	AsciiString		name;						///< the INI Object name; the selection's backing value
+	UnicodeString	label;					///< display name, falling back to the INI name
+	AsciiString		search;					///< lowercased "label name", so one strstr filters on both
+	Bool					spawnable;			///< survived debugTemplateLooksSpawnable()
+	Bool					hasDisplayName;	///< FALSE when label IS the INI name, so the row does not say it twice
+};
+
+/// Every template in the factory, sorted, built once per screen lifetime. Holds ALL of them with a
+/// per-entry flag rather than only the spawnable ones, so the "Show all" toggle costs no rebuild.
+static std::vector<DebugSpawnEntry>	s_spawnCatalog;
+static Bool													s_spawnCatalogBuilt	= FALSE;
+
+/// Listbox row -> index into s_spawnCatalog. Same pattern as s_cheatTargetIndex and s_prefRowKeys:
+/// the listbox's own item-data slot is a raw void* that must not be handed anything with a lifetime.
+/// A -1 marks the trailing "... N more" row, which is text, not a template.
+static std::vector<Int> s_spawnRowIndex;
+
+static AsciiString s_spawnPick;										///< INI name of the armed template, "" for none
+static Bool				 s_spawnShowAll	= FALSE;				///< FALSE == apply the sanity filter
+static Int				 s_spawnCountIdx = 0;						///< index into s_spawnCountSteps
+static Int				 s_spawnVet			= (Int)LEVEL_REGULAR;
+
+static CodeGuiSearchField s_spawnSearch;
+
+static GameWindow *s_listSpawnTemplate		= nullptr;
+static GameWindow *s_spawnTargetInfo			= nullptr;
+static GameWindow *s_spawnPickLabel				= nullptr;
+static GameWindow *s_spawnCountValue			= nullptr;
+static GameWindow *s_spawnVetValue				= nullptr;
+static GameWindow *s_spawnResult					= nullptr;
+static GameWindow *s_buttonSpawnScope			= nullptr;
+static GameWindow *s_buttonSpawnCountDown	= nullptr;
+static GameWindow *s_buttonSpawnCountUp		= nullptr;
+static GameWindow *s_buttonSpawnVetPrev		= nullptr;
+static GameWindow *s_buttonSpawnVetNext		= nullptr;
+static GameWindow *s_buttonSpawn					= nullptr;
+static GameWindow *s_buttonSpawnDelete		= nullptr;
+static GameWindow *s_buttonSpawnDeleteType	= nullptr;
+static GameWindow *s_buttonSpawnDeleteAll		= nullptr;
+
+// Players tab - a grid of labels, because CodeGuiListbox hard-codes one column.
+static GameWindow *s_plCell[ DBG_PL_COLS ][ DBG_PL_ROWS ] = { { nullptr } };
+static Int				 s_plRowsShown												= 0;
 
 // Camera (the five ported Extras sliders)
 static GameWindow *s_slider[ DBG_NUM_SLIDERS ]			= { nullptr };
@@ -205,42 +341,71 @@ static WindowMsgHandledType DebugMenuInput( GameWindow *window, UnsignedInt msg,
 																						WindowMsgData mData1, WindowMsgData mData2 );
 
 //-------------------------------------------------------------------------------------------------
-/** Is it safe to mutate logic state from here?
+/** May we issue a SYNCHRONISED cheat from here?
 	*
-	* Every cheat below writes something the simulation reads on its next frame - the local player's
-	* money, the shroud grid, the object list. Only this peer would run it, so in a networked game
-	* the two simulations diverge immediately and the CRC check drops the connection. Rather than
-	* "best effort", anything that is not a strictly local, non-replay, in-progress game is refused
-	* and the buttons are disabled so the refusal is visible before the tap. */
+	* GeneralsX @feature Claude 27/07/2026 Cheats are ORDERS now, not direct state writes.
+	*
+	* The old gate refused anything with TheNetwork up, because every cheat wrote simulation state on
+	* this peer alone and the CRC check would then drop the connection within ~100 frames. That reason
+	* is gone: each cheat is appended to TheMessageStream as a message in the 1000..1999 network band,
+	* so GameClientMessageDispatcher keeps it, Network::GetCommandsFromCommandList ships it stamped
+	* with an execution frame and DELETES the local copy, and RelayCommandsToCommandList re-delivers
+	* it - to the sender too - on that one frame in fixed slot order. Every peer runs the identical
+	* handler on the identical frame, so there is nothing left to diverge.
+	*
+	* What remains here is only the set of states in which appending a message is not legal at all.
+	* Note what is deliberately NOT tested: TheNetwork, isInMultiplayerGame() and getGameMode(). */
 //-------------------------------------------------------------------------------------------------
-static Bool debugCheatsAllowed( void )
+static Bool debugSyncedCheatsAllowed( void )
 {
-	if( TheGameLogic == nullptr || ThePlayerList == nullptr )
+	if( TheGameLogic == nullptr || ThePlayerList == nullptr || TheMessageStream == nullptr )
 		return FALSE;
 
-	// TheNetwork is non-null for the whole lifetime of a LAN/online game, including the lobby, so
-	// this alone covers every case the game-mode test below might not have caught yet.
-	if( TheNetwork != nullptr )
+	// GameMessage's constructor dereferences ThePlayerList->getLocalPlayer() unconditionally
+	// (MessageStream.cpp:54). A null there is a release-build crash, not an assert.
+	if( ThePlayerList->getLocalPlayer() == nullptr )
 		return FALSE;
 
 	if( TheGameLogic->isInGame() == FALSE )
 		return FALSE;
 	if( TheGameLogic->isInShellGame() )
 		return FALSE;
+
+	// A replay feeds TheCommandList straight from the recording; an injected order would be a
+	// divergence from the file rather than a cheat.
 	if( TheGameLogic->isInReplayGame() )
 		return FALSE;
-	if( TheGameLogic->isInMultiplayerGame() )
-		return FALSE;
 
-	const GameMode mode = TheGameLogic->getGameMode();
-	return ( mode == GAME_SINGLE_PLAYER || mode == GAME_SKIRMISH );
+	return TRUE;
 }
 
+//-------------------------------------------------------------------------------------------------
+/** Client-only debug toggles - the radar force-on and the read-only player panel.
+	*
+	* Nothing behind this gate touches logic state, so a network game is not a reason to refuse. */
+//-------------------------------------------------------------------------------------------------
+static Bool debugClientToolsAllowed( void )
+{
+	return ( TheGameLogic != nullptr && TheGameLogic->isInGame() &&
+					 TheGameLogic->isInShellGame() == FALSE &&
+					 ThePlayerList != nullptr && ThePlayerList->getLocalPlayer() != nullptr );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Echo one line of cheat feedback.
+	*
+	* Written to BOTH result labels, because the Cheats pane and the Spawn pane are separate hidden
+	* containers and only one of them is on screen at a time. beginCheatOrder()'s refusals ("not in a
+	* live match", "pick a target player first") come through here, so a Spawn button that declined
+	* has to be able to say so on the pane the user is actually looking at. Writing the label of a
+	* hidden pane is free - GadgetStaticTextSetText only re-lays out a DisplayString. */
 //-------------------------------------------------------------------------------------------------
 static void setCheatResult( const UnicodeString &text )
 {
 	if( s_cheatResult )
 		GadgetStaticTextSetText( s_cheatResult, text );
+	if( s_spawnResult )
+		GadgetStaticTextSetText( s_spawnResult, text );
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -669,97 +834,831 @@ static void doSaveHere( void )
 
 //-------------------------------------------------------------------------------------------------
 // CHEATS /////////////////////////////////////////////////////////////////////////////////////////
+//
+// GeneralsX @feature Claude 27/07/2026 Every cheat below is a network order aimed at a CHOSEN
+// player, not a direct write to the local one.
+//
+// The target travels as a PLAYER INDEX. That is the one identifier which is lockstep-identical on
+// every peer: PlayerList::crc walks m_players in index order and PartitionCell::crc xfers
+// m_shroudLevel[] indexed by player index, both of which feed GameLogic::getCRC, so if two peers
+// disagreed about who sits at index N every existing LAN game would already mismatch. It is NOT the
+// net slot - NetGameCommandMsg::constructGameMessage overwrites a message's own player index with
+// the sender's slot, which is exactly why MSG_SELF_DESTRUCT can only ever kill its own sender and
+// why the victim has to be an explicit argument here.
+//
+// Index 0 is the neutral player and the handlers refuse it, so the target list starts at 1.
 //-------------------------------------------------------------------------------------------------
 
 //-------------------------------------------------------------------------------------------------
-static void doGiveCash( void )
+/** Would the target listbox come out different from what is in it right now?
+	*
+	* The roster only changes at newGame, but this screen survives a match transition, so the list has
+	* to notice. Comparing NameKeyTypes rather than Player pointers is deliberate: a cached Player* is
+	* dangling the moment PlayerList is rebuilt, and comparing a dangling pointer is exactly the class
+	* of bug this whole screen keeps tripping over. NameKeyType is a 32-bit int. */
+//-------------------------------------------------------------------------------------------------
+static Bool cheatRosterChanged( void )
 {
-	if( debugCheatsAllowed() == FALSE )
-		return;
+	if( ThePlayerList == nullptr )
+		return FALSE;								// nothing to build from; refreshCheatTargets would bail anyway
 
-	Player *player = ThePlayerList->getLocalPlayer();
-	if( player == nullptr )
-		return;
+	const Int count = ThePlayerList->getPlayerCount();
+	if( count != s_cheatRosterCount )
+		return TRUE;
 
-	Money *money = player->getMoney();
-	if( money == nullptr )
-		return;
-
-	money->deposit( 10000 );
-	setCheatResult( L"Deposited $10,000." );
-}
-
-//-------------------------------------------------------------------------------------------------
-static void doRevealMap( void )
-{
-	if( debugCheatsAllowed() == FALSE || ThePartitionManager == nullptr )
-		return;
-
-	Player *player = ThePlayerList->getLocalPlayer();
-	if( player == nullptr )
-		return;
-
-	ThePartitionManager->revealMapForPlayerPermanently( player->getPlayerIndex() );
-	setCheatResult( L"Map revealed for the local player." );
-}
-
-//-------------------------------------------------------------------------------------------------
-/** Spawn the named template on the local player's default team, at the camera's look-at point. */
-//-------------------------------------------------------------------------------------------------
-static void doSpawnUnit( void )
-{
-	if( debugCheatsAllowed() == FALSE || TheThingFactory == nullptr || TheTacticalView == nullptr )
-		return;
-
-	if( s_entrySpawn == nullptr )
-		return;
-
-	AsciiString name;
-	name.translate( GadgetTextEntryGetText( s_entrySpawn ) );
-	name.trim();
-	if( name.isEmpty() )
+	for( Int i = 0; i < count && i < MAX_PLAYER_COUNT; ++i )
 	{
-		setCheatResult( L"Type a template name first, e.g. AmericaVehicleHumvee." );
+		Player *p = ThePlayerList->getNthPlayer( i );
+		const NameKeyType key = ( p != nullptr ) ? p->getPlayerNameKey() : NAMEKEY_INVALID;
+		if( key != s_cheatRosterKey[i] )
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Rebuild the target list, preserving the selection by player index.
+	*
+	* Mirrors refreshPrefList(): GadgetListBoxReset, then GadgetListBoxAddEntryText per row with a
+	* parallel index vector. Only called when cheatRosterChanged() says so - rebuilding at 4 Hz would
+	* clear the selection out from under the user between aiming and pressing. */
+//-------------------------------------------------------------------------------------------------
+static void refreshCheatTargets( void )
+{
+	if( s_listCheatTarget == nullptr || ThePlayerList == nullptr )
+		return;
+
+	Int keep = -1;
+	GadgetListBoxGetSelected( s_listCheatTarget, &keep );
+	const Int keptIndex = ( keep >= 0 && keep < (Int)s_cheatTargetIndex.size() )
+												? s_cheatTargetIndex[keep] : -1;
+
+	GadgetListBoxReset( s_listCheatTarget );
+	s_cheatTargetIndex.clear();
+
+	const CodeGuiTheme &theme = CodeGuiGetTheme();
+	Player *local = ThePlayerList->getLocalPlayer();
+	const Int count = ThePlayerList->getPlayerCount();
+
+	s_cheatRosterCount = count;
+	for( Int i = 0; i < MAX_PLAYER_COUNT; ++i )
+	{
+		Player *p = ( i < count ) ? ThePlayerList->getNthPlayer( i ) : nullptr;
+		s_cheatRosterKey[i] = ( p != nullptr ) ? p->getPlayerNameKey() : NAMEKEY_INVALID;
+	}
+
+	for( Int i = 1; i < count; ++i )				// 0 is neutral, the handlers refuse it
+	{
+		Player *p = ThePlayerList->getNthPlayer( i );
+		if( p == nullptr )
+			continue;
+
+		// An unused slot is a live Player with a null template. Offering it as a target would just be
+		// a button that silently does nothing.
+		const PlayerTemplate *pt = p->getPlayerTemplate();
+		if( pt == nullptr )
+			continue;
+
+		UnicodeString name = p->getPlayerDisplayName();
+		if( name.isEmpty() )
+			name.translate( p->getPlayerName() );
+
+		UnicodeString line;
+		line.format( L"%d   %s   -   %s   %s%s", i, name.str(), pt->getDisplayName().str(),
+								 ( p->getPlayerType() == PLAYER_HUMAN ) ? L"human" : L"AI",
+								 ( p == local ) ? L"   (you)" : L"" );
+
+		const Int row = GadgetListBoxAddEntryText( s_listCheatTarget, line, theme.textNormal, -1 );
+		if( row < 0 )
+			break;										// listbox is full; listLength is a hard cap
+
+		s_cheatTargetIndex.push_back( i );
+	}
+
+	// Restore the previous target, or pre-select the local player on a fresh list. selectedCheatTarget()
+	// would fall back to the local player anyway, but an IMPLICIT target on a screen with a "Defeat
+	// player" button is a bad idea: this way the highlighted row always says who is about to be hit.
+	const Int want = ( keptIndex >= 0 ) ? keptIndex
+										 : ( ( local != nullptr ) ? (Int)local->getPlayerIndex() : -1 );
+
+	for( size_t r = 0; r < s_cheatTargetIndex.size(); ++r )
+	{
+		if( s_cheatTargetIndex[r] == want )
+		{
+			GadgetListBoxSetSelected( s_listCheatTarget, (Int)r );
+			break;
+		}
+	}
+}
+
+//-------------------------------------------------------------------------------------------------
+/** The player every cheat below aims at, read at press time rather than tracked through GLM_ events.
+	*
+	* Falls back to the local player so the screen is still useful before anything is picked - which is
+	* also what makes the three converted buttons behave like they used to out of the box. */
+//-------------------------------------------------------------------------------------------------
+static Int selectedCheatTarget( void )
+{
+	Int sel = -1;
+	if( s_listCheatTarget )
+		GadgetListBoxGetSelected( s_listCheatTarget, &sel );
+
+	if( sel >= 0 && sel < (Int)s_cheatTargetIndex.size() )
+		return s_cheatTargetIndex[sel];
+
+	if( ThePlayerList == nullptr )
+		return -1;
+
+	Player *local = ThePlayerList->getLocalPlayer();
+	return ( local != nullptr ) ? (Int)local->getPlayerIndex() : -1;
+}
+
+//-------------------------------------------------------------------------------------------------
+static UnicodeString cheatTargetName( Int index )
+{
+	UnicodeString name;
+
+	if( ThePlayerList == nullptr || index <= 0 || index >= ThePlayerList->getPlayerCount() )
+		return name;
+
+	Player *p = ThePlayerList->getNthPlayer( index );
+	if( p == nullptr )
+		return name;
+
+	name = p->getPlayerDisplayName();
+	if( name.isEmpty() )
+		name.translate( p->getPlayerName() );
+
+	return name;
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Open a cheat order and append argument 0, the target player index.
+	*
+	* One place owns the argument-0 contract so a new cheat cannot get it wrong. Returns null and
+	* explains itself in the result line if the order may not be sent; the caller then appends the
+	* rest of ITS arguments, in the exact order and count the handler checks with gxCheatArgsOk(). */
+//-------------------------------------------------------------------------------------------------
+static GameMessage *beginCheatOrder( GameMessage::Type type, Int &targetOut )
+{
+	targetOut = -1;
+
+	if( debugSyncedCheatsAllowed() == FALSE )
+	{
+		setCheatResult( L"Refused: not in a live, non-replay match." );
+		return nullptr;
+	}
+
+	const Int target = selectedCheatTarget();
+	if( target <= 0 )
+	{
+		setCheatResult( L"Pick a target player first." );
+		return nullptr;
+	}
+
+	GameMessage *msg = TheMessageStream->appendMessage( type );
+	if( msg == nullptr )
+		return nullptr;
+
+	msg->appendIntegerArgument( target );
+	targetOut = target;
+	return msg;
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Say "sent", never "done".
+	*
+	* In a LAN game the effect lands m_runAhead frames after the tap, on the sender's own screen too -
+	* that lateness IS the proof the order went round-trip instead of being applied locally. Claiming
+	* success here would make the normal case read as a bug. */
+//-------------------------------------------------------------------------------------------------
+static void setCheatOrderSent( const WideChar *what, Int target )
+{
+	UnicodeString msg;
+	msg.format( L"Sent: %s -> %s (player %d). Lands in a few frames.",
+							what, cheatTargetName( target ).str(), target );
+	setCheatResult( msg );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** How much cash the two money buttons move. Negative is legal and means "take it away". */
+//-------------------------------------------------------------------------------------------------
+static Int cheatCashAmount( void )
+{
+	if( s_entryCashAmount == nullptr )
+		return 10000;
+
+	AsciiString text;
+	text.translate( GadgetTextEntryGetText( s_entryCashAmount ) );
+	text.trim();
+	if( text.isEmpty() )
+		return 10000;
+
+	return atoi( text.str() );
+}
+
+//-------------------------------------------------------------------------------------------------
+static void gxGiveMoney( void )
+{
+	Int target = -1;
+	GameMessage *msg = beginCheatOrder( GameMessage::MSG_GX_CHEAT_GIVE_MONEY, target );
+	if( msg == nullptr )
+		return;
+
+	const Int amount = cheatCashAmount();
+	msg->appendIntegerArgument( amount );
+
+	DEBUG_LOG(( "DebugMenu: sent GIVE_MONEY %d to player %d", amount, target ));
+
+	UnicodeString what;
+	what.format( L"%s $%d", ( amount < 0 ) ? L"take" : L"give", ( amount < 0 ) ? -amount : amount );
+	setCheatOrderSent( what.str(), target );
+}
+
+//-------------------------------------------------------------------------------------------------
+static void gxSetMoney( void )
+{
+	Int target = -1;
+	GameMessage *msg = beginCheatOrder( GameMessage::MSG_GX_CHEAT_SET_MONEY, target );
+	if( msg == nullptr )
+		return;
+
+	const Int amount = cheatCashAmount();
+	msg->appendIntegerArgument( amount );
+
+	DEBUG_LOG(( "DebugMenu: sent SET_MONEY %d for player %d", amount, target ));
+
+	UnicodeString what;
+	what.format( L"set cash to $%d", ( amount < 0 ) ? 0 : amount );
+	setCheatOrderSent( what.str(), target );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Reveal or re-shroud the TARGET player's map.
+	*
+	* Two explicit buttons rather than one toggle, on purpose: the "is it revealed" flag lives in the
+	* logic handler (it has to - PartitionCell::addLooker is a counter, not a flag) and the client has
+	* no way to read it back, so a client-side toggle would drift out of step with the truth the first
+	* time two peers pressed it. Two idempotent orders cannot drift.
+	*
+	* Revealing SOMEONE ELSE'S map is real and is in the CRC, but it repaints nothing on your machine -
+	* PartitionCell::addLooker only pushes to TheDisplay/TheRadar for the observed-or-local index. To
+	* see through the fog yourself, target yourself. */
+//-------------------------------------------------------------------------------------------------
+static void gxRevealMap( Bool reveal )
+{
+	Int target = -1;
+	GameMessage *msg = beginCheatOrder( GameMessage::MSG_GX_CHEAT_REVEAL_MAP, target );
+	if( msg == nullptr )
+		return;
+
+	msg->appendBooleanArgument( reveal );
+
+	DEBUG_LOG(( "DebugMenu: sent REVEAL_MAP %d for player %d", (Int)reveal, target ));
+	setCheatOrderSent( reveal ? L"reveal map" : L"re-shroud map", target );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Defeat the target player: hand the assets to a living mutual ally, then killPlayer().
+	*
+	* There is no Player::setDefeated - defeat is DERIVED. VictoryConditions::update polls
+	* hasSinglePlayerBeenDefeated() on every peer every frame and does the rest itself: the banner, the
+	* permanent reveal for the dead player, the AI slot's last frame, the score screen, observer mode.
+	* All we owe it is a synchronised kill. */
+//-------------------------------------------------------------------------------------------------
+static void gxKillPlayer( Bool transferToAlly )
+{
+	Int target = -1;
+	GameMessage *msg = beginCheatOrder( GameMessage::MSG_GX_CHEAT_KILL_PLAYER, target );
+	if( msg == nullptr )
+		return;
+
+	msg->appendBooleanArgument( transferToAlly );
+
+	DEBUG_LOG(( "DebugMenu: sent KILL_PLAYER (ally transfer %d) for player %d",
+		(Int)transferToAlly, target ));
+	setCheatOrderSent( L"defeat", target );
+}
+
+//-------------------------------------------------------------------------------------------------
+static void gxKillObjects( Bool includeStructures )
+{
+	Int target = -1;
+	GameMessage *msg = beginCheatOrder( GameMessage::MSG_GX_CHEAT_KILL_OBJECTS, target );
+	if( msg == nullptr )
+		return;
+
+	msg->appendBooleanArgument( includeStructures );
+
+	DEBUG_LOG(( "DebugMenu: sent KILL_OBJECTS (structures %d) for player %d",
+		(Int)includeStructures, target ));
+	setCheatOrderSent( includeStructures ? L"kill units and buildings" : L"kill units", target );
+}
+
+//-------------------------------------------------------------------------------------------------
+// SPAWN TAB - the template picker /////////////////////////////////////////////////////////////////
+//-------------------------------------------------------------------------------------------------
+
+//-------------------------------------------------------------------------------------------------
+/** Would spawning this template produce something a human would recognise as a unit?
+	*
+	* THE RULE, in one sentence: keep a template unless it draws nothing, unless the engine itself
+	* says it is not an Object, unless it only ever exists in mid-air, or unless the data's own editor
+	* bucket says it is not a thing you put on a map.
+	*
+	* Each clause, and why it is the one that was chosen:
+	*
+	* 1. NO DRAW MODULE. This does almost all of the work. Zero Hour's Object database is mostly not
+	*    units: the upgrade, science, OCL-marker, spawner-anchor and "system" placeholder Objects
+	*    exist to carry module data and declare no Draw block at all. Spawning one costs a real Object
+	*    with real collision that renders literally nothing, so it is the single most useless thing
+	*    the old text box would happily do for you. getDrawModuleInfo() is a std::vector, always
+	*    well-defined, and is the one test here that cannot be fooled by unparsed INI.
+	*
+	* 2. KINDOF_DRAWABLE_ONLY. Not a judgement call at all - KindOf.h defines it as "template is used
+	*    only to create drawables (not Objects)". Taking the engine at its word.
+	*
+	* 3. IN-FLIGHT-ONLY objects: projectiles, the two missile flavours and parachutes. These are
+	*    created by a weapon or by a falling passenger and are handed a target, a launcher or a
+	*    payload on the way out. Dropped on the ground with none of that they either stand inert
+	*    forever or run their impact logic on frame one.
+	*
+	* 4. EDITOR SORTING. ES_SYSTEM is literally documented as "programmer objects, not objects to put
+	*    on a map"; ES_AUDIO, ES_TEST, ES_FOR_REVIEW, ES_ROAD and ES_WAYPOINT are the same idea.
+	*
+	*    Two deliberate restraints in this clause. ES_NONE is KEPT, because it is also the value an
+	*    Object gets when its INI never sets the field, and hiding everything the data forgot to sort
+	*    would be exactly the failure this filter exists to avoid. And the value is range-checked
+	*    first: ThingTemplate's constructor never initialises m_editorSorting (ThingTemplate.cpp -
+	*    every other Byte field is assigned there, this one is not), so an unsorted template can carry
+	*    a byte that is not a valid EditorSortingType at all. Out of range is treated as ES_NONE.
+	*
+	* What is deliberately NOT filtered: scenery. Trees, rocks, civilian buildings and props all spawn
+	* perfectly well and dropping one on the map is a legitimate thing to want from a debug screen.
+	* The "Show all" toggle on the pane is the escape hatch for everything this function gets wrong. */
+//-------------------------------------------------------------------------------------------------
+static Bool debugTemplateLooksSpawnable( const ThingTemplate *tmpl )
+{
+	if( tmpl == nullptr )
+		return FALSE;
+
+	if( tmpl->getDrawModuleInfo().getCount() == 0 )
+		return FALSE;
+
+	if( tmpl->isKindOf( KINDOF_DRAWABLE_ONLY ) )
+		return FALSE;
+
+	if( tmpl->isKindOf( KINDOF_PROJECTILE ) ||
+			tmpl->isKindOf( KINDOF_SMALL_MISSILE ) ||
+			tmpl->isKindOf( KINDOF_BALLISTIC_MISSILE ) ||
+			tmpl->isKindOf( KINDOF_PARACHUTE ) )
+		return FALSE;
+
+	const Int sort = (Int)tmpl->getEditorSorting();
+	if( sort > (Int)ES_NONE && sort < (Int)ES_NUM_SORTING_TYPES )
+	{
+		if( sort == (Int)ES_SYSTEM || sort == (Int)ES_AUDIO || sort == (Int)ES_TEST ||
+				sort == (Int)ES_FOR_REVIEW || sort == (Int)ES_ROAD || sort == (Int)ES_WAYPOINT )
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+//-------------------------------------------------------------------------------------------------
+/// Alphabetical by the searchable key, which starts with the display label - so the list reads in
+/// the order of the text the user is actually looking at.
+static bool debugSpawnEntryLess( const DebugSpawnEntry &a, const DebugSpawnEntry &b )
+{
+	return strcmp( a.search.str(), b.search.str() ) < 0;
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Walk the ThingFactory once and cache every template.
+	*
+	* The factory's list is a singly linked chain built by PREPENDING (ThingFactory::addTemplate), so
+	* raw iteration order is reverse INI parse order - unusable as a browse order. Hence the sort.
+	*
+	* Built lazily on the first visit to the pane and thrown away by nullifyControls(), i.e. once per
+	* screen lifetime. That is also the correctness argument for not caching template POINTERS or IDS
+	* here: ThingFactory::reset() deletes override templates and renumbers, and a match transition -
+	* which is exactly what tears this screen down - is when that happens. */
+//-------------------------------------------------------------------------------------------------
+static void buildSpawnCatalog( void )
+{
+	s_spawnCatalog.clear();
+	s_spawnCatalogBuilt = TRUE;			// set even on the early-out, so we do not re-walk every tick
+
+	if( TheThingFactory == nullptr )
+		return;
+
+	Int spawnableCount = 0;
+
+	for( const ThingTemplate *tmpl = TheThingFactory->firstTemplate();
+			 tmpl != nullptr;
+			 tmpl = tmpl->friend_getNextTemplate() )
+	{
+		if( tmpl->getName().isEmpty() )
+			continue;
+
+		DebugSpawnEntry entry;
+		entry.name			= tmpl->getName();
+		entry.label			= tmpl->getDisplayName();
+		entry.spawnable	= debugTemplateLooksSpawnable( tmpl );
+
+		// "Has a display name" is not the same as "the field was set". DisplayName is parsed with
+		// INI::parseAndTranslateLabel, which runs the label through TheGameText->fetch, and fetch
+		// hands back the literal string MISSING: 'OBJECT:Foo' when the CSF has no such entry
+		// (GameText.cpp) rather than failing. Rows reading MISSING: '...' would be worse than
+		// useless as a browse label, so that counts as not having one.
+		entry.hasDisplayName = ( entry.label.isEmpty() == FALSE ) &&		// no isNotEmpty on UnicodeString
+													 ( entry.label.startsWithNoCase( L"MISSING:" ) == FALSE );
+
+		if( entry.hasDisplayName == FALSE )
+			entry.label.translate( entry.name );		// no usable OBJECT: string; the INI name it is
+
+		if( entry.spawnable )
+			++spawnableCount;
+
+		// One lowercase ASCII haystack covering BOTH names, so a single strstr per row per keystroke
+		// filters on either. Lossy for a localised display name in a non-Latin script - translate()
+		// is single-byte - but the INI name is always ASCII, so such a template stays findable.
+		entry.search.translate( entry.label );
+		entry.search.concat( ' ' );
+		entry.search.concat( entry.name );
+		entry.search.toLower();
+
+		s_spawnCatalog.push_back( entry );
+	}
+
+	std::sort( s_spawnCatalog.begin(), s_spawnCatalog.end(), debugSpawnEntryLess );
+
+	// Belt and braces for a rule that cannot be verified against shipped data from here. If the
+	// filter hid absolutely everything, the pane would be an empty box with no hint that a toggle
+	// exists - strictly worse than the text box this replaces. Fall open instead.
+	if( spawnableCount == 0 && s_spawnCatalog.empty() == FALSE )
+		s_spawnShowAll = TRUE;
+}
+
+//-------------------------------------------------------------------------------------------------
+static void refreshSpawnPickLabel( void )
+{
+	if( s_spawnPickLabel == nullptr )
+		return;
+
+	if( s_spawnPick.isEmpty() )
+	{
+		GadgetStaticTextSetText( s_spawnPickLabel,
+			UnicodeString( L"Picked: nothing yet - tap a row above." ) );
 		return;
 	}
 
-	// check == FALSE: findTemplate asserts on a miss otherwise, and a typo in a debug field is an
-	// expected outcome, not a bug.
-	const ThingTemplate *tmpl = TheThingFactory->findTemplate( name, FALSE );
+	UnicodeString text;
+	text.format( L"Picked: %S", s_spawnPick.str() );
+	GadgetStaticTextSetText( s_spawnPickLabel, text );
+}
+
+//-------------------------------------------------------------------------------------------------
+static void refreshSpawnCountLabel( void )
+{
+	if( s_spawnCountValue == nullptr )
+		return;
+
+	// Range-checked even though both step handlers clamp: this reads a file-static index into a
+	// fixed array from a draw-driven path, and the cost of being wrong is an out-of-bounds read.
+	const Int idx = ( s_spawnCountIdx >= 0 && s_spawnCountIdx < DBG_NUM_SPAWN_COUNTS )
+										? s_spawnCountIdx : 0;
+
+	UnicodeString text;
+	text.format( L"%d", s_spawnCountSteps[ idx ] );
+	GadgetStaticTextSetText( s_spawnCountValue, text );
+}
+
+//-------------------------------------------------------------------------------------------------
+static void refreshSpawnVetLabel( void )
+{
+	if( s_spawnVetValue == nullptr )
+		return;
+
+	// Labelled from the engine's own table rather than four hardcoded strings, so the pane cannot
+	// drift from the enum the wire argument carries. GameCommon.cpp asserts the array is LEVEL_COUNT
+	// long plus a null, and s_spawnVet is clamped to LEVEL_FIRST..LEVEL_LAST everywhere it is set.
+	const char *name = ( s_spawnVet >= (Int)LEVEL_FIRST && s_spawnVet <= (Int)LEVEL_LAST )
+											? TheVeterancyNames[ s_spawnVet ] : "?";
+
+	UnicodeString text;
+	text.format( L"%S", name );
+	GadgetStaticTextSetText( s_spawnVetValue, text );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Refill the picker from the catalog, honouring the search filter and the scope toggle.
+	*
+	* Runs on every keystroke, so the per-row work is one strstr against a pre-lowercased key. The
+	* armed template is re-selected by NAME rather than by row, and - importantly - is NOT cleared
+	* when it filters out: narrowing the search to find something else and then clearing the box must
+	* not silently disarm the button you were about to press. */
+//-------------------------------------------------------------------------------------------------
+static void repopulateSpawnList( void )
+{
+	if( s_listSpawnTemplate == nullptr )
+		return;
+
+	AsciiString filter;
+	filter.translate( s_spawnSearch.getFilter() );
+	filter.trim();
+	filter.toLower();
+
+	GadgetListBoxReset( s_listSpawnTemplate );
+	s_spawnRowIndex.clear();
+
+	const CodeGuiTheme &theme = CodeGuiGetTheme();
+
+	Int matched	= 0;
+	Int shown		= 0;
+	Int keptRow	= -1;
+
+	for( size_t i = 0; i < s_spawnCatalog.size(); ++i )
+	{
+		const DebugSpawnEntry &entry = s_spawnCatalog[i];
+
+		if( s_spawnShowAll == FALSE && entry.spawnable == FALSE )
+			continue;
+		if( filter.isNotEmpty() && strstr( entry.search.str(), filter.str() ) == nullptr )
+			continue;
+
+		++matched;
+		if( shown >= DBG_MAX_SPAWN_ROWS )
+			continue;								// keep counting, stop drawing - see DBG_MAX_SPAWN_ROWS
+
+		// The INI name is echoed next to the display name on purpose: it is the value the order
+		// actually carries, and seeing it is how anyone learns the name for a script or a log line.
+		UnicodeString line;
+		if( entry.hasDisplayName )
+			line.format( L"%s   -   %S", entry.label.str(), entry.name.str() );
+		else
+			line = entry.label;
+
+		const Int row = GadgetListBoxAddEntryText( s_listSpawnTemplate, line, theme.textNormal, -1 );
+		if( row < 0 )
+			break;									// listbox is full; listLength is a hard cap
+
+		s_spawnRowIndex.push_back( (Int)i );
+		if( entry.name.compare( s_spawnPick ) == 0 )
+			keptRow = row;
+
+		++shown;
+	}
+
+	if( matched > shown )
+	{
+		UnicodeString more;
+		more.format( L"... and %d more. Type in Search to narrow the list.", matched - shown );
+		if( GadgetListBoxAddEntryText( s_listSpawnTemplate, more, theme.textDisabled, -1 ) >= 0 )
+			s_spawnRowIndex.push_back( -1 );		// text, not a template
+	}
+	else if( matched == 0 )
+	{
+		// An empty box explains nothing, and the three reasons it can be empty want three different
+		// answers: no data loaded at all, a filter that matched nothing, or the sanity filter hiding
+		// the thing being looked for.
+		UnicodeString none;
+		if( s_spawnCatalog.empty() )
+			none = UnicodeString( L"No templates loaded - the game data is not up yet." );
+		else if( s_spawnShowAll )
+			none.format( L"Nothing matches. Clear the search to see all %d templates.",
+									 (Int)s_spawnCatalog.size() );
+		else
+			none = UnicodeString( L"Nothing matches. Clear the search, or press \"Show: all\" - "
+														L"this list hides templates that cannot sensibly be spawned." );
+
+		if( GadgetListBoxAddEntryText( s_listSpawnTemplate, none, theme.textDisabled, -1 ) >= 0 )
+			s_spawnRowIndex.push_back( -1 );
+	}
+
+	if( keptRow >= 0 )
+	{
+		GadgetListBoxSetSelected( s_listSpawnTemplate, keptRow );
+		GadgetListBoxSetTopVisibleEntry( s_listSpawnTemplate, CodeGuiAtLeast( keptRow - 3, 0 ) );
+	}
+
+	refreshSpawnPickLabel();
+}
+
+//-------------------------------------------------------------------------------------------------
+static void spawnSearchChanged( CodeGuiSearchField *field )
+{
+	repopulateSpawnList();
+}
+
+//-------------------------------------------------------------------------------------------------
+/** A row was tapped. Arm the template it names, or ignore the "... and N more" footer row. */
+//-------------------------------------------------------------------------------------------------
+static void onSpawnRowSelected( void )
+{
+	if( s_listSpawnTemplate == nullptr )
+		return;
+
+	Int sel = -1;
+	GadgetListBoxGetSelected( s_listSpawnTemplate, &sel );
+	if( sel < 0 || sel >= (Int)s_spawnRowIndex.size() )
+		return;
+
+	const Int cat = s_spawnRowIndex[ sel ];
+	if( cat < 0 || cat >= (Int)s_spawnCatalog.size() )
+		return;										// the footer row - leave the previous pick armed
+
+	s_spawnPick = s_spawnCatalog[ cat ].name;
+	refreshSpawnPickLabel();
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Resolve the armed INI name to a live template, or explain why not.
+	*
+	* check == FALSE: findTemplate asserts on a miss otherwise, and a name that stopped resolving
+	* because the data was reloaded under us is an expected outcome here, not a bug. Called BEFORE the
+	* message is opened, so a miss cannot leave a half-built order on the stream. */
+//-------------------------------------------------------------------------------------------------
+static const ThingTemplate *spawnPickedTemplate( void )
+{
+	if( TheThingFactory == nullptr )
+		return nullptr;
+
+	if( s_spawnPick.isEmpty() )
+	{
+		setCheatResult( L"Pick a template from the list first." );
+		return nullptr;
+	}
+
+	const ThingTemplate *tmpl = TheThingFactory->findTemplate( s_spawnPick, FALSE );
 	if( tmpl == nullptr )
 	{
 		UnicodeString msg;
-		msg.format( L"No such template: %S", name.str() );
+		msg.format( L"Template %S is gone - the game data reloaded. Pick it again.", s_spawnPick.str() );
 		setCheatResult( msg );
-		return;
 	}
 
-	Player *player = ThePlayerList->getLocalPlayer();
-	if( player == nullptr )
+	return tmpl;
+}
+
+//-------------------------------------------------------------------------------------------------
+static Int spawnCount( void )
+{
+	if( s_spawnCountIdx < 0 || s_spawnCountIdx >= DBG_NUM_SPAWN_COUNTS )
+		return 1;
+	return s_spawnCountSteps[ s_spawnCountIdx ];
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Spawn N of the picked template on the TARGET player's default team, at this camera's look-at
+	* point, at the picked veterancy.
+	*
+	* The name is resolved to a numeric template id HERE and the id goes on the wire, because
+	* GameMessageArgumentDataType has no string type - the same thing MSG_DOZER_CONSTRUCT does. Both
+	* peers must be running identical game data for the id to mean the same thing, which they already
+	* must be for the protocol to line up at all.
+	*
+	* The position is resolved here too and travels in the message. Reading TheTacticalView inside the
+	* handler would give a different answer on every peer, which is the whole desync in one line.
+	*
+	* Count and veterancy are the message's OPTIONAL trailing arguments (see the contract on
+	* MSG_GX_CHEAT_SPAWN_UNIT in Common/MessageStream.h). They are appended UNCONDITIONALLY and in
+	* this exact order: the handler reads argument 3 only when the message has four, and argument 4
+	* only when it has five, so skipping one and sending the other is not expressible. */
+//-------------------------------------------------------------------------------------------------
+static void gxSpawnUnit( void )
+{
+	if( TheTacticalView == nullptr )
 		return;
 
-	Team *team = player->getDefaultTeam();
-	if( team == nullptr )
+	const ThingTemplate *tmpl = spawnPickedTemplate();
+	if( tmpl == nullptr )
+		return;
+
+	Int target = -1;
+	GameMessage *msg = beginCheatOrder( GameMessage::MSG_GX_CHEAT_SPAWN_UNIT, target );
+	if( msg == nullptr )
+		return;
+
+	const Coord3D pos		= TheTacticalView->getPosition();
+	const Int     count	= spawnCount();
+
+	msg->appendIntegerArgument( (Int)tmpl->getTemplateID() );
+	msg->appendLocationArgument( pos );
+	msg->appendIntegerArgument( count );
+	msg->appendIntegerArgument( s_spawnVet );
+
+	DEBUG_LOG(( "DebugMenu: sent SPAWN_UNIT template %d x%d vet %d at %.1f,%.1f for player %d",
+		(Int)tmpl->getTemplateID(), count, s_spawnVet, pos.x, pos.y, target ));
+
+	UnicodeString what;
+	what.format( L"spawn %d x %S (%S)", count, s_spawnPick.str(),
+							 ( s_spawnVet >= (Int)LEVEL_FIRST && s_spawnVet <= (Int)LEVEL_LAST )
+								 ? TheVeterancyNames[ s_spawnVet ] : "?" );
+	setCheatOrderSent( what.str(), target );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Remove objects the target player owns.
+	*
+	* The handler's two sentinels - templateID <= 0 meaning "every type" and count <= 0 meaning "all
+	* of them" - are reached through three separate NAMED buttons rather than by asking the user to
+	* type a zero. Nobody should have to know a wire contract to clear a base:
+	*
+	*   Delete             -> the picked template, however many the count stepper says
+	*   Delete all of type -> the picked template, every one of them            (count sentinel)
+	*   Delete everything  -> every type, every one of them                     (both sentinels)
+	*
+	* DESTROY, NOT KILL, and that is the whole reason this exists next to "Kill units": the handler
+	* calls TheGameLogic->destroyObject, so nothing burns, drops wreckage, plays a death EVA or scores
+	* a kill. "Kill units" simulates an army being wiped out; this one clears the board. */
+//-------------------------------------------------------------------------------------------------
+static void gxDeleteObjects( Bool anyType, Bool allOfThem )
+{
+	Int templateID = 0;								// 0 == the handler's "every type" sentinel
+
+	if( anyType == FALSE )
 	{
-		setCheatResult( L"Local player has no default team." );
-		return;
+		const ThingTemplate *tmpl = spawnPickedTemplate();
+		if( tmpl == nullptr )
+			return;
+		templateID = (Int)tmpl->getTemplateID();
 	}
 
-	Object *obj = TheThingFactory->newObject( tmpl, team );
-	if( obj == nullptr )
+	Int target = -1;
+	GameMessage *msg = beginCheatOrder( GameMessage::MSG_GX_CHEAT_DELETE_OBJECTS, target );
+	if( msg == nullptr )
+		return;
+
+	const Int count = allOfThem ? 0 : spawnCount();		// 0 == the handler's "all of them" sentinel
+
+	msg->appendIntegerArgument( templateID );
+	msg->appendIntegerArgument( count );
+
+	DEBUG_LOG(( "DebugMenu: sent DELETE_OBJECTS template %d (0=any) count %d (0=all) for player %d",
+		templateID, count, target ));
+
+	UnicodeString what;
+	if( anyType )
+		what = UnicodeString( L"delete EVERYTHING owned" );
+	else if( allOfThem )
+		what.format( L"delete every %S", s_spawnPick.str() );
+	else
+		what.format( L"delete %d x %S", count, s_spawnPick.str() );
+
+	setCheatOrderSent( what.str(), target );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Force the LOCAL minimap on. Client-side, no message, cannot desync.
+	*
+	* This is the other half of "show me the map", and it is usually the half people are actually
+	* missing. rts::localPlayerHasRadar() is
+	*   isRadarForced(idx) || (!isRadarHidden(idx) && player->hasRadar())
+	* and W3DLeftHUDDraw / W3DRadar::draw draw NOTHING - not even a "radar off" plate - when it is
+	* false. With no Command Center the minimap is black no matter how deshrouded the world is, so
+	* revealing the shroud alone looks like it did nothing.
+	*
+	* Safe from the client: Radar::crc has an empty body, TheRadar is absent from GameLogic::getCRC,
+	* the only reader of isRadarForced anywhere in the tree is localPlayerHasRadar, and every consumer
+	* of that is draw/input code. The engine already calls forceOn for observers and for a defeated
+	* local player.
+	*
+	* Deliberately NOT TheRadar->hide( idx, FALSE ): localPlayerHasRadar short-circuits on the force
+	* before it ever reads the hidden flag, and Radar::reset() does not clear m_radarHidden, so that
+	* call would permanently stomp a map script's doRadarDisable() for the rest of the session. */
+//-------------------------------------------------------------------------------------------------
+static void applyForceRadar( Bool on )
+{
+	if( TheRadar == nullptr || ThePlayerList == nullptr )
+		return;
+
+	Player *local = ThePlayerList->getLocalPlayer();
+	if( local == nullptr )
+		return;
+
+	TheRadar->forceOn( local->getPlayerIndex(), on );
+}
+
+//-------------------------------------------------------------------------------------------------
+static void toggleForceRadar( void )
+{
+	if( debugClientToolsAllowed() == FALSE )
 	{
-		setCheatResult( L"newObject failed." );
+		setCheatResult( L"Refused: not in a live match." );
 		return;
 	}
 
-	Coord3D pos = TheTacticalView->getPosition();
-	if( TheTerrainLogic )
-		pos.z = TheTerrainLogic->getGroundHeight( pos.x, pos.y );
-	obj->setPosition( &pos );
+	s_forceRadar = !s_forceRadar;
+	applyForceRadar( s_forceRadar );
 
-	UnicodeString msg;
-	msg.format( L"Spawned %S at %.0f, %.0f", name.str(), pos.x, pos.y );
-	setCheatResult( msg );
+	if( TheRadar )
+		TheRadar->refreshObjects();
+
+	setCheatResult( s_forceRadar
+		? UnicodeString( L"Radar forced on for you. Local only - nothing was sent." )
+		: UnicodeString( L"Radar force released." ) );
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -767,10 +1666,296 @@ static void doSpawnUnit( void )
 //-------------------------------------------------------------------------------------------------
 
 //-------------------------------------------------------------------------------------------------
+/** One walk of the object list, sixteen buckets.
+	*
+	* GeneralsX @feature Claude 27/07/2026 The Stats tab already walked every object in the world once
+	* per 250ms tick and already called getControllingPlayer() and isKindOf(KINDOF_STRUCTURE) on each
+	* one. Bucketing that same pass by player index feeds the Players tab and the cheat target readout
+	* for free.
+	*
+	* The alternative - Player::countObjects - walks a player's whole object list PER CALL, and the
+	* shipped observer panel needs four of them per player. Sixteen rows would be sixty-four full
+	* walks per refresh for numbers this single pass already has. Do not reintroduce it. */
+//-------------------------------------------------------------------------------------------------
+struct DebugPlayerTally
+{
+	Int units    [ MAX_PLAYER_COUNT ];		///< alive, not a structure, not a projectile or inert prop
+	Int buildings[ MAX_PLAYER_COUNT ];		///< alive, KINDOF_STRUCTURE
+	Int totalObjects;
+	Int deadObjects;
+	Int localUnits;											///< the Stats tab's historical "Your units"
+	Int localStructures;
+	Int otherUnits;											///< the Stats tab's historical "Other players' units"
+};
+static DebugPlayerTally s_tally;
+
+//-------------------------------------------------------------------------------------------------
+static void refreshObjectTally( void )
+{
+	memset( &s_tally, 0, sizeof( s_tally ) );
+
+	if( TheGameLogic == nullptr )
+		return;
+
+	// Same guard as the walk this replaces. It runs from the draw pass so it cannot land inside a
+	// logic update, but a load or a clearGameData spans frames.
+	const Bool objectListStable = TheGameLogic->isInGame() &&
+																TheGameLogic->isLoadingMap()       == FALSE &&
+																TheGameLogic->isLoadingSave()      == FALSE &&
+																TheGameLogic->isClearingGameData() == FALSE;
+	if( objectListStable == FALSE )
+		return;
+
+	const Player *local = ( ThePlayerList != nullptr ) ? ThePlayerList->getLocalPlayer() : nullptr;
+
+	for( Object *obj = TheGameLogic->getFirstObject(); obj; obj = obj->getNextObject() )
+	{
+		++s_tally.totalObjects;
+
+		if( obj->isEffectivelyDead() )
+		{
+			++s_tally.deadObjects;
+			continue;
+		}
+
+		const Bool isStructure = obj->isKindOf( KINDOF_STRUCTURE );
+
+		// The three legacy Stats counters, reproduced EXACTLY - including the fact that an object with
+		// no controlling player lands in "other players' units". Changing those numbers silently while
+		// adding a panel would be the worst possible way to find out this refactor was wrong.
+		const Player *owner = obj->getControllingPlayer();
+		if( local != nullptr && owner == local )
+		{
+			if( isStructure )
+				++s_tally.localStructures;
+			else
+				++s_tally.localUnits;
+		}
+		else if( isStructure == FALSE )
+		{
+			++s_tally.otherUnits;
+		}
+
+		if( owner == nullptr )
+			continue;
+
+		const Int idx = owner->getPlayerIndex();
+		if( idx < 0 || idx >= MAX_PLAYER_COUNT )
+			continue;
+
+		if( isStructure )
+		{
+			++s_tally.buildings[ idx ];
+		}
+		else if( obj->isKindOf( KINDOF_PROJECTILE ) == FALSE && obj->isKindOf( KINDOF_INERT ) == FALSE )
+		{
+			// Per-player "units" excludes shells in flight and scenery props, which is what someone
+			// reading a roster means by the word. The Stats tab's counter above deliberately does not.
+			++s_tally.units[ idx ];
+		}
+	}
+}
+
+//-------------------------------------------------------------------------------------------------
 static void setStatLine( Int i, const UnicodeString &text )
 {
 	if( i >= 0 && i < DBG_NUM_STAT_LINES && s_statLine[i] )
 		GadgetStaticTextSetText( s_statLine[i], text );
+}
+
+//-------------------------------------------------------------------------------------------------
+static void setPlayerCell( Int col, Int row, const UnicodeString &text )
+{
+	if( col >= 0 && col < DBG_PL_COLS && row >= 0 && row < DBG_PL_ROWS && s_plCell[col][row] )
+		GadgetStaticTextSetText( s_plCell[col][row], text );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** The live player panel.
+	*
+	* Client-only, reads nothing the shipped UI does not already read every frame: InGameUI's
+	* drawPlayerInfoList reads every player's money and rank, and the observer control bar reads
+	* another player's object counts. Neither is gated on single-player, and neither writes anything.
+	*
+	* Every accessor used here is an O(1) member read. Three that are NOT, and must never appear:
+	*   Player::getCurrentEnemy()      - reaches AISkirmishPlayer::getAiEnemy, which writes
+	*                                    m_frameToCheckEnemy and calls acquireEnemy(). Polling it at
+	*                                    4 Hz on one peer diverges AI targeting. A real LAN desync.
+	*   ScoreKeeper::calculateScore()  - assigns m_currentScore, dirtying save state at 4 Hz.
+	*   Player::okToPlayRadarEdgeSound - mutates and queues audio. hasRadar() is the read-only one. */
+//-------------------------------------------------------------------------------------------------
+static void refreshPlayersTab( void )
+{
+	if( ThePlayerList == nullptr )
+	{
+		for( Int r = 0; r < s_plRowsShown; ++r )
+			for( Int c = 0; c < DBG_PL_COLS; ++c )
+				setPlayerCell( c, r, UnicodeString::TheEmptyString );
+		s_plRowsShown = 0;
+		return;
+	}
+
+	// Player*, not const Player*: getPlayerDisplayName() is non-const and has no const overload.
+	Player *local   = ThePlayerList->getLocalPlayer();
+	Player *neutral = ThePlayerList->getNeutralPlayer();
+	const Int count = ThePlayerList->getPlayerCount();
+
+	UnicodeString text;
+	Int row = 0;
+
+	for( Int i = 0; i < count && row < DBG_PL_ROWS; ++i )
+	{
+		Player *p = ThePlayerList->getNthPlayer( i );
+		if( p == nullptr || p == neutral )
+			continue;
+
+		const PlayerTemplate *pt = p->getPlayerTemplate();
+		if( pt == nullptr )
+			continue;											// unused slot
+
+		const Int idx = p->getPlayerIndex();
+
+		text = p->getPlayerDisplayName();
+		if( text.isEmpty() )
+			text.translate( p->getPlayerName() );
+		if( p == local )
+			text.concat( L"  (you)" );
+		setPlayerCell( 0, row, text );
+
+		// The player's own colour, so a row is identifiable at a glance the same way the minimap is.
+		// winSetEnabledTextColors wants a drop-shadow colour too; opaque black is what the theme uses.
+		if( s_plCell[0][row] )
+			s_plCell[0][row]->winSetEnabledTextColors( p->getPlayerColor(), GameMakeColor( 0, 0, 0, 255 ) );
+
+		setPlayerCell( 1, row, pt->getDisplayName() );
+
+		if( p->getPlayerType() == PLAYER_HUMAN )
+			text = UnicodeString( L"human" );
+		else
+			text.format( L"AI %s", p->isSkirmishAIPlayer() ? L"skm" : L"scr" );
+		setPlayerCell( 2, row, text );
+
+		const Money *money = p->getMoney();
+		text.format( L"%u  (+%u/m)", money ? money->countMoney() : 0,
+								 money ? money->getCashPerMinute() : 0 );
+		setPlayerCell( 3, row, text );
+
+		const Energy *energy = p->getEnergy();
+		const Int prod = energy ? energy->getProduction()  : 0;
+		const Int cons = energy ? energy->getConsumption() : 0;
+		text.format( L"%d/%d %+d", prod, cons, prod - cons );
+		setPlayerCell( 4, row, text );
+
+		text.format( L"%d", s_tally.units[ idx ] );
+		setPlayerCell( 5, row, text );
+		text.format( L"%d", s_tally.buildings[ idx ] );
+		setPlayerCell( 6, row, text );
+
+		const WideChar *rel = L"neut";
+		if( p == local )
+			rel = L"self";
+		else if( local != nullptr && local->getRelationship( p->getDefaultTeam() ) == ALLIES )
+			rel = L"ally";
+		else if( local != nullptr && local->getRelationship( p->getDefaultTeam() ) == ENEMIES )
+			rel = L"enemy";
+
+		const WideChar *life = p->isPlayerObserver() ? L"obs"
+												 : ( p->isPlayerActive() ? L"alive" : L"DEAD" );
+
+		text.format( L"%s %s%s", life, rel, p->hasRadar() ? L" R" : L"" );
+		setPlayerCell( 7, row, text );
+
+		++row;
+	}
+
+	// Only clear what was actually written last time. Blanking sixteen rows of eight labels every
+	// tick would re-lay out 128 DisplayStrings four times a second for no reason.
+	for( Int blank = row; blank < s_plRowsShown; ++blank )
+		for( Int c = 0; c < DBG_PL_COLS; ++c )
+			setPlayerCell( c, blank, UnicodeString::TheEmptyString );
+
+	s_plRowsShown = row;
+}
+
+//-------------------------------------------------------------------------------------------------
+/** One line describing whoever the cheat buttons are currently aimed at. */
+//-------------------------------------------------------------------------------------------------
+static void refreshCheatTargetInfo( void )
+{
+	if( s_cheatTargetInfo == nullptr )
+		return;
+
+	const Int target = selectedCheatTarget();
+	Player *p = ( ThePlayerList != nullptr && target > 0 &&
+								target < ThePlayerList->getPlayerCount() )
+								? ThePlayerList->getNthPlayer( target ) : nullptr;
+
+	if( p == nullptr )
+	{
+		GadgetStaticTextSetText( s_cheatTargetInfo, UnicodeString( L"Target: none" ) );
+		return;
+	}
+
+	const Money  *money  = p->getMoney();
+	const Energy *energy = p->getEnergy();
+	const Int     tally  = ( target < MAX_PLAYER_COUNT ) ? target : 0;
+
+	UnicodeString text;
+	text.format( L"Target %d  %s   $%u   power %d/%d   %d units, %d buildings   %s",
+							 target, cheatTargetName( target ).str(),
+							 money ? money->countMoney() : 0,
+							 energy ? energy->getProduction() : 0,
+							 energy ? energy->getConsumption() : 0,
+							 s_tally.units[ tally ], s_tally.buildings[ tally ],
+							 p->isPlayerActive() ? L"alive" : L"DEAD" );
+
+	GadgetStaticTextSetText( s_cheatTargetInfo, text );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** The Spawn pane's copy of "who is this aimed at".
+	*
+	* Reads the SAME selection the Cheats pane owns - selectedCheatTarget() - rather than adding a
+	* second target list. The Cheats pane's listbox is hidden while this pane is up, not destroyed, so
+	* the selection is live; what the pane cannot do is show it, hence this line and the pointer back
+	* to where it is changed. Two target lists on one screen would be a guaranteed source of "I set it
+	* to player 3 and it hit player 2". */
+//-------------------------------------------------------------------------------------------------
+static void refreshSpawnTarget( void )
+{
+	if( s_spawnTargetInfo == nullptr )
+		return;
+
+	// This pane has no equivalent of the Cheats pane's status line, so it carries the "why is
+	// everything greyed" answer here rather than leaving four dead buttons unexplained. Asked before
+	// the target, because a replay has a perfectly good target and still refuses every order.
+	if( debugSyncedCheatsAllowed() == FALSE )
+	{
+		GadgetStaticTextSetText( s_spawnTargetInfo, UnicodeString(
+			L"Disabled: no live match, or this is a replay. Spawn and Delete stay greyed." ) );
+		return;
+	}
+
+	const Int target = selectedCheatTarget();
+	Player *p = ( ThePlayerList != nullptr && target > 0 &&
+								target < ThePlayerList->getPlayerCount() )
+								? ThePlayerList->getNthPlayer( target ) : nullptr;
+
+	if( p == nullptr )
+	{
+		GadgetStaticTextSetText( s_spawnTargetInfo,
+			UnicodeString( L"Target: none. Pick a player on the Cheats tab first." ) );
+		return;
+	}
+
+	const Int tally = ( target < MAX_PLAYER_COUNT ) ? target : 0;
+
+	UnicodeString text;
+	text.format( L"Target %d  %s   -   owns %d units, %d buildings   (change it on the Cheats tab)",
+							 target, cheatTargetName( target ).str(),
+							 s_tally.units[ tally ], s_tally.buildings[ tally ] );
+
+	GadgetStaticTextSetText( s_spawnTargetInfo, text );
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -882,15 +2067,46 @@ void DebugMenuUpdate( void )
 
 	// Cheats can become legal or illegal without the screen closing (start a skirmish with the
 	// overlay up), so the gate is re-evaluated here rather than once at build time.
-	const Bool cheats = debugCheatsAllowed();
-	if( s_buttonGiveCash )	s_buttonGiveCash->winEnable( cheats );
-	if( s_buttonReveal )		s_buttonReveal->winEnable( cheats );
-	if( s_buttonSpawn )			s_buttonSpawn->winEnable( cheats );
+	const Bool cheats = debugSyncedCheatsAllowed();
+	const Bool client = debugClientToolsAllowed();
+
+	if( s_buttonGiveCash )		s_buttonGiveCash->winEnable( cheats );
+	if( s_buttonSetCash )			s_buttonSetCash->winEnable( cheats );
+	if( s_buttonReveal )			s_buttonReveal->winEnable( cheats );
+	if( s_buttonUnreveal )		s_buttonUnreveal->winEnable( cheats );
+	if( s_buttonKillPlayer )	s_buttonKillPlayer->winEnable( cheats );
+	if( s_buttonKillUnits )		s_buttonKillUnits->winEnable( cheats );
+	if( s_buttonKillAll )			s_buttonKillAll->winEnable( cheats );
+	if( s_buttonSpawn )				s_buttonSpawn->winEnable( cheats );
+	if( s_buttonForceRadar )	s_buttonForceRadar->winEnable( client );
+
+	// The Spawn pane's four order buttons ride the same gate: every one of them appends a message.
+	// The steppers, the scope toggle and the picker are pure client state and stay live, so the pane
+	// can be set up before a match starts and fired the moment one does.
+	if( s_buttonSpawnDelete )			s_buttonSpawnDelete->winEnable( cheats );
+	if( s_buttonSpawnDeleteType )	s_buttonSpawnDeleteType->winEnable( cheats );
+	if( s_buttonSpawnDeleteAll )	s_buttonSpawnDeleteAll->winEnable( cheats );
+
 	if( s_cheatStatus )
 	{
 		GadgetStaticTextSetText( s_cheatStatus, cheats
-			? UnicodeString( L"Enabled: local single-player game." )
-			: UnicodeString( L"Disabled: cheats desync a networked game and are refused outside a local match." ) );
+			? UnicodeString( L"Cheats are sent as network orders: they apply on EVERY peer, a few frames late." )
+			: UnicodeString( L"Disabled: no live match, or this is a replay (an injected order would diverge from the file)." ) );
+	}
+
+	// Radar::newMap calls reset(), which clears m_radarForceOn, so the force dies on every map
+	// transition. Re-assert it rather than making the user notice and press the button again. Only
+	// ever asserted, never cleared: pushing FALSE every tick would stomp the forceOn that
+	// VictoryConditions sets for a locally defeated player.
+	if( s_forceRadar )
+		applyForceRadar( TRUE );
+
+	if( s_buttonForceRadar && s_forceRadarShown != (Int)s_forceRadar )
+	{
+		GadgetButtonSetText( s_buttonForceRadar, s_forceRadar
+			? UnicodeString( L"Radar: forced" )
+			: UnicodeString( L"Force radar" ) );
+		s_forceRadarShown = (Int)s_forceRadar;
 	}
 
 	if( s_buttonSaveHere )
@@ -909,8 +2125,36 @@ void DebugMenuUpdate( void )
 	if( s_buttonLogicFpsDown )	s_buttonLogicFpsDown->winEnable( logicScaleAllowed );
 	if( s_buttonLogicFpsUp )		s_buttonLogicFpsUp->winEnable( logicScaleAllowed );
 
-	if( s_activeTab != DBG_TAB_STATS )
+	// The object walk is shared by four panes, so it happens once and only for a pane that wants it.
+	if( s_activeTab != DBG_TAB_STATS && s_activeTab != DBG_TAB_PLAYERS &&
+			s_activeTab != DBG_TAB_CHEATS && s_activeTab != DBG_TAB_SPAWN )
 		return;
+
+	refreshObjectTally();
+
+	if( s_activeTab == DBG_TAB_CHEATS || s_activeTab == DBG_TAB_SPAWN )
+	{
+		// The roster only changes at newGame, but this screen outlives a match, so notice when it does.
+		// Rebuilding unconditionally would clear the selection four times a second.
+		//
+		// Done for the Spawn pane too even though its listbox is not the one being rebuilt: the target
+		// is READ off the Cheats pane's list, so a roster that changed while the user sat on Spawn
+		// would leave the parallel index vector naming players that no longer exist.
+		if( cheatRosterChanged() )
+			refreshCheatTargets();
+
+		if( s_activeTab == DBG_TAB_SPAWN )
+			refreshSpawnTarget();
+		else
+			refreshCheatTargetInfo();
+		return;
+	}
+
+	if( s_activeTab == DBG_TAB_PLAYERS )
+	{
+		refreshPlayersTab();
+		return;
+	}
 
 	refreshFpsReadout();
 
@@ -936,48 +2180,17 @@ void DebugMenuUpdate( void )
 	line.format( L"Logic frame           %u", TheGameLogic->getFrame() );
 	setStatLine( n++, line );
 
-	Int total = 0, myUnits = 0, myStructures = 0, otherUnits = 0, dead = 0;
-	const Player *local = ( ThePlayerList != nullptr ) ? ThePlayerList->getLocalPlayer() : nullptr;
-
-	// Skip the walk while the object list is being built or torn down. This runs from the draw pass,
-	// so it cannot land in the middle of a logic update, but a load or a clearGameData spans frames.
-	const Bool objectListStable = TheGameLogic->isInGame() &&
-																TheGameLogic->isLoadingMap() == FALSE &&
-																TheGameLogic->isLoadingSave() == FALSE &&
-																TheGameLogic->isClearingGameData() == FALSE;
-
-	for( Object *obj = objectListStable ? TheGameLogic->getFirstObject() : nullptr;
-			 obj; obj = obj->getNextObject() )
-	{
-		++total;
-
-		if( obj->isEffectivelyDead() )
-		{
-			++dead;
-			continue;
-		}
-
-		const Bool isStructure = obj->isKindOf( KINDOF_STRUCTURE );
-		if( local != nullptr && obj->getControllingPlayer() == local )
-		{
-			if( isStructure )
-				++myStructures;
-			else
-				++myUnits;
-		}
-		else if( isStructure == FALSE )
-		{
-			++otherUnits;
-		}
-	}
-
-	line.format( L"Objects in world      %d  (%d effectively dead)", total, dead );
+	// refreshObjectTally() above did the walk these four lines used to do inline, and reproduces all
+	// four counters exactly - including the quirk that an object with no controlling player is
+	// counted under "other players' units".
+	line.format( L"Objects in world      %d  (%d effectively dead)",
+							 s_tally.totalObjects, s_tally.deadObjects );
 	setStatLine( n++, line );
-	line.format( L"Your units            %d", myUnits );
+	line.format( L"Your units            %d", s_tally.localUnits );
 	setStatLine( n++, line );
-	line.format( L"Your structures       %d", myStructures );
+	line.format( L"Your structures       %d", s_tally.localStructures );
 	setStatLine( n++, line );
-	line.format( L"Other players' units  %d", otherUnits );
+	line.format( L"Other players' units  %d", s_tally.otherUnits );
 	setStatLine( n++, line );
 
 	line.format( L"Players               %d", ( ThePlayerList != nullptr )
@@ -1036,6 +2249,27 @@ static void selectTab( Int tab )
 	{
 		refreshSaveList();
 	}
+	else if( tab == DBG_TAB_SPAWN )
+	{
+		// Walking a few thousand templates and sorting them is not something to do at screen-open time
+		// for a pane nobody may visit, so the catalog is built on first sight - the same lazy rule the
+		// Config pane's archive walk uses. Thrown away by nullifyControls(), hence once per lifetime.
+		if( s_spawnCatalogBuilt == FALSE )
+		{
+			buildSpawnCatalog();
+			repopulateSpawnList();
+		}
+
+		s_lastRefreshMs = 0;
+		DebugMenuUpdate();
+	}
+	else if( tab == DBG_TAB_PLAYERS || tab == DBG_TAB_CHEATS )
+	{
+		// Fill the pane now instead of showing an empty grid for up to a quarter of a second. Clearing
+		// the throttle stamp is what lets the tick body run out of turn; it re-stamps itself.
+		s_lastRefreshMs = 0;
+		DebugMenuUpdate();
+	}
 
 	// Hiding a pane that contained the focused text entry clears m_keyboardFocus outright
 	// (GameWindowManager::windowHiding), which would silently kill the ESC handler. Take it back.
@@ -1081,8 +2315,73 @@ static void nullifyControls( void )
 	s_cheatResult					= nullptr;
 	s_buttonGiveCash			= nullptr;
 	s_buttonReveal				= nullptr;
-	s_buttonSpawn					= nullptr;
-	s_entrySpawn					= nullptr;
+
+	// GeneralsX @feature Claude 27/07/2026 The targeted-cheat and player-panel controls. Every one of
+	// these MUST be here: GameWindowManager::reset() runs winDestroyAll() on every match transition
+	// without going through DebugMenuClose, and the next DebugMenuUpdate would then write through the
+	// freed windows. A non-null freed pointer passes every guard in this file.
+	s_listCheatTarget			= nullptr;
+	s_cheatTargetInfo			= nullptr;
+	s_entryCashAmount			= nullptr;
+	s_buttonSetCash				= nullptr;
+	s_buttonUnreveal			= nullptr;
+	s_buttonForceRadar		= nullptr;
+	s_buttonKillPlayer		= nullptr;
+	s_buttonKillUnits			= nullptr;
+	s_buttonKillAll				= nullptr;
+
+	for( Int c = 0; c < DBG_PL_COLS; ++c )
+		for( Int r = 0; r < DBG_PL_ROWS; ++r )
+			s_plCell[c][r] = nullptr;
+	s_plRowsShown = 0;
+
+	s_cheatTargetIndex.clear();
+	s_cheatRosterCount = -1;					// forces a rebuild of the target list on the next tick
+	for( Int i = 0; i < MAX_PLAYER_COUNT; ++i )
+		s_cheatRosterKey[i] = NAMEKEY_INVALID;
+
+	// GeneralsX @feature Claude 27/07/2026 The Spawn pane. Same rule as the block above: every one of
+	// these is written unconditionally by the next DebugMenuUpdate, and a freed pointer is not null.
+	s_listSpawnTemplate			= nullptr;
+	s_spawnTargetInfo				= nullptr;
+	s_spawnPickLabel				= nullptr;
+	s_spawnCountValue				= nullptr;
+	s_spawnVetValue					= nullptr;
+	s_spawnResult						= nullptr;
+	s_buttonSpawn						= nullptr;
+	s_buttonSpawnScope			= nullptr;
+	s_buttonSpawnCountDown	= nullptr;
+	s_buttonSpawnCountUp		= nullptr;
+	s_buttonSpawnVetPrev		= nullptr;
+	s_buttonSpawnVetNext		= nullptr;
+	s_buttonSpawnDelete			= nullptr;
+	s_buttonSpawnDeleteType	= nullptr;
+	s_buttonSpawnDeleteAll	= nullptr;
+
+	// The search field holds three raw window pointers of its own and does NOT own them - the pane's
+	// layout destroys them. reset() is how it forgets them; see the lifetime note in
+	// CodeGuiSearchField.h. Skipping this is the same dangle as any pointer above.
+	s_spawnSearch.reset();
+
+	// The catalog caches template NAMES, which are safe to hold, but the whole point of rebuilding is
+	// that ThingFactory::reset() runs on the same match transition that gets us here and can add,
+	// remove and renumber templates. s_spawnRowIndex must go with it or it would index a shorter
+	// vector on the next tap.
+	s_spawnCatalog.clear();
+	s_spawnRowIndex.clear();
+	s_spawnCatalogBuilt = FALSE;
+
+	// The ARMED PICK goes too, and the count/veterancy steppers deliberately do not. The pick names a
+	// template that may not exist after a data reload, so keeping it would leave a button aimed at
+	// something that resolves to nothing; the two steppers are plain numbers that are valid against
+	// any data set, and losing them every time the screen closes would just be annoying.
+	s_spawnPick.clear();
+
+	// s_forceRadar is deliberately NOT cleared: it mirrors engine state that outlives this screen, and
+	// the tick re-asserts it after Radar::reset(). It is only released when the user presses the
+	// button again. The LABEL state is cleared, because the next button is a brand new window.
+	s_forceRadarShown = -1;
+
 	s_buttonCamDefaults		= nullptr;
 	s_buttonCamApply			= nullptr;
 	s_listResolved				= nullptr;
@@ -1165,6 +2464,46 @@ static void buildStatsTab( GameWindow *pane, Int paneW )
 }
 
 //-------------------------------------------------------------------------------------------------
+/** The live player panel.
+	*
+	* A grid of labels rather than a listbox, because CodeGuiListbox hard-codes listboxData.columns = 1
+	* and a multi-column listbox is simply not reachable from code. Columns are authoring-space and the
+	* last one must end at or before 632: the pane is already inset by pad on both sides of a panel
+	* that was itself inset by pad, so the usable width is paneW - 2*pad == 680 - 4*12. */
+//-------------------------------------------------------------------------------------------------
+static void buildPlayersTab( GameWindow *pane, Int paneW )
+{
+	const Int pad		= CodeGuiScaleX( DBG_PAD );
+	const Int lineH	= CodeGuiAtLeast( CodeGuiScaleY( DBG_LINE_H ), 14 );
+	const Int step	= CodeGuiAtLeast( CodeGuiScaleY( 20 ), 14 );
+	const Int innerW	= paneW - pad * 2;
+
+	static const Int colX[ DBG_PL_COLS ] = {   0, 112, 208, 258, 340, 428, 466, 504 };
+	static const Int colW[ DBG_PL_COLS ] = { 108,  92,  46,  78,  84,  34,  34, 128 };
+	static const WideChar *hdr[ DBG_PL_COLS ] =
+		{ L"PLAYER", L"FACTION", L"TYPE", L"CASH", L"POWER", L"U", L"B", L"STATE" };
+
+	for( Int c = 0; c < DBG_PL_COLS; ++c )
+	{
+		CodeGuiLabel( pane, pad + CodeGuiScaleX( colX[c] ), 0,
+									CodeGuiScaleX( colW[c] ), lineH, nullptr, hdr[c], FALSE, 12 );
+	}
+
+	for( Int r = 0; r < DBG_PL_ROWS; ++r )
+	{
+		for( Int c = 0; c < DBG_PL_COLS; ++c )
+		{
+			s_plCell[c][r] = CodeGuiLabel( pane, pad + CodeGuiScaleX( colX[c] ), ( r + 1 ) * step,
+																		 CodeGuiScaleX( colW[c] ), lineH, nullptr, L"", FALSE, 12 );
+		}
+	}
+
+	CodeGuiLabel( pane, pad, ( DBG_PL_ROWS + 1 ) * step, innerW, lineH, nullptr,
+								L"Read-only, nothing is sent. POWER is produced/used. This shows information the "
+								L"fog of war hides.", FALSE, 12 );
+}
+
+//-------------------------------------------------------------------------------------------------
 static void buildCheatsTab( GameWindow *pane, Int paneW )
 {
 	const Int pad			= CodeGuiScaleX( DBG_PAD );
@@ -1176,30 +2515,195 @@ static void buildCheatsTab( GameWindow *pane, Int paneW )
 	Int y = 0;
 	s_cheatStatus = CodeGuiLabel( pane, pad, y, innerW, lineH, nullptr, L"", FALSE, 12 );
 
-	y += CodeGuiScaleY( 28 );
-	s_buttonGiveCash = CodeGuiButton( pane, pad, y, CodeGuiScaleX( 170 ), btnH,
-																		"DebugMenu:ButtonGiveCash", L"Give $10,000",
-																		L"Deposit 10000 into the local player's account" );
-	s_buttonReveal = CodeGuiButton( pane, pad + CodeGuiScaleX( 180 ), y, CodeGuiScaleX( 170 ), btnH,
-																	"DebugMenu:ButtonRevealMap", L"Reveal map",
-																	L"Permanently reveal the shroud for the local player" );
-
-	y += CodeGuiScaleY( 40 );
-	CodeGuiLabel( pane, pad, y + CodeGuiScaleY( 2 ), CodeGuiScaleX( 130 ), lineH,
-								nullptr, L"Unit template", FALSE, 12 );
-	s_entrySpawn = CodeGuiTextEntry( pane, pad + CodeGuiScaleX( 140 ), y, CodeGuiScaleX( 300 ), fieldH,
-																	 "DebugMenu:EntrySpawnTemplate", 64 );
-	s_buttonSpawn = CodeGuiButton( pane, pad + CodeGuiScaleX( 460 ), y - CodeGuiScaleY( 3 ),
-																 CodeGuiScaleX( 130 ), btnH,
-																 "DebugMenu:ButtonSpawnUnit", L"Spawn",
-																 L"Create the template on your team at the camera's centre" );
-
-	y += CodeGuiScaleY( 36 );
+	y += CodeGuiScaleY( 22 );
 	CodeGuiLabel( pane, pad, y, innerW, lineH, nullptr,
-								L"Template names are the INI Object entries, e.g. AmericaVehicleHumvee.", FALSE, 12 );
+								L"Target player - every order below is aimed at this one, on every machine.",
+								FALSE, 12 );
 
+	y += CodeGuiScaleY( 22 );
+	s_listCheatTarget = CodeGuiListbox( pane, pad, y, innerW, CodeGuiScaleY( 104 ),
+																			"DebugMenu:ListCheatTarget", MAX_PLAYER_COUNT, FALSE, TRUE, 10 );
+
+	y += CodeGuiScaleY( 110 );
+	s_cheatTargetInfo = CodeGuiLabel( pane, pad, y, innerW, lineH, nullptr, L"", FALSE, 12 );
+
+	// Money. One amount field feeds both buttons; a negative amount is a legal way to take cash away.
 	y += CodeGuiScaleY( 26 );
+	CodeGuiLabel( pane, pad, y + CodeGuiScaleY( 2 ), CodeGuiScaleX( 70 ), lineH,
+								nullptr, L"Amount", FALSE, 12 );
+	s_entryCashAmount = CodeGuiTextEntry( pane, pad + CodeGuiScaleX( 74 ), y, CodeGuiScaleX( 110 ), fieldH,
+																				"DebugMenu:EntryCashAmount", 12 );
+	s_buttonGiveCash = CodeGuiButton( pane, pad + CodeGuiScaleX( 192 ), y - CodeGuiScaleY( 3 ),
+																		CodeGuiScaleX( 110 ), btnH,
+																		"DebugMenu:ButtonGiveCash", L"Give cash",
+																		L"Add the amount to the target's account (negative takes it away)" );
+	s_buttonSetCash = CodeGuiButton( pane, pad + CodeGuiScaleX( 310 ), y - CodeGuiScaleY( 3 ),
+																	 CodeGuiScaleX( 110 ), btnH,
+																	 "DebugMenu:ButtonSetCash", L"Set cash",
+																	 L"Replace the target's account with the amount" );
+
+	y += CodeGuiScaleY( 34 );
+	s_buttonReveal = CodeGuiButton( pane, pad, y, CodeGuiScaleX( 120 ), btnH,
+																	"DebugMenu:ButtonRevealMap", L"Reveal map",
+																	L"Permanently reveal the shroud for the target player" );
+	s_buttonUnreveal = CodeGuiButton( pane, pad + CodeGuiScaleX( 126 ), y, CodeGuiScaleX( 120 ), btnH,
+																		"DebugMenu:ButtonUnrevealMap", L"Re-shroud",
+																		L"Undo the reveal and put the fog back" );
+	s_buttonForceRadar = CodeGuiButton( pane, pad + CodeGuiScaleX( 252 ), y, CodeGuiScaleX( 130 ), btnH,
+																			"DebugMenu:ButtonForceRadar", L"Force radar",
+																			L"Light YOUR minimap with no Command Center. Local only, nothing is sent" );
+	s_buttonKillPlayer = CodeGuiButton( pane, pad + CodeGuiScaleX( 390 ), y, CodeGuiScaleX( 140 ), btnH,
+																			"DebugMenu:ButtonKillPlayer", L"Defeat player",
+																			L"Destroy everything the target owns, handing it to a living ally first" );
+
+	y += CodeGuiScaleY( 34 );
+	s_buttonKillUnits = CodeGuiButton( pane, pad, y, CodeGuiScaleX( 140 ), btnH,
+																		 "DebugMenu:ButtonKillUnits", L"Kill units",
+																		 L"Kill the target's units and leave the buildings standing" );
+	s_buttonKillAll = CodeGuiButton( pane, pad + CodeGuiScaleX( 148 ), y, CodeGuiScaleX( 190 ), btnH,
+																	 "DebugMenu:ButtonKillAll", L"Kill units + buildings",
+																	 L"Kill everything the target owns" );
+
+	// GeneralsX @feature Claude 27/07/2026 The spawn text box used to be here. It is now a searchable
+	// picker on its own pane, because a control that only works if you can type "AmericaVehicleHumvee"
+	// exactly is not a control on a touch device. The pointer line stays so the button does not just
+	// vanish for anyone who knew where it was.
+	y += CodeGuiScaleY( 34 );
+	CodeGuiLabel( pane, pad, y, innerW, lineH, nullptr,
+								L"Spawning and deleting units moved to the Spawn tab - it has a searchable list.",
+								FALSE, 12 );
+
+	y += CodeGuiScaleY( 22 );
 	s_cheatResult = CodeGuiLabel( pane, pad, y, innerW, lineH, nullptr, L"", FALSE, 12 );
+}
+
+//-------------------------------------------------------------------------------------------------
+/** The spawn/delete pane.
+	*
+	* THE VERTICAL BUDGET IS 390 AUTHORING UNITS, and every offset below is authoring-space, run
+	* through CodeGuiScaleY. buildDebugScreen computes contentH = 520 - 76 - 30 - 2*12; a child laid
+	* out past that is clipped out of its parent's rect and becomes invisible AND unhittable, so the
+	* running total matters. This pane's last control ends at 380. Anything added here has to come out
+	* of the listbox, not off the bottom.
+	*
+	* The search row is NOT laid out explicitly: CodeGuiSearchField::create() reads the listbox's own
+	* rect, builds itself directly above it and shrinks the listbox by its own height, so the block
+	* from y=44 to y=234 is "search row plus list" as one unit however tall the row turns out to be on
+	* this backbuffer. That is also why the field is created immediately after the listbox and before
+	* anything is put in it.
+	*
+	* Running total: 0 help, 20 target, 44..234 search+list, 238 picked+scope, 272 count+veterancy,
+	* 306 the four actions, 342 the where-do-they-appear hint, 364..384 the result line. */
+//-------------------------------------------------------------------------------------------------
+static void buildSpawnTab( GameWindow *pane, Int paneW )
+{
+	const Int pad			= CodeGuiScaleX( DBG_PAD );
+	const Int lineH		= CodeGuiAtLeast( CodeGuiScaleY( DBG_LINE_H ), 14 );
+	const Int btnH		= CodeGuiAtLeast( CodeGuiScaleY( DBG_BTN_H ), 26 );
+	const Int innerW	= paneW - pad * 2;
+
+	Int y = 0;
+	CodeGuiLabel( pane, pad, y, innerW, lineH, nullptr,
+								L"Pick a template, set how many and how veteran, then Spawn or Delete.", FALSE, 12 );
+
+	y += CodeGuiScaleY( 20 );
+	s_spawnTargetInfo = CodeGuiLabel( pane, pad, y, innerW, lineH, nullptr, L"", FALSE, 12 );
+
+	// listLength has to clear DBG_MAX_SPAWN_ROWS plus the trailing "... and N more" row, or the cap
+	// would be enforced by GadgetListBoxAddEntryText returning -1 instead of by us, and the footer
+	// row - the only thing that says the list was truncated - would be the entry that got dropped.
+	y = CodeGuiScaleY( 44 );
+	s_listSpawnTemplate = CodeGuiListbox( pane, pad, y, innerW, CodeGuiScaleY( 190 ),
+																				"DebugMenu:ListSpawnTemplate",
+																				DBG_MAX_SPAWN_ROWS + 2, FALSE, TRUE, 10 );
+
+	// reset() before create(), per the lifetime rule in CodeGuiSearchField.h: winDestroy only QUEUES a
+	// window, so reopening this screen in the frame it closed would otherwise still see a live-looking
+	// entry pointer here and skip construction entirely.
+	s_spawnSearch.reset();
+	s_spawnSearch.create( s_listSpawnTemplate, spawnSearchChanged,
+												"DebugMenu:EntrySpawnSearch", "DebugMenu:ButtonSpawnSearchClear" );
+
+	// Picked line and the escape hatch for the sanity filter, on one row.
+	y = CodeGuiScaleY( 238 );
+	s_spawnPickLabel = CodeGuiLabel( pane, pad, y + CodeGuiScaleY( 4 ), CodeGuiScaleX( 456 ), lineH,
+																	 nullptr, L"", FALSE, 12 );
+	s_buttonSpawnScope = CodeGuiButton( pane, pad + CodeGuiScaleX( 464 ), y,
+																			CodeGuiScaleX( 168 ), btnH,
+																			"DebugMenu:ButtonSpawnScope", L"",
+																			L"Spawnable hides templates with no model, and the engine's system objects. "
+																			L"All shows every Object in the INI." );
+
+	// Count and veterancy.
+	y = CodeGuiScaleY( 272 );
+	CodeGuiLabel( pane, pad, y + CodeGuiScaleY( 4 ), CodeGuiScaleX( 52 ), lineH,
+								nullptr, L"Count", FALSE, 12 );
+	s_buttonSpawnCountDown = CodeGuiButton( pane, pad + CodeGuiScaleX( 56 ), y,
+																					CodeGuiScaleX( 34 ), btnH,
+																					"DebugMenu:ButtonSpawnCountDown", L"-",
+																					L"Fewer" );
+	s_spawnCountValue = CodeGuiLabel( pane, pad + CodeGuiScaleX( 94 ), y + CodeGuiScaleY( 4 ),
+																		CodeGuiScaleX( 44 ), lineH, nullptr, L"1", TRUE, 12 );
+	s_buttonSpawnCountUp = CodeGuiButton( pane, pad + CodeGuiScaleX( 142 ), y,
+																				CodeGuiScaleX( 34 ), btnH,
+																				"DebugMenu:ButtonSpawnCountUp", L"+",
+																				L"More, up to 50 - the ceiling the order handler enforces" );
+
+	CodeGuiLabel( pane, pad + CodeGuiScaleX( 200 ), y + CodeGuiScaleY( 4 ), CodeGuiScaleX( 76 ), lineH,
+								nullptr, L"Veterancy", FALSE, 12 );
+	s_buttonSpawnVetPrev = CodeGuiButton( pane, pad + CodeGuiScaleX( 280 ), y,
+																				CodeGuiScaleX( 34 ), btnH,
+																				"DebugMenu:ButtonSpawnVetPrev", L"<",
+																				L"Previous rank" );
+	s_spawnVetValue = CodeGuiLabel( pane, pad + CodeGuiScaleX( 318 ), y + CodeGuiScaleY( 4 ),
+																	CodeGuiScaleX( 96 ), lineH, nullptr, L"", TRUE, 12 );
+	s_buttonSpawnVetNext = CodeGuiButton( pane, pad + CodeGuiScaleX( 418 ), y,
+																				CodeGuiScaleX( 34 ), btnH,
+																				"DebugMenu:ButtonSpawnVetNext", L">",
+																				L"Next rank" );
+
+	// The three delete buttons exist so the wire's two sentinels - "every type" and "all of them" -
+	// are named actions instead of magic zeroes the user has to know to type.
+	y = CodeGuiScaleY( 306 );
+	s_buttonSpawn = CodeGuiButton( pane, pad, y, CodeGuiScaleX( 96 ), btnH,
+																 "DebugMenu:ButtonSpawnUnit", L"Spawn",
+																 L"Create Count of the picked template on the target's team" );
+	s_buttonSpawnDelete = CodeGuiButton( pane, pad + CodeGuiScaleX( 104 ), y,
+																			 CodeGuiScaleX( 96 ), btnH,
+																			 "DebugMenu:ButtonSpawnDelete", L"Delete",
+																			 L"Remove Count of the picked template - the oldest ones - from the target. "
+																			 L"No explosion, no wreckage, no score: they just stop existing" );
+	s_buttonSpawnDeleteType = CodeGuiButton( pane, pad + CodeGuiScaleX( 208 ), y,
+																					 CodeGuiScaleX( 160 ), btnH,
+																					 "DebugMenu:ButtonSpawnDeleteType", L"Delete all of type",
+																					 L"Remove EVERY one of the picked template the target owns, ignoring Count" );
+	s_buttonSpawnDeleteAll = CodeGuiButton( pane, pad + CodeGuiScaleX( 376 ), y,
+																					CodeGuiScaleX( 160 ), btnH,
+																					"DebugMenu:ButtonSpawnDeleteAll", L"Delete everything",
+																					L"Remove EVERY object the target owns, units and buildings, of every type" );
+
+	// The line the old text box never had: nothing on screen said where the units come out.
+	//
+	// The 36-unit gap below the button row rather than the 34 the Cheats pane uses is deliberate.
+	// CodeGuiScaleY shrinks the gaps on a short backbuffer but CodeGuiAtLeast floors btnH at 26
+	// device pixels, so the rows close up faster than the buttons do; the extra couple of units buys
+	// back most of that. The last control still ends at 384 of the 390 available.
+	y = CodeGuiScaleY( 342 );
+	CodeGuiLabel( pane, pad, y, innerW, lineH, nullptr,
+								L"Units appear at YOUR camera centre, spread into a ring - scroll the view to aim. "
+								L"Delete ignores it.", FALSE, 12 );
+
+	y = CodeGuiScaleY( 364 );
+	s_spawnResult = CodeGuiLabel( pane, pad, y, innerW, lineH, nullptr, L"", FALSE, 12 );
+
+	// Initial label state. The scope button's text is only ever written here and in its own handler,
+	// so it needs no per-tick refresh and no "what does it currently say" shadow variable.
+	if( s_buttonSpawnScope )
+		GadgetButtonSetText( s_buttonSpawnScope, s_spawnShowAll
+			? UnicodeString( L"Show: all" ) : UnicodeString( L"Show: spawnable" ) );
+	refreshSpawnCountLabel();
+	refreshSpawnVetLabel();
+	refreshSpawnPickLabel();
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -1377,11 +2881,19 @@ static Bool buildDebugScreen( void )
 			return FALSE;
 	}
 
-	buildStatsTab ( s_tabPanel[ DBG_TAB_STATS  ], innerW );
-	buildCheatsTab( s_tabPanel[ DBG_TAB_CHEATS ], innerW );
-	buildCameraTab( s_tabPanel[ DBG_TAB_CAMERA ], innerW );
-	buildConfigTab( s_tabPanel[ DBG_TAB_CONFIG ], innerW );
-	buildSavesTab ( s_tabPanel[ DBG_TAB_SAVES  ], innerW );
+	buildStatsTab  ( s_tabPanel[ DBG_TAB_STATS   ], innerW );
+	buildPlayersTab( s_tabPanel[ DBG_TAB_PLAYERS ], innerW );
+	buildCheatsTab ( s_tabPanel[ DBG_TAB_CHEATS  ], innerW );
+	buildSpawnTab  ( s_tabPanel[ DBG_TAB_SPAWN   ], innerW );
+	buildCameraTab ( s_tabPanel[ DBG_TAB_CAMERA  ], innerW );
+	buildConfigTab ( s_tabPanel[ DBG_TAB_CONFIG  ], innerW );
+	buildSavesTab  ( s_tabPanel[ DBG_TAB_SAVES   ], innerW );
+
+	// A sensible default so "Give cash" does something useful on the first tap, and so an empty field
+	// is a deliberate act rather than the initial state. cheatCashAmount() falls back to the same
+	// number if it is cleared.
+	if( s_entryCashAmount )
+		GadgetTextEntrySetText( s_entryCashAmount, UnicodeString( L"10000" ) );
 
 	s_buttonBack = CodeGuiButton( s_root,
 																pw - pad - CodeGuiScaleX( DBG_FOOTER_BTN_W ),
@@ -1536,6 +3048,13 @@ static WindowMsgHandledType DebugMenuSystem( GameWindow *window, UnsignedInt msg
 		{
 			GameWindow *control = (GameWindow *)mData1;
 
+			// FIRST, before anything compares this control against one of ours. The search field's
+			// clear button is code-created and belongs to the field, not to this screen; offering the
+			// message to the field up here is what keeps it out of the comparisons below. Returns TRUE
+			// only when it was in fact that button.
+			if( s_spawnSearch.handleSystemMsg( msg, control ) )
+				return MSG_HANDLED;
+
 			for( Int i = 0; i < DBG_TAB_COUNT; ++i )
 			{
 				if( control == s_tabButton[i] )
@@ -1550,19 +3069,107 @@ static WindowMsgHandledType DebugMenuSystem( GameWindow *window, UnsignedInt msg
 				DebugMenuClose();
 				return MSG_HANDLED;
 			}
+			// GeneralsX @feature Claude 27/07/2026 All of these append to TheMessageStream and return.
+			// None of them touch logic state directly, which is why none of them is gated to
+			// single-player any more. The one exception is the radar force, which is pure presentation
+			// on this machine and is therefore gated on debugClientToolsAllowed() instead.
 			if( control == s_buttonGiveCash )
 			{
-				doGiveCash();
+				gxGiveMoney();
+				return MSG_HANDLED;
+			}
+			if( control == s_buttonSetCash )
+			{
+				gxSetMoney();
 				return MSG_HANDLED;
 			}
 			if( control == s_buttonReveal )
 			{
-				doRevealMap();
+				gxRevealMap( TRUE );
+				return MSG_HANDLED;
+			}
+			if( control == s_buttonUnreveal )
+			{
+				gxRevealMap( FALSE );
+				return MSG_HANDLED;
+			}
+			if( control == s_buttonForceRadar )
+			{
+				toggleForceRadar();
+				return MSG_HANDLED;
+			}
+			if( control == s_buttonKillPlayer )
+			{
+				gxKillPlayer( TRUE );			// hand the assets to a living mutual ally, like surrender
+				return MSG_HANDLED;
+			}
+			if( control == s_buttonKillUnits )
+			{
+				gxKillObjects( FALSE );
+				return MSG_HANDLED;
+			}
+			if( control == s_buttonKillAll )
+			{
+				gxKillObjects( TRUE );
 				return MSG_HANDLED;
 			}
 			if( control == s_buttonSpawn )
 			{
-				doSpawnUnit();
+				gxSpawnUnit();
+				return MSG_HANDLED;
+			}
+			// The three deletes differ only in which of the handler's two sentinels they use.
+			if( control == s_buttonSpawnDelete )
+			{
+				gxDeleteObjects( FALSE, FALSE );		// picked type, Count of them
+				return MSG_HANDLED;
+			}
+			if( control == s_buttonSpawnDeleteType )
+			{
+				gxDeleteObjects( FALSE, TRUE );			// picked type, all of them
+				return MSG_HANDLED;
+			}
+			if( control == s_buttonSpawnDeleteAll )
+			{
+				gxDeleteObjects( TRUE, TRUE );			// every type, all of them
+				return MSG_HANDLED;
+			}
+			if( control == s_buttonSpawnScope )
+			{
+				s_spawnShowAll = !s_spawnShowAll;
+				GadgetButtonSetText( control, s_spawnShowAll
+					? UnicodeString( L"Show: all" ) : UnicodeString( L"Show: spawnable" ) );
+				repopulateSpawnList();
+				return MSG_HANDLED;
+			}
+			// The count ladder is clamped at both ends rather than wrapping: "+" past the top must not
+			// silently drop the user back to 1 when the number they wanted was 50.
+			if( control == s_buttonSpawnCountDown )
+			{
+				if( s_spawnCountIdx > 0 )
+					--s_spawnCountIdx;
+				refreshSpawnCountLabel();
+				return MSG_HANDLED;
+			}
+			if( control == s_buttonSpawnCountUp )
+			{
+				if( s_spawnCountIdx < DBG_NUM_SPAWN_COUNTS - 1 )
+					++s_spawnCountIdx;
+				refreshSpawnCountLabel();
+				return MSG_HANDLED;
+			}
+			// Veterancy WRAPS, unlike the count: it is a four-item cycle with no natural extreme, and
+			// two buttons that go dead at the ends of a four-item list read as broken.
+			if( control == s_buttonSpawnVetPrev )
+			{
+				s_spawnVet = ( s_spawnVet <= (Int)LEVEL_FIRST ) ? (Int)LEVEL_LAST : s_spawnVet - 1;
+				refreshSpawnVetLabel();
+				return MSG_HANDLED;
+			}
+			if( control == s_buttonSpawnVetNext )
+			{
+				s_spawnVet = ( s_spawnVet >= (Int)LEVEL_LAST ) ? (Int)LEVEL_FIRST : s_spawnVet + 1;
+				refreshSpawnVetLabel();
 				return MSG_HANDLED;
 			}
 			// The four frame pacing steps call the same two CommandXlat functions the MSG_META_* key
@@ -1666,11 +3273,38 @@ static WindowMsgHandledType DebugMenuSystem( GameWindow *window, UnsignedInt msg
 				onPrefRowSelected();
 				return MSG_HANDLED;
 			}
+			if( control == s_listCheatTarget )
+			{
+				// Update the readout on the tap rather than up to 250ms later, so picking a row reads as
+				// having done something. The tally is whatever the last tick measured, which is exactly
+				// what the row would have shown anyway.
+				refreshCheatTargetInfo();
+				return MSG_HANDLED;
+			}
+			if( control == s_listSpawnTemplate )
+			{
+				onSpawnRowSelected();
+				return MSG_HANDLED;
+			}
 			if( control == s_listSaves && msg == GLM_DOUBLE_CLICKED )
 			{
 				doLoadSelectedSave();
 				return MSG_HANDLED;
 			}
+			break;
+		}
+
+		// ------------------------------------------------------------------------------------------
+		// GadgetTextEntryInput posts these to the entry's OWNER - which gogoGadgetTextEntry set to the
+		// pane we passed as parent, so they arrive here - on every accepted character and on Return.
+		// This is the only route the search field has to notice typing. Anything that is not its entry
+		// falls through to MSG_IGNORED, which is what the cash, pref and save-description fields want:
+		// they are read at press time, not tracked.
+		case GEM_UPDATE_TEXT:
+		case GEM_EDIT_DONE:
+		{
+			if( s_spawnSearch.handleSystemMsg( msg, (GameWindow *)mData1 ) )
+				return MSG_HANDLED;
 			break;
 		}
 
@@ -1696,6 +3330,50 @@ static WindowMsgHandledType DebugMenuInput( GameWindow *window, UnsignedInt msg,
 				DebugMenuClose();
 			return MSG_HANDLED;
 		}
+
+		// Swallow every other key too. The overlay owns the keyboard while it is up, and the
+		// in-game hotkeys underneath would otherwise fire from typing into the spawn field.
+		return MSG_HANDLED;
+	}
+
+	// GeneralsX @bugfix Claude 27/07/2026 Consume mouse input instead of letting it fall through
+	// to the world.
+	//
+	// WIN_STATUS_ABOVE only wins the hit-test ORDER; it does not make the window swallow anything.
+	// Returning MSG_IGNORED here left winProcessMouseEvent reporting the input as unused, so
+	// WindowXlat's "if( returnCode == WIN_INPUT_USED )" did not consume the message and it
+	// continued down the translator chain to the tactical view. Tapping anywhere on the overlay
+	// while a match was running therefore issued orders to the world underneath -- observed as
+	// "Command Center rally point set" appearing while the Debug screen was open.
+	//
+	// Claiming these unconditionally is correct rather than heavy-handed: the overlay covers the
+	// area being clicked, the child gadgets receive their own messages through the window system
+	// before this ever runs, and anything the overlay does not use should still not reach the
+	// game. Note GWM_MOUSE_POS must be included -- without it the world keeps hover-tracking
+	// and the cursor changes shape over units hidden behind the panel.
+	switch( msg )
+	{
+		case GWM_LEFT_DOWN:
+		case GWM_LEFT_UP:
+		case GWM_LEFT_DRAG:
+		case GWM_LEFT_DOUBLE_CLICK:
+		case GWM_MIDDLE_DOWN:
+		case GWM_MIDDLE_UP:
+		case GWM_MIDDLE_DRAG:
+		case GWM_MIDDLE_DOUBLE_CLICK:
+		case GWM_RIGHT_DOWN:
+		case GWM_RIGHT_UP:
+		case GWM_RIGHT_DRAG:
+		case GWM_RIGHT_DOUBLE_CLICK:
+		case GWM_MOUSE_POS:
+		case GWM_MOUSE_ENTERING:
+		case GWM_MOUSE_LEAVING:
+		case GWM_WHEEL_UP:
+		case GWM_WHEEL_DOWN:
+			return MSG_HANDLED;
+
+		default:
+			break;
 	}
 
 	return MSG_IGNORED;

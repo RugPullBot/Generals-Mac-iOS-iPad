@@ -330,6 +330,7 @@ private:
 	bool onGxCheatKillPlayer(GameMessage *msg);
 	bool onGxCheatKillObjects(GameMessage *msg);
 	bool onGxCheatSpawnUnit(GameMessage *msg);
+	bool onGxCheatDeleteObjects(GameMessage *msg);
 
 	bool onEnter(GameMessage *msg, AIGroupPtr &currentlySelectedGroup);
 	bool onExit(GameMessage *msg, AIGroupPtr &currentlySelectedGroup);

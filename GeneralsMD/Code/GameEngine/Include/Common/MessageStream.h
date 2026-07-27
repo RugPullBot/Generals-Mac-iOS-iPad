@@ -620,14 +620,46 @@ public:
 		// Generals tree (Generals/Code/GameEngine/Include/Common/MessageStream.h). Implicit
 		// numbering after it would give these different wire values in different build
 		// configurations, and two peers of this fork would decode each other's cheats as a
-		// different message. An explicit anchor cannot drift. 1950..1955 satisfies both range
+		// different message. An explicit anchor cannot drift. 1950..1956 satisfies both range
 		// tests: GameClientDispatch.cpp (>=1000 && <=1999) and Network.cpp (>1000 && <1999).
+		//
+		// Only the FIRST value is written out. The rest run on from it implicitly, and deliberately
+		// so: a second explicit "= 1956" further down would let an insertion above it produce two
+		// enumerators with the SAME value, which C++ accepts in silence and which the switch in
+		// GameLogicDispatch.cpp would then refuse to compile for a reason that names neither
+		// culprit. The static_assert block under this class pins every wire value instead, so an
+		// accidental insertion is a build error that says exactly what moved.
 		MSG_GX_CHEAT_GIVE_MONEY = 1950,							///< (Int targetPlayerIndex, Int amount) amount may be negative
 		MSG_GX_CHEAT_SET_MONEY,											///< (Int targetPlayerIndex, Int amount)
 		MSG_GX_CHEAT_REVEAL_MAP,										///< (Int targetPlayerIndex, Bool reveal)
 		MSG_GX_CHEAT_KILL_PLAYER,										///< (Int targetPlayerIndex, Bool transferToAlly)
 		MSG_GX_CHEAT_KILL_OBJECTS,									///< (Int targetPlayerIndex, Bool includeStructures)
-		MSG_GX_CHEAT_SPAWN_UNIT,										///< (Int targetPlayerIndex, Int templateID, Location pos)
+
+		// (Int targetPlayerIndex, Int templateID, Location groupCentre, [Int count], [Int veterancyLevel])
+		//
+		// count and veterancyLevel are OPTIONAL TRAILING arguments, and the handler reads a
+		// three-argument message as "one LEVEL_REGULAR unit". A sender that has not been taught
+		// about them therefore keeps producing exactly the old behaviour rather than a message the
+		// handler misreads.
+		//   count           clamped to 1 .. GX_CHEAT_MAX_SPAWN_COUNT (GameLogicDispatch.cpp).
+		//   veterancyLevel  a VeterancyLevel (Common/GameCommon.h - LEVEL_REGULAR, LEVEL_VETERAN,
+		//                   LEVEL_ELITE, LEVEL_HEROIC), clamped to LEVEL_FIRST .. LEVEL_LAST.
+		// groupCentre is the CENTRE of the group, not the position of unit 0: the handler scatters
+		// the units around it with ThePartitionManager->findPositionAround.
+		MSG_GX_CHEAT_SPAWN_UNIT,										///< see the argument contract above
+
+		// (Int targetPlayerIndex, Int templateID, Int count)
+		//
+		// THE SENTINELS ARE PART OF THE WIRE CONTRACT. The sender and the handler must agree on
+		// them or the cheat quietly does the wrong thing on every peer at once:
+		//   templateID <= 0   EVERY type the target player owns. Template ids start at 1
+		//                     (ThingFactory.cpp:107, "m_nextTemplateID = 1;	// not zero!"), so 0
+		//                     can never collide with a real one.
+		//   count      <= 0   ALL matching objects; otherwise the first 'count' matches in
+		//                     Player::iterateObjects order.
+		// Removal is TheGameLogic->destroyObject, NOT Object::kill: this exists to clear clutter, so
+		// there is no death FX, no wreckage, no death-triggered OCL and no "unit lost" EVA.
+		MSG_GX_CHEAT_DELETE_OBJECTS,								///< see the argument contract above
 
 //*********************************************************************************************************
 		MSG_END_NETWORK_MESSAGES = 1999,						///< MARKER TO DELINEATE MESSAGES THAT GO OVER THE NETWORK
@@ -701,6 +733,22 @@ private:
 	GameMessageArgument *allocArg();
 
 };
+
+// GeneralsX @feature LAN-safe cheats: pin the wire values.
+//
+// These numbers are a PROTOCOL, not an implementation detail - two peers of this fork decode each
+// other's cheat orders by raw enum value, and the same seven values are hard-coded again in the
+// Generals tree's copy of this header. Only MSG_GX_CHEAT_GIVE_MONEY carries an explicit "= 1950";
+// everything after it runs on implicitly, so inserting an enumerator anywhere in the block would
+// silently renumber the tail. Assert the whole range so that mistake is a build error naming the
+// exact value that moved, rather than a desync found on a LAN evening.
+static_assert(GameMessage::MSG_GX_CHEAT_GIVE_MONEY    == 1950, "GX cheat wire value moved");
+static_assert(GameMessage::MSG_GX_CHEAT_SET_MONEY     == 1951, "GX cheat wire value moved");
+static_assert(GameMessage::MSG_GX_CHEAT_REVEAL_MAP    == 1952, "GX cheat wire value moved");
+static_assert(GameMessage::MSG_GX_CHEAT_KILL_PLAYER   == 1953, "GX cheat wire value moved");
+static_assert(GameMessage::MSG_GX_CHEAT_KILL_OBJECTS  == 1954, "GX cheat wire value moved");
+static_assert(GameMessage::MSG_GX_CHEAT_SPAWN_UNIT    == 1955, "GX cheat wire value moved");
+static_assert(GameMessage::MSG_GX_CHEAT_DELETE_OBJECTS== 1956, "GX cheat wire value moved");
 
 
 /**
