@@ -4323,13 +4323,40 @@ UnsignedInt GameLogic::getCRC( Int mode, AsciiString deepCRCFileName )
 		CRCGEN_LOG(("CRC at start of frame %d is 0x%8.8X", m_frame, xferCRC->getCRC()));
 	}
 
+	// GeneralsX @diag Claude 27/07/2026 Per-object CRC trace, scoped to a narrow frame window.
+	//
+	// Frames 0-8 are byte-identical between Mac and Windows and frame 9 is the first divergence
+	// (mac=9C17AE57 win=E3C73FFE, docs/WORKDIR/evidence/gxcrc-*.txt), so dumping the running CRC
+	// after every object across a few frames around it names the exact object that differs. The
+	// window keeps the volume sane - unscoped this would emit one line per object per frame for a
+	// whole match.
+	//
+	// Release-visible by necessity: the CRCGEN_LOG calls that already bracket these sections are
+	// {} in every shipping preset, and DEBUG_CRC cannot be turned on to reach them because it
+	// changes what is hashed (the TheModuleFactory block below) and would desync by construction.
+	const Bool traceObjects = isInGameLogicUpdate() && m_frame >= 7 && m_frame <= 10;
+
 	marker = "MARKER:Objects";
 	xferCRC->xferAsciiString(&marker);
 	for( obj = m_objList; obj; obj=obj->getNextObject() )
 	{
 		xferCRC->xferSnapshot( obj );
+		if (traceObjects)
+		{
+			const ThingTemplate *tmpl = obj->getTemplate();
+			fprintf(stderr, "[GXOBJ] f=%u id=%u tmpl=%s running=%08X\n",
+				(unsigned)m_frame, (unsigned)obj->getID(),
+				tmpl ? tmpl->getName().str() : "<none>",
+				xferCRC->getCRC());
+		}
 	}
 	UnsignedInt seed = GetGameLogicRandomSeedCRC();
+	if (traceObjects)
+	{
+		fprintf(stderr, "[GXSEC] f=%u afterObjects=%08X seed=%u\n",
+			(unsigned)m_frame, xferCRC->getCRC(), (unsigned)seed);
+		fflush(stderr);
+	}
 	if (isInGameLogicUpdate())
 	{
 		CRCGEN_LOG(("CRC after objects for frame %d is 0x%8.8X", m_frame, xferCRC->getCRC()));
@@ -4349,6 +4376,11 @@ UnsignedInt GameLogic::getCRC( Int mode, AsciiString deepCRCFileName )
 	if (isInGameLogicUpdate())
 	{
 		CRCGEN_LOG(("CRC after partition manager for frame %d is 0x%8.8X", m_frame, xferCRC->getCRC()));
+	}
+	if (traceObjects)
+	{
+		fprintf(stderr, "[GXSEC] f=%u afterPartition=%08X\n", (unsigned)m_frame, xferCRC->getCRC());
+		fflush(stderr);
 	}
 
 #ifdef DEBUG_CRC
