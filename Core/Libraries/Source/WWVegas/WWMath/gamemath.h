@@ -64,6 +64,8 @@
 #ifndef GAMEMATH_H
 #define GAMEMATH_H
 
+#include <math.h>   // for sqrt only - see gmSqrt for why that one IS safe to take from libm
+
 namespace GameMath
 {
 
@@ -148,6 +150,177 @@ inline float Cos(float x)
 		case 2:  return (float)-gmPolyCos(r);
 		default: return (float) gmPolySin(r);
 	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// Tan, ASin, ACos, Atan, Atan2
+//
+// Added after Sin/Cos alone moved the Mac<->Windows desync from frame 9 to frame 541: the
+// remaining divergence only appears once units are moving and aiming, which is exactly what leans
+// on atan2 and acos. Same rule as above - only +, -, *, / and sqrt, all of which IEEE-754 defines
+// as correctly rounded, so the result is identical on every conforming platform.
+//
+// sqrt is safe to use here: unlike sin/cos it IS specified by IEEE-754, and both arm64 (fsqrt) and
+// x64 (sqrtsd) implement it in hardware to that spec.
+// ---------------------------------------------------------------------------------------------
+
+inline double gmSqrt(double x)
+{
+	// sqrt is safe to take from the C library, unlike sin/cos: IEEE-754 REQUIRES it to be
+	// correctly rounded, and both arm64 (fsqrt) and x64 (sqrtsd) satisfy that in hardware. It is
+	// therefore already bit-identical across platforms.
+	return sqrt(x);
+}
+
+inline float Tan(float x)
+{
+	// tan = sin/cos built from the already-deterministic pair. Division is IEEE-754 correctly
+	// rounded, so composing them preserves the guarantee.
+	int quadrant;
+	const double r = gmReduce((double)x, quadrant);
+	const double s = gmPolySin(r);
+	const double c = gmPolyCos(r);
+	// quadrant parity decides which of sin/cos is numerator: odd quadrants swap and negate.
+	if (quadrant & 1)
+	{
+		return (float)(-c / s);
+	}
+	return (float)(s / c);
+}
+
+// asin(w) = w * (1 + c1 w^2 + c2 w^4 + ...) for |w| <= 0.5, where cn = (2n)! / (4^n (n!)^2 (2n+1)).
+// Horner from the tail inward so the operation order is fixed.
+inline double gmAsinCore(double w)
+{
+	const double w2 = w * w;
+	double p =        1.15518009761904757e-02;   // 2027025/175472640
+	p = p * w2 +      1.39648437500000000e-02;   // 135135/9676800
+	p = p * w2 +      1.73527644230769226e-02;   // 10395/599040
+	p = p * w2 +      2.23721590909090912e-02;   // 945/42240
+	p = p * w2 +      3.03819444444444440e-02;   // 105/3456
+	p = p * w2 +      4.46428571428571439e-02;   // 15/336
+	p = p * w2 +      7.50000000000000000e-02;   // 3/40
+	p = p * w2 +      1.66666666666666657e-01;   // 1/6
+	p = p * w2 +      1.00000000000000000e+00;
+	return w * p;
+}
+
+inline float ASin(float x)
+{
+	double a = (double)x;
+	if (a > 1.0)  a = 1.0;
+	if (a < -1.0) a = -1.0;
+	const double neg = (a < 0.0) ? -1.0 : 1.0;
+	if (a < 0.0) a = -a;
+
+	double result;
+	if (a <= 0.5)
+	{
+		result = gmAsinCore(a);
+	}
+	else
+	{
+		// asin(a) = pi/2 - 2*asin(sqrt((1-a)/2)) keeps the argument in the well-conditioned range.
+		const double w = gmSqrt((1.0 - a) * 0.5);
+		result = 1.57079632679489655800 - 2.0 * gmAsinCore(w);
+	}
+	return (float)(neg * result);
+}
+
+inline float ACos(float x)
+{
+	// acos(x) = pi/2 - asin(x). One subtraction of an exactly-representable constant.
+	double a = (double)x;
+	if (a > 1.0)  a = 1.0;
+	if (a < -1.0) a = -1.0;
+	const double neg = (a < 0.0) ? -1.0 : 1.0;
+	const double aa = (a < 0.0) ? -a : a;
+
+	double as;
+	if (aa <= 0.5)
+	{
+		as = gmAsinCore(aa);
+	}
+	else
+	{
+		const double w = gmSqrt((1.0 - aa) * 0.5);
+		as = 1.57079632679489655800 - 2.0 * gmAsinCore(w);
+	}
+	return (float)(1.57079632679489655800 - neg * as);
+}
+
+// atan(z) for |z| <= tan(pi/8). Plain alternating Taylor; the reduction below keeps z small enough
+// that it converges fast.
+// atan(z) = z * (1 - z^2/3 + z^4/5 - z^6/7 + ...) for |z| <= tan(pi/8); the reduction in gmAtan
+// keeps z small enough that this converges quickly.
+inline double gmAtanCore(double z)
+{
+	const double z2 = z * z;
+	double p =       -4.34782608695652161e-02;   // -1/23
+	p = p * z2 +      4.76190476190476164e-02;   //  1/21
+	p = p * z2 -      5.26315789473684181e-02;   // -1/19
+	p = p * z2 +      5.88235294117647065e-02;   //  1/17
+	p = p * z2 -      6.66666666666666657e-02;   // -1/15
+	p = p * z2 +      7.69230769230769218e-02;   //  1/13
+	p = p * z2 -      9.09090909090909116e-02;   // -1/11
+	p = p * z2 +      1.11111111111111105e-01;   //  1/9
+	p = p * z2 -      1.42857142857142849e-01;   // -1/7
+	p = p * z2 +      2.00000000000000011e-01;   //  1/5
+	p = p * z2 -      3.33333333333333315e-01;   // -1/3
+	p = p * z2 +      1.00000000000000000e+00;
+	return z * p;
+}
+
+inline double gmAtan(double z)
+{
+	const double neg = (z < 0.0) ? -1.0 : 1.0;
+	double a = (z < 0.0) ? -z : z;
+
+	double result;
+	if (a <= 4.14213562373095145e-01)          // tan(pi/8)
+	{
+		result = gmAtanCore(a);
+	}
+	else if (a <= 2.41421356237309515e+00)     // tan(3pi/8)
+	{
+		// atan(a) = pi/4 + atan((a-1)/(a+1))
+		result = 7.85398163397448279000e-01 + gmAtanCore((a - 1.0) / (a + 1.0));
+	}
+	else
+	{
+		// atan(a) = pi/2 - atan(1/a)
+		result = 1.57079632679489655800 - gmAtanCore(1.0 / a);
+	}
+	return neg * result;
+}
+
+inline float Atan(float x)
+{
+	return (float)gmAtan((double)x);
+}
+
+inline float Atan2(float y, float x)
+{
+	const double dy = (double)y;
+	const double dx = (double)x;
+
+	if (dx == 0.0 && dy == 0.0)
+	{
+		return 0.0f;
+	}
+	if (dx == 0.0)
+	{
+		return (float)((dy > 0.0) ? 1.57079632679489655800 : -1.57079632679489655800);
+	}
+
+	const double a = gmAtan(dy / dx);
+	if (dx > 0.0)
+	{
+		return (float)a;
+	}
+	// x < 0: shift by +/-pi to land in the correct quadrant, matching atan2's convention.
+	return (float)((dy >= 0.0) ? (a + 3.14159265358979311600)
+	                           : (a - 3.14159265358979311600));
 }
 
 } // namespace GameMath

@@ -148,24 +148,14 @@ static WWINLINE float Asin(float val);
 // #include "GameMath/deterministic_math.h"
 #endif
 
-static WWINLINE float		Atan(float x) 
-{ 
-#ifdef USE_DETERMINISTIC_MATH
-	// TODO: return GameMath::Atan(x);
-	return static_cast<float>(atan(x)); 
-#else
-	return static_cast<float>(atan(x)); 
-#endif
+static WWINLINE float		Atan(float x)
+{
+	return GameMath::Atan(x);
 }
 
-static WWINLINE float		Atan2(float y, float x) 
-{ 
-#ifdef USE_DETERMINISTIC_MATH
-	// TODO: return GameMath::Atan2(y, x);
-	return static_cast<float>(atan2(y, x)); 
-#else
-	return static_cast<float>(atan2(y, x)); 
-#endif
+static WWINLINE float		Atan2(float y, float x)
+{
+	return GameMath::Atan2(y, x);
 }
 
 // Phase 4: Trig function routing (deterministic vs. platform-native)
@@ -197,34 +187,19 @@ static WWINLINE float CosTrig(float x)
 	return GameMath::Cos(x);
 }
 
-static WWINLINE float TanTrig(float x) 
-{ 
-#ifdef USE_DETERMINISTIC_MATH
-	// TODO: return GameMath::Tan(x);
-	return tanf(x); 
-#else
-	return tanf(x); 
-#endif
+static WWINLINE float TanTrig(float x)
+{
+	return GameMath::Tan(x);
 }
 
-static WWINLINE float ACosTrig(float x) 
-{ 
-#ifdef USE_DETERMINISTIC_MATH
-	// TODO: return GameMath::Acos(x);
-	return Acos(x); 
-#else
-	return Acos(x); 
-#endif
+static WWINLINE float ACosTrig(float x)
+{
+	return GameMath::ACos(x);
 }
 
-static WWINLINE float ASinTrig(float x) 
-{ 
-#ifdef USE_DETERMINISTIC_MATH
-	// TODO: return GameMath::Asin(x);
-	return Asin(x); 
-#else
-	return Asin(x); 
-#endif
+static WWINLINE float ASinTrig(float x)
+{
+	return GameMath::ASin(x);
 }
 
 // Phase 4: Origin sqrt gateway for geometry (Coord2D/Coord3D length calculations)
@@ -479,7 +454,8 @@ WWINLINE float WWMath::Cos(float val)
 #else
 WWINLINE float WWMath::Cos(float val)
 {
-	return cosf(val);
+	// GeneralsX: deterministic - see gamemath.h
+	return GameMath::Cos(val);
 }
 #endif
 
@@ -501,7 +477,8 @@ WWINLINE float WWMath::Sin(float val)
 #else
 WWINLINE float WWMath::Sin(float val)
 {
-	return sinf(val);
+	// GeneralsX: deterministic - see gamemath.h
+	return GameMath::Sin(val);
 }
 #endif
 
