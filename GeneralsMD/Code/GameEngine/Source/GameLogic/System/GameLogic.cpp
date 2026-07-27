@@ -4353,6 +4353,29 @@ UnsignedInt GameLogic::getCRC( Int mode, AsciiString deepCRCFileName )
 				(unsigned)m_frame, (unsigned)obj->getID(),
 				tmpl ? tmpl->getName().str() : "<none>",
 				xferCRC->getCRC());
+
+			// GeneralsX @diag Claude 28/07/2026 Dump the raw transform bits at frame 0.
+			//
+			// Object::crc hashes the transform matrix as 48 raw bytes with no epsilon
+			// (Object.cpp:4007), and Thing::setOrientation builds it from Cos(angle)/Sin(angle)
+			// (Thing.cpp:232-241). So a single-ULP disagreement between Apple libm and MSVC's
+			// UCRT at one placement angle is indistinguishable, in the CRC, from a structurally
+			// different value. Printing the bit patterns tells those apart: 1 ULP shows as a
+			// last-hex-digit difference, anything else points at a different code path entirely.
+			//
+			// Frame 0 only, so this is 12 extra floats per object exactly once per match.
+			if (m_frame == 0)
+			{
+				const Real *mtx = (const Real *)obj->getTransformMatrix();
+				fprintf(stderr, "[GXMTX] id=%u", (unsigned)obj->getID());
+				for (int mi = 0; mi < 12; ++mi)
+				{
+					UnsignedInt bits;
+					memcpy(&bits, &mtx[mi], sizeof(bits));
+					fprintf(stderr, " %08X", bits);
+				}
+				fprintf(stderr, "\n");
+			}
 		}
 	}
 	UnsignedInt seed = GetGameLogicRandomSeedCRC();
