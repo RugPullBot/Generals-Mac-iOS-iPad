@@ -378,6 +378,16 @@ void Network::setSawCRCMismatch()
 
 	TheRecorder->logCRCMismatch();
 
+	// GeneralsX @feature Claude 27/07/2026 Release-visible. Everything below this point is
+	// DEBUG_LOG or #ifdef DEBUG_CRC and vanishes in a shipping build, so the user-visible
+	// behaviour was a CRCMismatch.wnd popup followed by exitGame() 120 frames later with nothing
+	// written anywhere. m_runAhead matters: the divergence happened that many frames BEFORE the
+	// frame we noticed it on, so the raw GameLogic frame alone points at the wrong place.
+	fprintf(stderr, "[CRC] DESYNC CONFIRMED - divergence frame~=%d noticedAtFrame=%d runAhead=%d seedCRC=%d\n",
+		(int)(TheGameLogic->getFrame() - m_runAhead - 1), (int)TheGameLogic->getFrame(),
+		(int)m_runAhead, (int)GetGameLogicRandomSeedCRC());
+	fflush(stderr);
+
 	// dump GameLogic random seed
 	DEBUG_LOG(("Latest frame for mismatch = %d GameLogic frame = %d",
 		TheGameLogic->getFrame()-m_runAhead-1, TheGameLogic->getFrame()));

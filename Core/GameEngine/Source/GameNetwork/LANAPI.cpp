@@ -235,6 +235,15 @@ void LANAPI::sendMessage(LANMessage *msg, UnsignedInt ip /* = 0 */)
 	}
 	else
 	{
+		// GeneralsX @feature Claude 27/07/2026 Release-visible. Pairs with the [LAN] recv trace in
+		// update(): together they tell a send that never happened from a send that was never
+		// received. Only the broadcast arm is traced - the unicast arms are driven by an already
+		// established peer, so by then discovery has demonstrably worked.
+		fprintf(stderr, "[LAN] send %s to %d.%d.%d.%d:%u\n",
+			GetMessageTypeString(msg->messageType).str(),
+			PRINTF_IP_AS_4_INTS(m_broadcastAddr), (unsigned)lobbyPort);
+		fflush(stderr);
+
 		m_transport->queueSend(m_broadcastAddr, lobbyPort, (unsigned char *)msg, sizeof(LANMessage) /*, 0, 0 */);
 	}
 }
@@ -399,6 +408,22 @@ void LANAPI::update()
 			LANMessage *msg = (LANMessage *)(m_transport->m_inBuffer[i].data);
 			//DEBUG_LOG(("LAN message type %s from %ls (%s@%s)", GetMessageTypeString(msg->messageType).str(),
 			//	msg->name, msg->userName, msg->hostName));
+
+			// GeneralsX @feature Claude 27/07/2026 Release-visible inbound trace. This is the only
+			// place that can distinguish the two failures that look identical from outside the
+			// process: nothing arrived (firewall drop, wrong broadcast address, wrong interface)
+			// versus something arrived and was rejected further down. Both otherwise present as a
+			// lobby that sits empty and times out after 5 s with no output whatsoever.
+			//
+			// Watch for senderIP equal to one of OUR OWN addresses: the self-filter above compares
+			// against m_localIP only, so when the announced identity and the interface the kernel
+			// actually sends from disagree, our own broadcast fails that test and the machine
+			// appears in its own lobby. That is the signature of a bad interface election.
+			fprintf(stderr, "[LAN] recv %s from %d.%d.%d.%d len=%d\n",
+				GetMessageTypeString(msg->messageType).str(), PRINTF_IP_AS_4_INTS(senderIP),
+				(int)m_transport->m_inBuffer[i].length);
+			fflush(stderr);
+
 			switch (msg->messageType)
 			{
 				// Location specification
@@ -1357,6 +1382,15 @@ Bool LANAPI::SetLocalIP( UnsignedInt localIP )
 	m_transport->reset();
 	retval = m_transport->init(m_localIP, lobbyPort);
 	m_transport->allowBroadcasts(true);
+
+	// GeneralsX @feature Claude 27/07/2026 Release-visible. This is the single point where the
+	// announced identity and the discovery destination are decided, and both were invisible in a
+	// shipping build - a wrong interface, a bad broadcast address and a failed bind all presented
+	// identically as an empty lobby that times out after 5 s.
+	fprintf(stderr, "[LAN] localIP=%d.%d.%d.%d broadcast=%d.%d.%d.%d port=%u transportInit=%s\n",
+		PRINTF_IP_AS_4_INTS(m_localIP), PRINTF_IP_AS_4_INTS(m_broadcastAddr),
+		(unsigned)lobbyPort, retval ? "ok" : "FAILED");
+	fflush(stderr);
 
 	return retval;
 }

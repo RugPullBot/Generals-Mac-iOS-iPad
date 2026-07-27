@@ -2750,6 +2750,14 @@ void GameLogic::processCommandList( CommandList *list )
 			if (m_cachedCRCs.size() < numPlayers)
 			{
 				DEBUG_CRASH(("Not enough CRCs!"));
+				// GeneralsX @feature Claude 27/07/2026 Release-visible, and deliberately worded to
+				// distinguish this case from a real divergence: a missing CRC message and a genuine
+				// state mismatch both set sawCRCMismatch and are otherwise indistinguishable in a
+				// shipping build. One means the peer went quiet, the other means the simulations
+				// disagree - opposite diagnoses, so they must not share a message.
+				fprintf(stderr, "[CRC] SHORTFALL frame=%u got=%u expected=%d (a peer sent no CRC this interval)\n",
+					(unsigned)m_frame, (unsigned)m_cachedCRCs.size(), numPlayers);
+				fflush(stderr);
 				sawCRCMismatch = TRUE;
 			}
 			else
@@ -2782,7 +2790,33 @@ void GameLogic::processCommandList( CommandList *list )
 					player?player->getPlayerDisplayName().str():L"<NONE>", crcIt->second));
 			}
 #endif // DEBUG_LOGGING
+
+			// GeneralsX @feature Claude 27/07/2026 Release-visible twin of the DEBUG_LOGGING dump
+			// above. In a shipping build the entire block above compiles away and the only surviving
+			// evidence of a desync is one boolean byte in the .rep header (Recorder.cpp:199) - no
+			// frame, no CRCs. That is not enough to tell a float divergence from a dropped message,
+			// which is the whole question blocker 5 exists to answer. Mirrors the wording of the
+			// replay path's existing release fprintf at Recorder.cpp:1127.
+			fprintf(stderr, "[CRC] MISMATCH frame=%u crcs=%u players=%d\n",
+				(unsigned)m_frame, (unsigned)m_cachedCRCs.size(), numPlayers);
+			for (std::map<Int, UnsignedInt>::const_iterator dumpIt = m_cachedCRCs.begin(); dumpIt != m_cachedCRCs.end(); ++dumpIt)
+			{
+				fprintf(stderr, "[CRC]   player=%d crc=%08X\n", dumpIt->first, dumpIt->second);
+			}
+			fflush(stderr);
+
 			TheNetwork->setSawCRCMismatch();
+		}
+		else
+		{
+			// GeneralsX @feature Claude 27/07/2026 Success heartbeat. Without it, silence is
+			// ambiguous: "the peers agree" and "validation never ran at all" produce identical
+			// output. Fires once per CRC interval - 100 logic frames, ~3.3 s - so the volume is
+			// negligible next to the render loop.
+			fprintf(stderr, "[CRC] ok frame=%u crcs=%u players=%d value=%08X\n",
+				(unsigned)m_frame, (unsigned)m_cachedCRCs.size(), numPlayers,
+				m_cachedCRCs.empty() ? 0 : m_cachedCRCs.begin()->second);
+			fflush(stderr);
 		}
 	}
 
