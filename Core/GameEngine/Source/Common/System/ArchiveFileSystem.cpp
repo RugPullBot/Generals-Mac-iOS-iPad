@@ -269,6 +269,19 @@ UnsignedInt ArchiveFileSystem::computeMountedArchiveFingerprint() const
 
 		std::sort(names.begin(), names.end());
 
+		// GeneralsX @feature Claude 27/07/2026 Print exactly what gets hashed.
+		//
+		// assetID is one of the two tier2 SimID fields, and when it disagrees between two
+		// peers the value alone says nothing about WHICH archive is responsible. The engine's
+		// own "inserted into the archive file map" trace is a DEBUG_LOG and is therefore
+		// ((void)0) in every shipping preset, so in a Release build there was no way to see
+		// the mounted set at all. fprintf(stderr) matches the release-visible pattern used by
+		// the SimID and INI traces.
+		fprintf(stderr, "[ARCHIVES] mounted=%u\n", (UnsignedInt)names.size());
+		for (size_t n = 0; n < names.size(); ++n)
+			fprintf(stderr, "[ARCHIVES]   %s\n", names[n].c_str());
+		fflush(stderr);
+
 		for (size_t n = 0; n < names.size(); ++n)
 		{
 			const std::string &s = names[n];
