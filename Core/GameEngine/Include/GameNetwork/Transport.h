@@ -82,6 +82,21 @@ private:
 	Bool m_winsockInit;
 	UDP *m_udpsock;
 
+	// GeneralsX @feature Relay transport. With a relay configured, every datagram is bounced off
+	// it and the peer is known by a virtual LAN address instead of its real one. That keeps the
+	// whole IP-as-identity stack above this layer - AmIHost, the slot list, the join handshake -
+	// looking at the two-machine LAN it was written for, while the machines are on different
+	// networks and neither has forwarded a port.
+	void initRelay( UnsignedShort port );			///< Reads the relay config; relay mode is on only if all of it validates.
+	void sendRelayRegistration();					///< Unencrypted hello/keepalive that tells the relay where we are.
+
+	Bool m_relayEnabled;
+	UnsignedInt m_relayAddr;						///< Host order. Stands in for every outbound destination.
+	UnsignedInt m_peerVirtualIP;					///< Host order. Reported upwards as the source of everything received.
+	UnsignedInt m_lastRelayRegistration;
+	char m_relayRegistration[64];					///< Prebuilt registration datagram. Never encrypted - see sendRelayRegistration.
+	Int m_relayRegistrationLen;
+
 	// Latency insertion and packet loss
 	Bool m_useLatency;
 	Bool m_usePacketLoss;

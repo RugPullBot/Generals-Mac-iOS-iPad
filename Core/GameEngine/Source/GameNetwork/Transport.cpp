@@ -26,9 +26,24 @@
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
 #include "Common/crc.h"
+#include "Common/OptionPreferences.h"
 #include "GameClient/ClientInstance.h"
 #include "GameNetwork/Transport.h"
 #include "GameNetwork/NetworkInterface.h"
+
+// GeneralsX @feature Relay transport. The registration datagram is plaintext on purpose: the
+// relay recognises its own control traffic by this tag alone and never has to look at, let alone
+// decrypt, a single game packet.
+static const char RELAY_REGISTRATION_TAG[] = "GXRLY";
+static const Int RELAY_MAX_ROOM_LEN = 31;
+static const UnsignedInt RELAY_REGISTRATION_INTERVAL = 5000;	// ms
+
+// The relay listens on exactly these two ports, and telling them apart is the only demultiplexing
+// it does. A socket on any other port must therefore never be relayed - the GameSpy NAT
+// negotiation transport picks a random port in a 20000-wide range, and sending its probes to a
+// port nothing is listening on would break online play for anyone who has a relay configured.
+static const UnsignedShort RELAY_LOBBY_PORT = 8086;						// LANAPI::lobbyPort
+static const UnsignedShort RELAY_GAME_PORT = NETWORK_BASE_PORT_NUMBER;	// what the LAN path hands ConnectionManager
 
 
 //--------------------------------------------------------------------------
@@ -72,6 +87,113 @@ Transport::Transport()
 {
 	m_winsockInit = false;
 	m_udpsock = nullptr;
+	m_relayEnabled = FALSE;
+	m_relayAddr = 0;
+	m_peerVirtualIP = 0;
+	m_lastRelayRegistration = 0;
+	m_relayRegistration[0] = '\0';
+	m_relayRegistrationLen = 0;
+}
+
+// GeneralsX @feature Relay transport. Everything the relay needs is decided here, once per
+// socket, and every check that fails leaves relay mode off rather than half on: a half-configured
+// relay would send game traffic to nowhere while the lobby still believed it was on a LAN.
+void Transport::initRelay( UnsignedShort port )
+{
+	m_relayEnabled = FALSE;
+	m_relayAddr = 0;
+	m_peerVirtualIP = 0;
+	m_lastRelayRegistration = 0;
+	m_relayRegistration[0] = '\0';
+	m_relayRegistrationLen = 0;
+
+	OptionPreferences prefs;
+	const AsciiString relayHost = prefs.getRelayAddress();
+
+	if (relayHost.isEmpty())
+		return;		// No relay configured - ordinary LAN behaviour.
+
+	if (port != RELAY_LOBBY_PORT && port != RELAY_GAME_PORT)
+	{
+		DEBUG_LOG(("Transport::initRelay - not relaying port %d; the relay only carries the lobby (%d) and the game (%d)",
+			port, RELAY_LOBBY_PORT, RELAY_GAME_PORT));
+		return;
+	}
+
+	// Two instances on one machine share the port and are told apart only by a per-instance
+	// 127.x bind, which the wildcard bind relay mode needs would collide with. They are on the
+	// same machine anyway, so they have nothing to gain from a relay.
+	if (rts::ClientInstance::isMultiInstance())
+	{
+		DEBUG_LOG(("Transport::initRelay - relay disabled: multi-instance clients need the narrow per-instance bind"));
+		return;
+	}
+
+	const UnsignedInt relayAddr = ResolveIP(relayHost);
+	if (relayAddr == 0 || relayAddr == INADDR_NONE)
+	{
+		DEBUG_LOG(("Transport::initRelay - relay disabled: could not resolve RelayAddress '%s'", relayHost.str()));
+		return;
+	}
+
+	const UnsignedInt localVirtualIP = prefs.getLocalVirtualIP();
+	const UnsignedInt peerVirtualIP = prefs.getPeerVirtualIP();
+	if (localVirtualIP == 0 || peerVirtualIP == 0 || localVirtualIP == peerVirtualIP)
+	{
+		DEBUG_LOG(("Transport::initRelay - relay disabled: LocalVirtualIP and PeerVirtualIP must be two different 10.x addresses (got 0x%8.8X and 0x%8.8X)",
+			localVirtualIP, peerVirtualIP));
+		return;
+	}
+
+	AsciiString room = prefs.getRelayRoom();
+	if (room.isEmpty())
+	{
+		room = "default";
+		DEBUG_LOG(("Transport::initRelay - no RelayRoom set, using '%s'; anyone else on this relay in the default room would be paired with us", room.str()));
+	}
+
+	// The room token travels in a plaintext, space-separated line, so keep it to one word and to
+	// characters that cannot be mistaken for a field separator.
+	char roomToken[RELAY_MAX_ROOM_LEN + 1];
+	Int roomLen = 0;
+	for (const char *c = room.str(); (*c != '\0') && (roomLen < RELAY_MAX_ROOM_LEN); ++c)
+	{
+		const Bool safe = isalnum((unsigned char)*c) || (*c == '-') || (*c == '_') || (*c == '.');
+		roomToken[roomLen++] = safe ? *c : '_';
+	}
+	roomToken[roomLen] = '\0';
+
+	// Our own virtual address doubles as the client id: it is the one thing that already differs
+	// between the two machines, and it makes the relay's log read like the lobby's.
+	m_relayRegistrationLen = snprintf(m_relayRegistration, sizeof(m_relayRegistration), "%s %s %d.%d.%d.%d",
+		RELAY_REGISTRATION_TAG, roomToken, PRINTF_IP_AS_4_INTS(localVirtualIP));
+
+	if (m_relayRegistrationLen <= 0 || m_relayRegistrationLen >= (Int)sizeof(m_relayRegistration))
+	{
+		DEBUG_LOG(("Transport::initRelay - relay disabled: registration for room '%s' does not fit", roomToken));
+		m_relayRegistrationLen = 0;
+		return;
+	}
+
+	m_relayAddr = relayAddr;
+	m_peerVirtualIP = peerVirtualIP;
+	m_relayEnabled = TRUE;
+
+	DEBUG_LOG(("Transport::initRelay - relaying through %d.%d.%d.%d in room '%s'; we are %d.%d.%d.%d, peer is %d.%d.%d.%d",
+		PRINTF_IP_AS_4_INTS(m_relayAddr), roomToken,
+		PRINTF_IP_AS_4_INTS(localVirtualIP), PRINTF_IP_AS_4_INTS(m_peerVirtualIP)));
+}
+
+// GeneralsX @feature Relay transport. Written straight to the socket rather than through
+// queueSend, which would CRC and encrypt it: the relay has to be able to spot this packet without
+// understanding anything else on the wire.
+void Transport::sendRelayRegistration()
+{
+	if (!m_relayEnabled || !m_udpsock || m_relayRegistrationLen == 0)
+		return;
+
+	m_udpsock->Write((const unsigned char *)m_relayRegistration, m_relayRegistrationLen, m_relayAddr, m_port);
+	m_lastRelayRegistration = timeGetTime();
 }
 
 Transport::~Transport()
@@ -129,6 +251,17 @@ Bool Transport::init( UnsignedInt ip, UnsignedShort port )
 	}
 #endif
 
+	// GeneralsX @feature Relay transport. In relay mode every datagram arrives from the relay's
+	// public address, which is on no local subnet, so the socket must be the wildcard on Windows
+	// too - `ip` is now a virtual LAN address and nothing would ever be delivered to it. This one
+	// bind covers both sockets: the lobby one via LANAPI::SetLocalIP and the in-game one via
+	// ConnectionManager::initTransport.
+	initRelay(port);
+	if (m_relayEnabled)
+	{
+		bindIP = INADDR_ANY;
+	}
+
 	int retval = -1;
 	time_t now = timeGetTime();
 	while ((retval != 0) && ((timeGetTime() - now) < 1000)) {
@@ -166,6 +299,10 @@ Bool Transport::init( UnsignedInt ip, UnsignedShort port )
 	m_lastSecond = timeGetTime();
 
 	m_port = port;
+
+	// GeneralsX @feature Relay transport. Register before anything else goes out so the relay can
+	// pair the room and open the return path ahead of the first game datagram.
+	sendRelayRegistration();
 
 #if defined(RTS_DEBUG)
 	if (TheGlobalData->m_latencyAverage > 0 || TheGlobalData->m_latencyNoise)
@@ -229,6 +366,15 @@ Bool Transport::doSend() {
 		m_unknownBytes[m_statisticsSlot] = 0;
 	}
 
+	// GeneralsX @feature Relay transport keepalive. Re-registering on a timer teaches the relay a
+	// new public address if our NAT rebinds, and holds the mapping open through a quiet lobby.
+	// This sits in doSend rather than update() because ConnectionManager drives the in-game socket
+	// by calling doSend/doRecv directly and never calls update().
+	if (m_relayEnabled && ((now - m_lastRelayRegistration) >= RELAY_REGISTRATION_INTERVAL))
+	{
+		sendRelayRegistration();
+	}
+
 	// Send all messages
 	int i;
 	for (i=0; i<MAX_MESSAGES; ++i)
@@ -241,8 +387,16 @@ Bool Transport::doSend() {
 			// But the max network message size needs to include the bytes of the transport message header and equal the max udp payload
 			// Therefore, transmitted data needs to add the extra bytes of the network header to the payloads length
 			int bytesToSend = m_outBuffer[i].length + sizeof(TransportMessageHeader);
+
+			// GeneralsX @feature Relay transport. The message keeps the address the game chose -
+			// a virtual LAN address, or the LAN broadcast - but goes out to the relay, which
+			// forwards it to the other member of the room. The PORT is deliberately left alone:
+			// it is what lets the relay keep lobby (8086) and in-game (8088) traffic apart
+			// without ever looking inside a packet.
+			const UnsignedInt destAddr = m_relayEnabled ? m_relayAddr : m_outBuffer[i].addr;
+
 			// Send this message
-			if ((bytesSent = m_udpsock->Write((unsigned char *)(&m_outBuffer[i]), bytesToSend, m_outBuffer[i].addr, m_outBuffer[i].port)) > 0)
+			if ((bytesSent = m_udpsock->Write((unsigned char *)(&m_outBuffer[i]), bytesToSend, destAddr, m_outBuffer[i].port)) > 0)
 			{
 				//DEBUG_LOG(("Sending %d bytes to %d.%d.%d.%d:%d", bytesToSend, PRINTF_IP_AS_4_INTS(m_outBuffer[i].addr), m_outBuffer[i].port));
 				m_outgoingPackets[m_statisticsSlot]++;
@@ -252,7 +406,7 @@ Bool Transport::doSend() {
 				{
 					DEBUG_LOG(("Transport::doSend - wanted to send %d bytes, only sent %d bytes to %d.%d.%d.%d:%d",
 						bytesToSend, bytesSent,
-						PRINTF_IP_AS_4_INTS(m_outBuffer[i].addr), m_outBuffer[i].port));
+						PRINTF_IP_AS_4_INTS(destAddr), m_outBuffer[i].port));
 				}
 			}
 			else
@@ -273,7 +427,7 @@ Bool Transport::doSend() {
 				if (!transient)
 				{
 					DEBUG_LOG(("Transport::doSend - dropping undeliverable message to %d.%d.%d.%d:%d (status %d)",
-						PRINTF_IP_AS_4_INTS(m_outBuffer[i].addr), m_outBuffer[i].port, (Int)sockStatus));
+						PRINTF_IP_AS_4_INTS(destAddr), m_outBuffer[i].port, (Int)sockStatus));
 					m_outBuffer[i].length = 0;  // Remove from queue; retrying cannot help
 				}
 				retval = FALSE;
@@ -380,7 +534,12 @@ Bool Transport::doRecv()
 						(Int)(TheGlobalData->m_latencyAmplitude * sin(now * TheGlobalData->m_latencyPeriod)) +
 						GameClientRandomValue(-TheGlobalData->m_latencyNoise, TheGlobalData->m_latencyNoise);
 					m_delayedInBuffer[i].message.length = incomingMessage.length;
-					m_delayedInBuffer[i].message.addr = ntohl(from.sin_addr.S_un.S_addr);
+					// GeneralsX @bugfix Use POSIX s_addr here too - winsock #defines s_addr onto
+					// the S_un union, so it is the spelling that compiles on both, and this copy
+					// of the assignment was left behind when the one below was fixed.
+					// GeneralsX @feature Relay transport. Same virtual peer address substitution
+					// as the live path below, so simulated latency does not quietly opt out of it.
+					m_delayedInBuffer[i].message.addr = m_relayEnabled ? m_peerVirtualIP : ntohl(from.sin_addr.s_addr);
 					m_delayedInBuffer[i].message.port = ntohs(from.sin_port);
 					memcpy(&m_delayedInBuffer[i].message, buf, len);
 					break;
@@ -394,7 +553,12 @@ Bool Transport::doRecv()
 					// Empty slot; use it
 					m_inBuffer[i].length = incomingMessage.length;
 					// GeneralsX @bugfix BenderAI 13/02/2026 Use POSIX s_addr (no S_un union on Linux)
-					m_inBuffer[i].addr = ntohl(from.sin_addr.s_addr);
+					// GeneralsX @feature Relay transport. In relay mode the wire source is the
+					// relay, which is not an identity anything above this layer can match against
+					// a slot, so hand up the peer's virtual LAN address instead. Only two machines
+					// can be in a room, so the peer is unambiguous. This has to stay ahead of the
+					// memcpy, which overwrites header and data but stops short of these fields.
+					m_inBuffer[i].addr = m_relayEnabled ? m_peerVirtualIP : ntohl(from.sin_addr.s_addr);
 					m_inBuffer[i].port = ntohs(from.sin_port);
 					memcpy(&m_inBuffer[i], buf, len);
 					break;

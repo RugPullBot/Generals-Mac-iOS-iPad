@@ -179,6 +179,81 @@ void OptionPreferences::setOnlineIPAddress(UnsignedInt IP)
 	(*this)["GameSpyIPAddress"] = tmp;
 }
 
+// GeneralsX @feature Relay transport. Defaults let the machine that hosts get away with only
+// naming the relay and the room; its opponent swaps the two addresses in its own Options.ini.
+static const UnsignedInt DEFAULT_LOCAL_VIRTUAL_IP = (10u << 24) | (42u << 16) | (0u << 8) | 1u;
+static const UnsignedInt DEFAULT_PEER_VIRTUAL_IP = (10u << 24) | (42u << 16) | (0u << 8) | 2u;
+
+// GeneralsX @feature A virtual address stands in for a real one everywhere above the transport
+// layer, so it has to survive every place the engine handles an IP. 10.0.0.0/8 is mandatory, not
+// stylistic: JoinDirectConnectGame builds the address it dials with "(ip1 << 24) + ..." into a
+// signed Int, which is undefined behaviour for any first octet >= 128.
+static UnsignedInt parseVirtualIP(AsciiString value, UnsignedInt defaultIP)
+{
+	if (value.isEmpty())
+		return defaultIP;
+
+	UnsignedInt octet[4];
+	if (sscanf(value.str(), "%u.%u.%u.%u", &octet[0], &octet[1], &octet[2], &octet[3]) != 4)
+	{
+		DEBUG_LOG(("parseVirtualIP - '%s' is not a dotted quad; ignoring", value.str()));
+		return 0;
+	}
+
+	for (Int i = 0; i < 4; ++i)
+	{
+		if (octet[i] > 255)
+		{
+			DEBUG_LOG(("parseVirtualIP - '%s' has an octet out of range; ignoring", value.str()));
+			return 0;
+		}
+	}
+
+	if (octet[0] != 10)
+	{
+		DEBUG_LOG(("parseVirtualIP - '%s' is outside 10.0.0.0/8; virtual addresses must be 10.x so the direct connect join path's signed shift stays in range", value.str()));
+		return 0;
+	}
+
+	return (octet[0] << 24) | (octet[1] << 16) | (octet[2] << 8) | octet[3];
+}
+
+AsciiString OptionPreferences::getRelayAddress() const
+{
+	OptionPreferences::const_iterator it = find("RelayAddress");
+	if (it == end())
+		return AsciiString::TheEmptyString;
+
+	return it->second;
+}
+
+AsciiString OptionPreferences::getRelayRoom() const
+{
+	OptionPreferences::const_iterator it = find("RelayRoom");
+	if (it == end())
+		return AsciiString::TheEmptyString;
+
+	return it->second;
+}
+
+UnsignedInt OptionPreferences::getLocalVirtualIP() const
+{
+	OptionPreferences::const_iterator it = find("LocalVirtualIP");
+	if (it == end())
+		return DEFAULT_LOCAL_VIRTUAL_IP;
+
+	return parseVirtualIP(it->second, DEFAULT_LOCAL_VIRTUAL_IP);
+}
+
+UnsignedInt OptionPreferences::getPeerVirtualIP() const
+{
+	OptionPreferences::const_iterator it = find("PeerVirtualIP");
+	if (it == end())
+		return DEFAULT_PEER_VIRTUAL_IP;
+
+	return parseVirtualIP(it->second, DEFAULT_PEER_VIRTUAL_IP);
+}
+
 Bool OptionPreferences::getArchiveReplaysEnabled() const
 {
 	OptionPreferences::const_iterator it = find("ArchiveReplays");

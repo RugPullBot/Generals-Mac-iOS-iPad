@@ -85,14 +85,39 @@ void PopulateRemoteIPComboBox()
 	Int numRemoteIPs = userprefs.getNumRemoteIPs();
 	Color white = GameMakeColor(255,255,255,255);
 
+	// GeneralsX @feature Relay transport. In relay mode there is exactly one address worth
+	// dialling - the peer's virtual LAN identity - and it is not in the saved history until the
+	// first join, so offer it at the top and preselect it.
+	OptionPreferences prefs;
+	const UnsignedInt peerVirtualIP = prefs.getPeerVirtualIP();
+	const Bool relayMode = !prefs.getRelayAddress().isEmpty() && (peerVirtualIP != 0);
+	UnicodeString peerEntry;
+
+	if (relayMode)
+	{
+		peerEntry.format(L"%d.%d.%d.%d", PRINTF_IP_AS_4_INTS(peerVirtualIP));
+		GadgetComboBoxAddEntry(comboboxRemoteIP, peerEntry, white);
+	}
+
 	for (Int i = 0; i < numRemoteIPs; ++i)
 	{
 		UnicodeString entry;
 		entry = userprefs.getRemoteIPEntry(i);
+		if (relayMode && entry.startsWith(peerEntry))
+		{
+			// The history keeps a copy of the peer after the first join, and it is already offered
+			// above. Check the character that follows too, so that 10.42.0.1 does not swallow a
+			// saved 10.42.0.10.
+			const Int tail = peerEntry.getLength();
+			const WideChar next = (entry.getLength() > tail) ? entry.getCharAt(tail) : L'\0';
+			if (next < L'0' || next > L'9')
+				continue;
+		}
+
 		GadgetComboBoxAddEntry(comboboxRemoteIP, entry, white);
 	}
 
-	if (numRemoteIPs > 0)
+	if (relayMode || numRemoteIPs > 0)
 	{
 		GadgetComboBoxSetSelectedPos(comboboxRemoteIP, 0, TRUE);
 	}
@@ -306,39 +331,65 @@ void NetworkDirectConnectInit( WindowLayout *layout, void *userData )
 		OptionPreferences prefs;
 		UnsignedInt IP = prefs.getOnlineIPAddress();
 
-		IPEnumeration IPs;
+		// GeneralsX @feature Relay transport. With a relay configured our identity is the virtual
+		// LAN address, not a NIC address: the lobby is a two-machine LAN whose members are
+		// 10.42.0.1 and 10.42.0.2 wherever the machines physically are. The interface enumeration
+		// below must be skipped entirely, because the virtual address is on no interface and the
+		// "the IP we had no longer exists" fallback would replace it with a real one.
+		const UnsignedInt virtualIP = prefs.getLocalVirtualIP();
+		const Bool relayMode = !prefs.getRelayAddress().isEmpty() && (virtualIP != 0);
 
-//		if (!IP)
-//		{
-			EnumeratedIP *IPlist = IPs.getAddresses();
-			DEBUG_ASSERTCRASH(IPlist, ("No IP addresses found!"));
-			if (!IPlist)
-			{
-				/// @todo: display an error to the user rather than continuing silently
-				DEBUG_LOG(("NetworkDirectConnectInit: no local IP addresses found.\n"));
-			}
+		if (relayMode)
+		{
+			IP = virtualIP;
+			DEBUG_LOG(("NetworkDirectConnectInit - relay mode, local identity is %d.%d.%d.%d", PRINTF_IP_AS_4_INTS(IP)));
+		}
+		else
+		{
+			IPEnumeration IPs;
 
-			Bool foundIP = FALSE;
-			EnumeratedIP *tempIP = IPlist;
-			while ((tempIP != nullptr) && (foundIP == FALSE)) {
-				if (IP == tempIP->getIP()) {
-					foundIP = TRUE;
+//			if (!IP)
+//			{
+				EnumeratedIP *IPlist = IPs.getAddresses();
+				DEBUG_ASSERTCRASH(IPlist, ("No IP addresses found!"));
+				if (!IPlist)
+				{
+					/// @todo: display an error to the user rather than continuing silently
+					DEBUG_LOG(("NetworkDirectConnectInit: no local IP addresses found.\n"));
 				}
-				tempIP = tempIP->getNext();
-			}
 
-			if (foundIP == FALSE && IPlist != nullptr) {
-				// The IP that we had no longer exists, we need to pick a new one.
-				IP = IPlist->getIP();
-			}
-			// GeneralsX @bugfix IPlist can be null when the machine has no usable
-			// network interface (an iPad with Wi-Fi off). The empty `if (!IPlist)`
-			// guard above let execution reach here, and the while loop's own null
-			// test meant foundIP stayed FALSE — so this branch dereferenced the
-			// null every time. DEBUG_ASSERTCRASH compiles away in release.
+				Bool foundIP = FALSE;
+				EnumeratedIP *tempIP = IPlist;
+				while ((tempIP != nullptr) && (foundIP == FALSE)) {
+					if (IP == tempIP->getIP()) {
+						foundIP = TRUE;
+					}
+					tempIP = tempIP->getNext();
+				}
 
-//			IP = IPlist->getIP();
-//		}
+				if (foundIP == FALSE && IPlist != nullptr) {
+					// The IP that we had no longer exists, we need to pick a new one.
+					IP = IPlist->getIP();
+				}
+				// GeneralsX @bugfix IPlist can be null when the machine has no usable
+				// network interface (an iPad with Wi-Fi off). The empty `if (!IPlist)`
+				// guard above let execution reach here, and the while loop's own null
+				// test meant foundIP stayed FALSE — so this branch dereferenced the
+				// null every time. DEBUG_ASSERTCRASH compiles away in release.
+
+//				IP = IPlist->getIP();
+//			}
+		}
+
+		// GeneralsX @feature The order here is load-bearing, and only accidentally correct: there
+		// is a third copy of the local identity, because LANGameInfo's constructor snapshots
+		// TheLAN->GetLocalIP() and GameInfo::getLocalSlotNum and amIHost read that snapshot rather
+		// than TheLAN. SetLocalIP therefore has to run before any LANGameInfo exists - which the
+		// delete and re-new of TheLAN above guarantees. Assert it so that a future reshuffle of
+		// this function fails loudly here instead of producing a lobby that accepts a joiner and
+		// then silently ejects them.
+		DEBUG_ASSERTCRASH(TheLAN->GetMyGame() == nullptr,
+			("NetworkDirectConnectInit - a LANGameInfo already exists and has snapshotted the old local IP; SetLocalIP below will not reach it"));
 		TheLAN->init();
 		TheLAN->SetLocalIP(IP);
 	}

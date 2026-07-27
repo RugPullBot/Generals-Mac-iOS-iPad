@@ -67,6 +67,13 @@ public:
 	void setOnlineIPAddress(AsciiString IP);
 	void setLANIPAddress(UnsignedInt IP);
 	void setOnlineIPAddress(UnsignedInt IP);
+	// GeneralsX @feature Relay transport. RelayAddress being set is what turns relay mode on;
+	// the two virtual addresses are the identities the lobby, the slot list and the in-game
+	// connections see, so neither machine ever has to know the other's public address.
+	AsciiString getRelayAddress() const;
+	AsciiString getRelayRoom() const;
+	UnsignedInt getLocalVirtualIP() const;
+	UnsignedInt getPeerVirtualIP() const;
 	Bool getArchiveReplaysEnabled() const;
 	Bool getAlternateMouseModeEnabled();
 	Bool getRetaliationModeEnabled();

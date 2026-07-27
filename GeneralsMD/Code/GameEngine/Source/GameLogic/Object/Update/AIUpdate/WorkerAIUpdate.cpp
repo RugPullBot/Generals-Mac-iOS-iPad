@@ -280,10 +280,16 @@ UpdateSleepTime WorkerAIUpdate::update()
 			if( currentTask == DOZER_TASK_REPAIR &&
 					TheActionManager->canRepairObject( getObject(), targetObject, getLastCommandSource() ) == FALSE )
 				invalidTask = TRUE;
-#if !RETAIL_COMPATIBLE_CRC
-			else if (currentTask == DOZER_TASK_BUILD && targetObject == nullptr)
+			// GeneralsX @bugfix Cancelling construction kills the scaffold, and a killed structure stays in
+			// the object table for its entire death sequence, so waiting for the target to disappear left the
+			// builder commuting to a doomed site with every DOZER_CONSTRUCT button greyed out until the wreck
+			// was finally reaped. A dead scaffold can never be finished, so drop the task the moment it dies -
+			// REPAIR already abandons a dead target on the same frame via canRepairObject.
+			// Deliberately not behind RETAIL_COMPATIBLE_CRC, which is on by default here and would compile the
+			// fix back out.
+			else if( currentTask == DOZER_TASK_BUILD &&
+					( targetObject == nullptr || targetObject->isEffectivelyDead() ) )
 				invalidTask = TRUE;
-#endif
 
 			// cancel the task if it's now invalid
 			if( invalidTask == TRUE )
