@@ -198,7 +198,21 @@ if(WIN32)
         Source/Win32Device/Common/Win32LocalFile.cpp
         Source/Win32Device/Common/Win32LocalFileSystem.cpp
 #        Source/Win32Device/Common/Win32OSDisplay.cpp
-#        Source/Win32Device/GameClient/Win32DIKeyboard.cpp
+
+        # GeneralsX @bugfix Claude 27/07/2026 Build the shared Win32 input files from Core, where
+        # they actually live.
+        #
+        # Win32DIKeyboard.cpp and Win32Mouse.cpp exist ONLY under Core/GameEngineDevice, but both
+        # game trees listed them in their own target_sources with per-game-relative paths, so a
+        # Windows configure failed with "Cannot find source file". Upstream builds them from Core
+        # with the per-game entries commented out; this restores that arrangement.
+        #
+        # Win32DIMouse.cpp stays out deliberately - it is excluded in this tree and in jmarshall's
+        # Win64 port alike; mouse input comes from Win32Mouse.cpp via the window message queue.
+        Include/Win32Device/GameClient/Win32DIKeyboard.h
+        Include/Win32Device/GameClient/Win32Mouse.h
+        Source/Win32Device/GameClient/Win32DIKeyboard.cpp
+        Source/Win32Device/GameClient/Win32Mouse.cpp
     )
 endif()
 
