@@ -100,7 +100,46 @@ D3D8 entry point resolving to DXVK's `d3d8.dll` (drop the official x64 DLLs besi
 source change needed, `dx8wrapper.cpp:575` already uses `LoadLibrary`), and audio, since Miles is
 32-bit-only and x64 must take the OpenAL path the Apple builds use.
 
-### 3. SimID will falsely refuse Mac <-> Windows  *(HARD BLOCKER — this one bites silently)*
+### 3. SimID will falsely refuse Mac <-> Windows  *(MEASURED 2026-07-27 — IT DOES NOT. Latent, not active.)*
+
+**This was predicted from code reading and is now measured on both machines. It does not happen.**
+With SimID instrumentation landed (commit `a48345bfe`), both peers at the same clean commit, printed
+from a real boot on each machine:
+
+```
+Mac      rev=2059 engine=4D31F2F2 source=4D98C2D4 data=FEAAE3F3 ordinal=9F43F7B5
+         parse=CD8F767F asset=8E504171 platform=BF013216
+Windows  rev=2059 engine=4D31F2F2 source=4D98C2D4 data=FEAAE3F3 ordinal=9F43F7B5
+         parse=CD8F767F asset=8E504171 platform=7480F925
+```
+
+`SimIdCompare` (`SimulationId.cpp:273-287`) denies on `engineID`, `sourceID`, `dataID`, `ordinalID`.
+**All four are identical, so the verdict is `SIMID_OK` and the join is accepted.** `platformID` is the
+only difference and it is tier2 — it raises `SIMID_WARN_PLATFORM` and posts a chat warning, by design.
+
+Two further things this measurement settles:
+
+* **`m_iniCRC` matches** (`FEAAE3F3` both sides) — the separator divergence does not fire here, because
+  both installs are archive-only. The bug needs a loose `.ini` AND an archive entry in the *same*
+  directory before `/` and `\` can mix in one set. So it is **latent, not active**.
+* **The wire layout matches** — `sizeof(LANMessage)=471` and `sizeof(SimIdWire)=36` on both, so Apple
+  clang arm64 and MSVC x64 agree on packing. `assetID` matching also proves the mounted `.big` sets
+  are identical across Mac and the PC.
+
+Beware of one trap when repeating this: the digest hashes `git ls-tree` at HEAD **plus a dirty-file
+overlay**, so a build from a dirty working tree gets a different `sourceID` than a build from the clean
+commit. The first comparison run showed `sourceID` differing purely for that reason (Mac `rev=2058`
+dirty vs Windows `rev=2059` clean) and it looked exactly like a platform divergence. **Compare only
+builds made at the same clean commit.**
+
+The fix below is still worth doing — a loose INI override is a completely ordinary thing for a player
+or a mod to add, and the day one appears the join breaks with no remedy the user can apply. But it is
+**no longer a prerequisite for the first three-way match**, and it should not block the test ladder.
+
+---
+
+Original analysis, still accurate as a description of the latent bug:
+
 `m_iniCRC` is **not platform-neutral**. `FileSystem::getFileListInDirectory` merges entries whose
 separators are `/` from the local filesystem and `\` from archives; `/` is 0x2F and `\` is 0x5C, so
 the two sort differently, and `INI::loadDirectory` feeds `xferCRC` in exactly that set order. Worse,
@@ -110,11 +149,31 @@ Windows and two on Apple.
 Identical game data therefore produces a different `dataID` on Windows, and the join is refused with
 no remedy the user can apply.
 
-Fix: canonicalise at the single merge point in `FileSystem::getFileListInDirectory` — collect into a
-vector, normalise separators and case, sort, unique, then hand `INI::loadDirectory` the normalised
-order. **This changes `m_iniCRC` on macOS too**, so it must land in the same commit as re-deriving
+**Design settled 2026-07-27 — normalise to FORWARD SLASH, separators only.**
+
+* **Case needs no work.** `FilenameList` is `std::set<AsciiString, rts::less_than_nocase<AsciiString>>`
+  (`FileSystem.h:66`) and `less_than_nocase<AsciiString>` uses `compareNoCase` (`STLTypedefs.h:238-244`),
+  so the set already dedupes and orders case-insensitively. Only the separator is broken.
+* **Forward slash is the only viable canonical form.** The archive lookup is already separator-agnostic —
+  `ArchiveFileSystem::getArchivedDirectoryInfo` tokenises on `"\\/"` and lowercases first
+  (`ArchiveFileSystem.cpp:319-320`). Win32 accepts `/` in paths, and Apple's local FS cannot accept `\`.
+  So `/` works for all three consumers; `\` would break the Apple local filesystem.
+* **A 1:1 character substitution is safe for the existing pointer arithmetic.** `INI::loadDirectory`
+  does `tempname = (*it).str() + dirName.getLength()` (`INI.cpp:278`, `:291`) to strip the prefix, and
+  its subdirectory test already checks *both* separators (`:280`, `:293`). Replacing `\` with `/`
+  in place leaves every length unchanged, so none of that shifts.
+* Apply it at the single merge point, `FileSystem::getFileListInDirectory` (`FileSystem.cpp:286-291`),
+  after both producers have run — there are exactly **three** producers that insert into a
+  `FilenameList` (`ArchiveFile.cpp:179`, `Win32LocalFileSystem.cpp:150`, `StdLocalFileSystem.cpp:319`),
+  verified by unbounded search, so the merge point covers all of them.
+
+Note the archive path also lowercases leaf filenames (`StdBIGFileSystem.cpp:604`,
+`Win32BIGFileSystem.cpp:598`) while the local path does not — harmless for ordering because the
+comparator is case-insensitive, but worth knowing before touching this.
+
+**This changes `m_iniCRC` on macOS too**, so it must land in the same commit as re-deriving
 all four hardcoded retail checkpoints: `0xA1E7F8E6` and `0x6209AF6E` (GeneralsMD
-`GameEngine.cpp:581`/`:660`), `0x2E876341` and `0xD9A74E13` (Generals `:501`/`:538`). Miss that and
+`GameEngine.cpp:597`/`:694`), `0x2E876341` and `0xD9A74E13` (Generals `:522`/`:579`). Miss that and
 `verifyNameKeyID` silently stops firing.
 
 ### 4. Archive parity  *(largely DONE)*
