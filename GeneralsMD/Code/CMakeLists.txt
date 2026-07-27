@@ -26,6 +26,9 @@ target_include_directories(zi_main INTERFACE "Main")
 # those four into the build tree and put THAT on the include path.
 if(WIN32)
     set(_compatlib_win_inc "${CMAKE_CURRENT_BINARY_DIR}/compatlib-d3dx8-only")
+    # Exported so subdirectories added later (GameEngine) reuse the SAME staged directory
+    # instead of reaching back into CompatLib/Include and re-shadowing the Windows SDK.
+    set(GX_COMPATLIB_INCLUDE_DIR "${_compatlib_win_inc}")
     file(MAKE_DIRECTORY "${_compatlib_win_inc}")
     file(COPY
         "${CMAKE_CURRENT_SOURCE_DIR}/CompatLib/Include/d3dx8.h"
@@ -36,6 +39,7 @@ if(WIN32)
     target_include_directories(zi_always INTERFACE "${_compatlib_win_inc}")
 else()
     target_include_directories(zi_always INTERFACE "CompatLib/Include")  # TheSuperHackers @build 08/02/2026 Add DirectX 8 compat headers
+    set(GX_COMPATLIB_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/CompatLib/Include")
 endif()
 
 target_compile_definitions(zi_always INTERFACE

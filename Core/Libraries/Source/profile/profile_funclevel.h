@@ -41,7 +41,7 @@
     typedef int64_t i64;
     // Define _int64 for use in (unsigned _int64) patterns
     // Only define if not already defined by types_compat.h
-    #ifndef _int64
+    #if !defined(_int64) && !defined(_MSC_VER)   // MSVC: built-in keyword, see note below
     typedef int64_t _int64;
     #endif
 #endif
@@ -49,7 +49,11 @@
 #include <cstdint>
 
 // GeneralsX @bugfix fbraz 03/02/2026 Use guard macro to prevent typedef conflicts
-#ifndef _INT64_TYPES_DEFINED
+// GeneralsX @bugfix Claude 27/07/2026 Never typedef __int64/_int64 on MSVC.
+// They are BUILT-IN KEYWORDS there, not macros, so the #ifndef guard below is always
+// true and the typedef is a hard error: C2628 "'int64_t' followed by '__int64' is
+// illegal". These shims exist only for compilers that lack the Microsoft extension.
+#if !defined(_INT64_TYPES_DEFINED) && !defined(_MSC_VER)
 	#define _INT64_TYPES_DEFINED
 	typedef int64_t __int64;
 	typedef int64_t _int64;

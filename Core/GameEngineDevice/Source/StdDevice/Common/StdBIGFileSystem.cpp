@@ -496,6 +496,10 @@ void StdBIGFileSystem::init() {
 
 	AsciiString primaryAssetsDirectory;
 	const Bool loadedPrimaryAssets = loadPrimaryGameAssets(this, &primaryAssetsDirectory);
+	// GeneralsX @bugfix Claude 27/07/2026 Only ever read by the DEBUG_ASSERTCRASH below,
+	// which compiles to nothing in release - so the variable is unused there and MSVC's
+	// warnings-as-errors rejects it (C4189). Keep the call, silence the release warning.
+	(void)loadedPrimaryAssets;
 	DEBUG_ASSERTCRASH(loadedPrimaryAssets, ("No BIG files were loaded for the primary game assets."));
 
 	// GeneralsX @bugfix felipebraz 23/03/2026 Propagate the resolved asset root to the local file system.

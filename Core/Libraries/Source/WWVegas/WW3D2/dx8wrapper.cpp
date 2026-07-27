@@ -55,7 +55,12 @@
 #include <TargetConditionals.h>
 #endif
 // GeneralsX @build BenderAI 10/02/2026 - Need LoadLibrary/GetProcAddress/FreeLibrary for dynamic loading
+// GeneralsX @bugfix Claude 27/07/2026 module_compat.h maps these onto dlopen for POSIX. On
+// Windows they are the real Win32 API from <windows.h>, and the shim header is no longer on
+// the include path there (it lived beside the windows.h that was shadowing the SDK).
+#ifndef _WIN32
 #include "module_compat.h"
+#endif
 // GeneralsX @build felipebraz 16/02/2026 - Need dlerror() for dlopen() error reporting on Linux
 #ifndef _WIN32
 #include <dlfcn.h>

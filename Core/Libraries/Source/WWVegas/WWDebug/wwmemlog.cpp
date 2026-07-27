@@ -393,7 +393,13 @@ ActiveCategoryStackClass::operator = (const ActiveCategoryStackClass & that)
 ActiveCategoryStackClass & ActiveCategoryClass::Get_Active_Stack()
 {
 	// GeneralsX @bugfix BenderAI 24/02/2026 Phase 5 - Use GetCurrentThreadIdAsInt for int-based thread tracking
+// GeneralsX @bugfix Claude 27/07/2026 GetCurrentThreadIdAsInt is a POSIX shim from
+// CompatLib/Include/thread_compat.h, which is deliberately off the Windows include path.
+#ifdef _WIN32
+	int current_thread = (int)::GetCurrentThreadId();
+#else
 	int current_thread = GetCurrentThreadIdAsInt();
+#endif
 
 	/*
 	** If we already have an allocated category stack for the current thread,

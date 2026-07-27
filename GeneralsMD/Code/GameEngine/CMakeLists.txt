@@ -1163,7 +1163,9 @@ target_sources(z_gameengine PRIVATE ${GAMEENGINE_SRC})
 
 target_include_directories(z_gameengine PUBLIC
     Include
-    ../CompatLib/Include  # Needed for d3dx8math.h in PCH
+    ${GX_COMPATLIB_INCLUDE_DIR}  # GeneralsX @bugfix Claude 27/07/2026 d3dx8math.h for the PCH.
+                                 # Was ../CompatLib/Include, which re-exposed the shim windows.h
+                                 # to this target and reintroduced the SDK shadowing on Windows.
 )
 
 # Ensure DXVK headers are available when building on Linux
