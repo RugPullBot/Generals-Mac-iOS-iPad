@@ -454,7 +454,8 @@ WWINLINE float WWMath::Cos(float val)
 #else
 WWINLINE float WWMath::Cos(float val)
 {
-	return cosf(val);
+	// GeneralsX: deterministic - see gamemath.h
+	return GameMath::Cos(val);
 }
 #endif
 
@@ -476,7 +477,8 @@ WWINLINE float WWMath::Sin(float val)
 #else
 WWINLINE float WWMath::Sin(float val)
 {
-	return sinf(val);
+	// GeneralsX: deterministic - see gamemath.h
+	return GameMath::Sin(val);
 }
 #endif
 
