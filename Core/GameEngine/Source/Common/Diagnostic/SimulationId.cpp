@@ -255,6 +255,81 @@ static SimulationId &mutableInstance( void )
 
 	DEBUG_LOG(("SimID: valid=%d rev=%u engine=%08X source=%08X data=%08X ordinal=%08X parse=%08X asset=%08X platform=%08X",
 		(int)id.valid, id.revision, id.engineID, id.sourceID, id.dataID, id.ordinalID, id.parseID, id.assetID, id.platformID));
+
+	// GeneralsX @feature Claude 27/07/2026 Release-surviving SimID trace.
+	//
+	// The DEBUG_LOG above is ((void)0) in every shipping preset: DEBUG_LOGGING is only
+	// defined via ALLOW_DEBUG_UTILS (Debug.h:66-77), which needs RTS_DEBUG, and the Apple
+	// and Windows presets both compile this TU with -DNDEBUG -DRTS_RELEASE. So until now
+	// the SimID was computed and never surfaced anywhere, and a refused join could not be
+	// diagnosed at all. fprintf(stderr) is the house pattern for exactly this problem
+	// elsewhere in the engine (INI.cpp:196-197, SubsystemInterface.cpp:165-166).
+	//
+	// Print the wire/ABI shape alongside the fields: against a Windows peer a packing or
+	// epoch mismatch and a genuine content mismatch look identical from the verdict alone.
+	fprintf(stderr,
+		"[SIMID] local valid=%d rev=%u engine=%08X source=%08X data=%08X ordinal=%08X "
+		"parse=%08X asset=%08X platform=%08X | epoch=%u tag=%08X sizeof(SimIdWire)=%u sizeof(LANMessage)=%u\n",
+		(int)id.valid, id.revision, id.engineID, id.sourceID, id.dataID, id.ordinalID,
+		id.parseID, id.assetID, id.platformID,
+		(UnsignedInt)SIMID_EPOCH, (UnsignedInt)SIMID_WIRE_TAG,
+		(UnsignedInt)sizeof(SimIdWire), (UnsignedInt)sizeof(LANMessage));
+	fflush(stderr);
+}
+
+// GeneralsX @feature Claude 27/07/2026 Verdict names, so a refusal reads as a cause
+// rather than an integer. Kept beside SimIdCompare, which owns the precedence order.
+const char *SimIdVerdictName( SimIdVerdict v )
+{
+	switch (v)
+	{
+		case SIMID_OK:              return "OK";
+		case SIMID_LOCAL_INVALID:   return "LOCAL_INVALID";
+		case SIMID_PEER_SILENT:     return "PEER_SILENT";
+		case SIMID_ENGINE_DIFFERS:  return "ENGINE_DIFFERS";
+		case SIMID_SOURCE_DIFFERS:  return "SOURCE_DIFFERS";
+		case SIMID_DATA_DIFFERS:    return "DATA_DIFFERS";
+		case SIMID_ORDINAL_DIFFERS: return "ORDINAL_DIFFERS";
+	}
+	return "UNKNOWN";
+}
+
+// GeneralsX @feature Claude 27/07/2026 One place that prints both identities field by
+// field and marks every one that differs, so "which field" never has to be eyeballed
+// out of two hex rows. Callers supply which side they are and who the peer is.
+void SimIdLogMismatch( const char *side, const char *peerAddr, SimIdVerdict verdict, const SimIdWire &peer )
+{
+	const SimulationId &me = SimulationId::get();
+	SimIdWire mine;
+	me.toWire(mine);
+
+	fprintf(stderr, "[SIMID] %s REFUSED peer=%s verdict=%s\n",
+		side, (peerAddr != NULL) ? peerAddr : "?", SimIdVerdictName(verdict));
+	fprintf(stderr, "[SIMID]   %-10s %-10s %-10s %s\n", "field", "local", "peer", "");
+
+	// tag first: a zero or foreign tag means the peer never spoke this protocol at all,
+	// which is a different problem from any field below disagreeing.
+	#define SIMID_ROW(name, a, b) \
+		fprintf(stderr, "[SIMID]   %-10s %08X   %08X   %s\n", name, (UnsignedInt)(a), (UnsignedInt)(b), \
+			((a) == (b)) ? "" : "<== DIFFERS")
+	SIMID_ROW("tag",        mine.tag,        peer.tag);
+	SIMID_ROW("engineID",   mine.engineID,   peer.engineID);
+	SIMID_ROW("sourceID",   mine.sourceID,   peer.sourceID);
+	SIMID_ROW("dataID",     mine.dataID,     peer.dataID);
+	SIMID_ROW("ordinalID",  mine.ordinalID,  peer.ordinalID);
+	SIMID_ROW("parseID",    mine.parseID,    peer.parseID);
+	SIMID_ROW("assetID",    mine.assetID,    peer.assetID);
+	SIMID_ROW("platformID", mine.platformID, peer.platformID);
+	SIMID_ROW("revision",   mine.revision,   peer.revision);
+	#undef SIMID_ROW
+
+	// dataID and assetID have specific, actionable causes - say them rather than making
+	// the reader rediscover them.
+	if (mine.dataID != peer.dataID)
+		fprintf(stderr, "[SIMID]   dataID is m_iniCRC: the INI file SET or its ORDER differs.\n");
+	if (mine.assetID != peer.assetID)
+		fprintf(stderr, "[SIMID]   assetID is the mounted-archive fingerprint: the .big set differs.\n");
+	fflush(stderr);
 }
 
 void SimulationId::toWire( SimIdWire &out ) const

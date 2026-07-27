@@ -87,3 +87,11 @@ SimIdVerdict SimIdCompare( const SimIdWire &peer );
 
 // tier2 bitmask. Returns 0 when the peer is not a valid SimID peer.
 UnsignedInt  SimIdWarnFlags( const SimIdWire &peer );
+
+// GeneralsX @feature Claude 27/07/2026 Diagnostics for refused joins.
+//
+// Both write to stderr, NOT through DEBUG_LOG - DEBUG_LOG is ((void)0) in every shipping
+// preset (Debug.h:165-173), which is why a refused join previously produced no evidence
+// on either side. `side` is a short caller tag such as "HOST" or "JOINER".
+const char *SimIdVerdictName( SimIdVerdict v );
+void        SimIdLogMismatch( const char *side, const char *peerAddr, SimIdVerdict verdict, const SimIdWire &peer );

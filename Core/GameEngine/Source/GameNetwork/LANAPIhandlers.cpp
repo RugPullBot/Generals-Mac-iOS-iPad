@@ -426,6 +426,18 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 				// Release-visible, unlike the DEBUG_LOG this replaces. The host is already inside
 				// LanGameOptionsMenu with the listbox live, so this reaches the screen.
 				const SimulationId &me = SimulationId::get();
+
+				// GeneralsX @feature Claude 27/07/2026 The chat line below is capped at what fits
+				// on screen and drops parseID/assetID/platformID entirely. Log the full field-by-field
+				// comparison to stderr as well, so a refusal is diagnosable from the log alone - this
+				// is the host half of the pair, the joiner half is in the JOIN_ACCEPT handler.
+				{
+					char peerAddr[24];
+					snprintf(peerAddr, sizeof(peerAddr), "%u.%u.%u.%u",
+						(senderIP >> 24) & 0xFF, (senderIP >> 16) & 0xFF, (senderIP >> 8) & 0xFF, senderIP & 0xFF);
+					SimIdLogMismatch("HOST", peerAddr, simVerdict, msg->GameToJoin.sim);
+				}
+
 				UnicodeString sysMsg;
 				if (simVerdict == SIMID_LOCAL_INVALID)
 				{
@@ -623,6 +635,16 @@ void LANAPI::handleJoinAccept( LANMessage *msg, UnsignedInt senderIP )
 			m_remoteSimVerdict = SimIdCompare( m_remoteSim );
 			if (m_remoteSimVerdict != SIMID_OK)
 			{
+				// GeneralsX @feature Claude 27/07/2026 Joiner half of the refusal trace. Without
+				// this the joiner only ever shows RET_CRC_MISMATCH in a MessageBox, which names no
+				// field, and the host's stderr is on a different machine.
+				{
+					char peerAddr[24];
+					snprintf(peerAddr, sizeof(peerAddr), "%u.%u.%u.%u",
+						(senderIP >> 24) & 0xFF, (senderIP >> 16) & 0xFF, (senderIP >> 8) & 0xFF, senderIP & 0xFF);
+					SimIdLogMismatch("JOINER", peerAddr, m_remoteSimVerdict, m_remoteSim);
+				}
+
 				// Free the slot the host already reserved rather than leaving a ghost player.
 				LANMessage leaveMsg;
 				memset(&leaveMsg, 0, sizeof(leaveMsg));
@@ -727,6 +749,17 @@ void LANAPI::handleJoinDeny( LANMessage *msg, UnsignedInt senderIP )
 			m_remoteSim        = msg->GameNotJoined.sim;
 			m_remoteSimValid   = (m_remoteSim.tag == SIMID_WIRE_TAG);
 			m_remoteSimVerdict = SimIdCompare( m_remoteSim );
+
+			// GeneralsX @feature Claude 27/07/2026 We were denied by the host. Log why, but only
+			// for the build-mismatch reason - this branch also carries "game full", "duplicate
+			// name" and friends, and dumping a SimID table for those would be noise.
+			if (msg->GameNotJoined.reason == LANAPIInterface::RET_CRC_MISMATCH)
+			{
+				char peerAddr[24];
+				snprintf(peerAddr, sizeof(peerAddr), "%u.%u.%u.%u",
+					(senderIP >> 24) & 0xFF, (senderIP >> 16) & 0xFF, (senderIP >> 8) & 0xFF, senderIP & 0xFF);
+				SimIdLogMismatch("JOINER-DENIED", peerAddr, m_remoteSimVerdict, m_remoteSim);
+			}
 
 			// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharFieldAsWchar (fighter19 pattern)
 			OnGameJoin(msg->GameNotJoined.reason, LookupGame(UnicodeString(GetWindowsWideCharFieldAsWchar(msg->GameNotJoined.gameName))));
