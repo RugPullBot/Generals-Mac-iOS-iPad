@@ -503,13 +503,13 @@ static void loadBaseGeneralsAssetsForZH(TBigFileSystem* fileSystem, const AsciiS
 		}
 
 		AsciiString siblingGenerals = base;
-		siblingGenerals.concat("/../Generals");
+		siblingGenerals.concat("\\..\\Generals");
 		if (tryLoadBigFiles(fileSystem, siblingGenerals, "default-sibling-generals")) {
 			return;
 		}
 
 		AsciiString steamGenerals = base;
-		steamGenerals.concat("/ZH_Generals");
+		steamGenerals.concat("\\ZH_Generals");
 		if (tryLoadBigFiles(fileSystem, steamGenerals, "default-zh-generals")) {
 			return;
 		}
