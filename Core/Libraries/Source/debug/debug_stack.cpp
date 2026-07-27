@@ -31,6 +31,7 @@
 #include "debug_stack.h"
 #include <windows.h>
 #include "stringex.h"
+#include <stdio.h>   // GeneralsX @bugfix Claude 27/07/2026 _snprintf, for the dbghelp name fallback
 #include <imagehlp.h>
 // GeneralsX @bugfix Claude 27/07/2026 imagehlp.h defines StackWalk as a macro expanding to
 // StackWalk64 when _WIN64. debug_stack.h was included above it and declared
@@ -211,12 +212,13 @@ void DebugStackwalk::Signature::GetSymbol(unsigned addr, char *buf, unsigned buf
   memset(symPtr,0,sizeof(symbolBuffer));
   symPtr->SizeOfStruct=sizeof(IMAGEHLP_SYMBOL);
   symPtr->MaxNameLength=sizeof(symbolBuffer)-sizeof(IMAGEHLP_SYMBOL);
-  DWORD displacement;
+  // GeneralsX @bugfix Claude 27/07/2026 SymGetSymFromAddr64 writes a DWORD64 displacement.
+  DWORD_PTR displacement;
   if (!gDbg._SymGetSymFromAddr((HANDLE)GetCurrentProcessId(),addr,&displacement,symPtr))
     return;
   if ((unsigned int)(bufEnd-buf)<strlen(symPtr->Name)+16)
     return;
-  buf+=wsprintf(buf,", %s+0x%x",symPtr->Name,displacement);
+  buf+=wsprintf(buf,", %s+0x%p",symPtr->Name,(void *)displacement);
 
   // and line number
   IMAGEHLP_LINE line;
@@ -294,12 +296,14 @@ void DebugStackwalk::Signature::GetSymbol(unsigned addr,
     memset(symPtr,0,sizeof(symbolBuffer));
     symPtr->SizeOfStruct=sizeof(IMAGEHLP_SYMBOL);
     symPtr->MaxNameLength=sizeof(symbolBuffer)-sizeof(IMAGEHLP_SYMBOL);
-    DWORD displacement;
+    // GeneralsX @bugfix Claude 27/07/2026 SymGetSymFromAddr64 writes a DWORD64 displacement.
+    // relSym stays a 32-bit out parameter: it is an offset within one function, never an address.
+    DWORD_PTR displacement;
     if (gDbg._SymGetSymFromAddr((HANDLE)GetCurrentProcessId(),addr,&displacement,symPtr))
     {
       strlcpy(bufSym,symPtr->Name,sizeSym);
       if (relSym)
-        *relSym=displacement;
+        *relSym=(unsigned)displacement;
     }
     else
       strcpy(bufSym,"(unknown)");
