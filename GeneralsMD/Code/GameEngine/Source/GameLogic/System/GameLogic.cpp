@@ -3874,6 +3874,33 @@ void GameLogic::update()
 	Bool generateForSolo = isSoloGameOrReplay && ((m_frame % REPLAY_CRC_INTERVAL) == 0);
 #endif // DEBUG_CRC
 
+	// GeneralsX @diag Claude 27/07/2026 Per-frame LOCAL CRC, printed but never sent.
+	//
+	// Mac and Windows desync inside the first 100 logic frames, and the network CRC is exchanged
+	// only every 100 frames, so the reported frame is simply the first time anyone looked - the
+	// divergence could be at frame 1. Printing the same value every frame on both peers lets the
+	// two logs be diffed offline to find the EXACT first differing frame.
+	//
+	// Deliberately NOT done by lowering the CRC interval. The interval is host->client only
+	// (GameInfo.cpp:934 serialise, :1615 parse) and silently defaults to 100 if the field is
+	// dropped, so a mismatched interval makes the peers emit CRCs on different frames, which trips
+	// `m_cachedCRCs.size() < numPlayers` and reports a FAKE desync indistinguishable from a real
+	// one. The interval is left at 100 on purpose, so the existing frame-105 network comparison
+	// survives untouched as a control: if these prints perturbed anything, that comparison moves.
+	//
+	// Safe to call every frame in a release build: XferCRC is pure integer shift/add, snapshot crc
+	// methods are non-mutating by contract (Object.cpp:4004-4006), GetGameLogicRandomSeedCRC hashes
+	// the seed WITHOUT advancing it (RandomValue.cpp:72-77), and m_CRC's only other reader is
+	// getCRC(CRC_CACHED), which has no callers. The one real side effect is that getCRC calls
+	// setFPMode() mid-frame, which now happens every frame rather than every hundredth; it is
+	// idempotent, and the control above is what proves it inert.
+	if (isMPGameOrReplay)
+	{
+		const UnsignedInt perFrameCrc = getCRC( CRC_RECALC );
+		fprintf(stderr, "[GXCRC] f=%u v=%08X\n", (unsigned)m_frame, perFrameCrc);
+		fflush(stderr);
+	}
+
 	if (generateForSolo || generateForMP)
 	{
 		m_CRC = getCRC( CRC_RECALC );

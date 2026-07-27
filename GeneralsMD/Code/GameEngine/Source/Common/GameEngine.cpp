@@ -54,6 +54,7 @@
 #include "Common/ModuleFactory.h"
 #include "Common/Debug.h"
 #include "Common/Diagnostic/SimulationId.h"
+#include "Common/Diagnostic/SimulationMathCrc.h"
 #include "Common/GameState.h"
 // GeneralsX @bugfix Claude 27/07/2026 Neither header exists in the MSVC CRT.
 // Utility/dirent_compat.h reimplements opendir/readdir/closedir on _findfirst/_findnext and maps
@@ -782,6 +783,18 @@ void GameEngine::init()
 		simIn.nameKeyAfterScience  = nameKeyAfterScience;
 		simIn.archiveFingerprint   = TheArchiveFileSystem->computeMountedArchiveFingerprint();
 		SimulationId::initialize( simIn );
+
+		// GeneralsX @diag Claude 27/07/2026 De-folded libm fingerprint. PRINT ONLY - deliberately
+		// NOT folded into the SimID, for the reason recorded at SimulationId.cpp:76-80: a libm
+		// difference is a warning, not grounds to refuse a join.
+		//
+		// This exists to answer blocker 5. Mac and Windows desync within the first 100 logic
+		// frames at the same clean commit, and the open question is whether Apple's libm and
+		// MSVC's UCRT actually disagree or whether the divergence is elsewhere. Comparing this one
+		// value across peers settles it without bisecting frames. Until the de-fold landed the
+		// probe measured the two compilers' constant folders rather than their math libraries.
+		fprintf(stderr, "[MATHCRC] %08X\n", SimulationMathCrc::calculate());
+		fflush(stderr);
 
 		TheSubsystemList->postProcessLoadAll();
 
