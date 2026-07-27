@@ -213,6 +213,24 @@ if(WIN32)
         Include/Win32Device/GameClient/Win32Mouse.h
         Source/Win32Device/GameClient/Win32DIKeyboard.cpp
         Source/Win32Device/GameClient/Win32Mouse.cpp
+
+        # GeneralsX @bugfix Claude 27/07/2026 Build the Miles and Bink devices back on Windows.
+        #
+        # Both were commented out at the top of this file for the Linux port ("Disable Miles/Bink
+        # for Linux (Windows-only)"), but their consumers were never made conditional with them:
+        # Win32GameEngine::createAudioManager() still does "new MilesAudioManager" and
+        # W3DGameClient::createVideoPlayer() still does "new BinkVideoPlayer". On Windows that is
+        # 17 unresolved externals at link (LNK2001/LNK2019). Restoring them here - inside the
+        # existing if(WIN32) - is the arrangement upstream has, and leaves the Linux and macOS
+        # source list byte for byte as it was; those platforms use the OpenAL manager and the
+        # BinkVideoPlayerStub instead.
+        #
+        # Both compile at x64 now that the root CMakeLists fetches the miles-sdk-stub and
+        # bink-sdk-stub headers there.
+        Include/MilesAudioDevice/MilesAudioManager.h
+        Include/VideoDevice/Bink/BinkVideoPlayer.h
+        Source/MilesAudioDevice/MilesAudioManager.cpp
+        Source/VideoDevice/Bink/BinkVideoPlayer.cpp
     )
 endif()
 

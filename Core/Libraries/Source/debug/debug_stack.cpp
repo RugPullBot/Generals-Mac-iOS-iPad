@@ -221,10 +221,14 @@ void DebugStackwalk::Signature::GetSymbol(unsigned addr, char *buf, unsigned buf
   buf+=wsprintf(buf,", %s+0x%p",symPtr->Name,(void *)displacement);
 
   // and line number
+  // GeneralsX @bugfix Claude 27/07/2026 SymGetLineFromAddr64 keeps a plain PDWORD displacement,
+  // unlike SymGetSymFromAddr64 just above - it is an offset within one line, not an address - so
+  // the two cannot share a variable any more.
   IMAGEHLP_LINE line;
+  DWORD lineDisplacement;
   memset(&line,0,sizeof(line));
   line.SizeOfStruct=sizeof(line);
-  if (!gDbg._SymGetLineFromAddr((HANDLE)GetCurrentProcessId(),addr,&displacement,&line))
+  if (!gDbg._SymGetLineFromAddr((HANDLE)GetCurrentProcessId(),addr,&lineDisplacement,&line))
     return;
 
   p=strrchr(line.FileName,'\\'); // use filename only, strip off path
@@ -232,7 +236,7 @@ void DebugStackwalk::Signature::GetSymbol(unsigned addr, char *buf, unsigned buf
 
   if ((unsigned int)(bufEnd-buf)<strlen(p)+16)
     return;
-  buf+=wsprintf(buf,", %s:%i+0x%x",p,line.LineNumber,displacement);
+  buf+=wsprintf(buf,", %s:%i+0x%x",p,line.LineNumber,lineDisplacement);
 }
 
 void DebugStackwalk::Signature::GetSymbol(unsigned addr,

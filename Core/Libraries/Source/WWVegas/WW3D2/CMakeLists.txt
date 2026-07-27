@@ -234,6 +234,20 @@ set(WW3D2_SRC
     ww3dtrig.h
 )
 
+# GeneralsX @bugfix Claude 27/07/2026 FramGrab is Windows-only, but it is not optional there.
+#
+# It was commented out of WW3D2_SRC above for the Linux port because it uses the VFW/AVI APIs.
+# ww3d.cpp was not made conditional with it though - it includes framgrab.h, holds a
+# FrameGrabClass *Movie member, and constructs one in WW3D::Start_Movie_Capture - so on Windows
+# the missing object file is two unresolved externals at link. vfw32 is already on the link line
+# of both Main targets. Non-Windows builds see exactly the source list they saw before.
+if(WIN32)
+    list(APPEND WW3D2_SRC
+        FramGrab.cpp
+        framgrab.h
+    )
+endif()
+
 add_library(corei_ww3d2 INTERFACE)
 
 target_sources(corei_ww3d2 INTERFACE ${WW3D2_SRC})
