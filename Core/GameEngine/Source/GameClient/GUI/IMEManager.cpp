@@ -48,7 +48,17 @@
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
 // GeneralsX @build BenderAI 12/02/2026 Use compat header for Linux mbstring compatibility
+// GeneralsX @bugfix Claude 27/07/2026 Reach for the CRT header directly on Windows.
+//
+// mbstring_compat.h lives in GeneralsMD/Code/CompatLib/Include - the POSIX shim directory that no
+// longer goes on the Windows include path, because putting it there shadowed the whole Windows SDK
+// (see GeneralsMD/Code/CompatLib/CMakeLists.txt). Its _WIN32 arm is literally
+// "#include <mbstring.h>", so doing that here is the same translation unit either way.
+#ifdef _WIN32
+#include <mbstring.h>
+#else
 #include "mbstring_compat.h"
+#endif
 
 #include "Common/Debug.h"
 #include "Common/Language.h"

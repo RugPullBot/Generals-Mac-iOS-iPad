@@ -177,6 +177,18 @@ extern HINSTANCE ApplicationHInstance;  ///< our application instance
 extern CComModule _Module;
 #endif
 
+// GeneralsX @bugfix Claude 27/07/2026 Define TheSystemIsUnicode for Generals as well.
+//
+// Core/GameEngine/Source/Common/System/Debug.cpp is compiled into both games and reads this in the
+// #ifdef _WIN32 arm of ReleaseCrashLocalized(), but only GeneralsMD ever defined it, so g_generals
+// had no provider. Same "is ::MessageBox the wide variant" test GeneralsMD uses - see the comment
+// there; a sleazy way to get the information, but pending a better one it will have to do.
+#ifdef _WIN32
+extern const Bool TheSystemIsUnicode = (((void*) (::MessageBox)) == ((void*) (::MessageBoxW)));
+#else
+extern const Bool TheSystemIsUnicode = true;  // Non-Windows: always Unicode (UTF-8)
+#endif
+
 //-------------------------------------------------------------------------------------------------
 static void updateTGAtoDDS();
 

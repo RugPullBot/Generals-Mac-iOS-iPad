@@ -18,6 +18,13 @@
 
 // Used for dynamically linking to dbghelp.dll functions.
 
+// GeneralsX @bugfix Claude 27/07/2026 Address parameters are DWORD_PTR, not DWORD.
+// imagehlp.h remaps StackWalk/SymFunctionTableAccess/SymGetModuleBase/SymGetSymFromAddr/
+// SymGetLineFromAddr and the STACKFRAME/IMAGEHLP_* structs to their ...64 forms under _WIN64, and
+// those take DWORD64 addresses. Leaving DWORD here made the generated function-pointer types
+// incompatible with PFUNCTION_TABLE_ACCESS_ROUTINE64 / PGET_MODULE_BASE_ROUTINE64 at the
+// gDbg._StackWalk() call. DWORD_PTR is DWORD at 32-bit, so nothing changes there.
+
 // keep this always as first entry
 DBGHELP(SymInitialize,
         BOOL,
@@ -41,20 +48,20 @@ DBGHELP(StackWalk,
 
 DBGHELP(SymFunctionTableAccess,
         LPVOID,
-        (HANDLE hProcess, DWORD AddrBase))
+        (HANDLE hProcess, DWORD_PTR AddrBase))
 
 DBGHELP(SymGetModuleBase,
-        DWORD,
-        (HANDLE hProcess, DWORD dwAddr))
+        DWORD_PTR,
+        (HANDLE hProcess, DWORD_PTR dwAddr))
 
 DBGHELP(SymGetSymFromAddr,
         BOOL,
-        (HANDLE hProcess, DWORD Address, LPDWORD Displacement,
+        (HANDLE hProcess, DWORD_PTR Address, PDWORD_PTR Displacement,
         PIMAGEHLP_SYMBOL Symbol))
 
 DBGHELP(SymGetLineFromAddr,
         BOOL,
-        (HANDLE hProcess, DWORD dwAddr, PDWORD pdwDisplacement,
+        (HANDLE hProcess, DWORD_PTR dwAddr, PDWORD pdwDisplacement,
         PIMAGEHLP_LINE Line))
 
 // keep this always as last entry

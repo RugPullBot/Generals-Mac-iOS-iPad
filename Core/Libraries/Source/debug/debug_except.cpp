@@ -30,6 +30,9 @@
 #include "internal_except.h"
 #include <windows.h>
 #include <commctrl.h>
+// GeneralsX @bugfix Claude 27/07/2026 GX_CTX_PC and friends - the x86 CONTEXT field names used
+// below (Eip/Esp/Ebp/Eax/.../FloatSave) do not exist in the x64 CONTEXT layout.
+#include "Utility/cpu_context_compat.h"
 
 DebugExceptionhandler::DebugExceptionhandler()
 {
@@ -110,7 +113,7 @@ void DebugExceptionhandler::LogExceptionLocation(Debug &dbg, struct _EXCEPTION_P
   struct _CONTEXT &ctx=*exptr->ContextRecord;
 
   char buf[512];
-  DebugStackwalk::Signature::GetSymbol(ctx.Eip,buf,sizeof(buf));
+  DebugStackwalk::Signature::GetSymbol(GX_CTX_PC(&ctx),buf,sizeof(buf));
   dbg << "Exception occured at\n" << buf << ".";
 }
 
@@ -118,8 +121,29 @@ void DebugExceptionhandler::LogRegisters(Debug &dbg, struct _EXCEPTION_POINTERS 
 {
   struct _CONTEXT &ctx=*exptr->ContextRecord;
 
+  // GeneralsX @bugfix Claude 27/07/2026 The general-purpose register names are architecture
+  // specific; the segment registers and EFlags exist in both CONTEXT layouts.
   dbg << Debug::FillChar('0')
       << Debug::Hex()
+#if defined(_M_X64) || defined(_M_AMD64)
+      <<  "RAX:" << Debug::Width(16) << ctx.Rax
+      << " RBX:" << Debug::Width(16) << ctx.Rbx
+      << " RCX:" << Debug::Width(16) << ctx.Rcx << "\n"
+      <<  "RDX:" << Debug::Width(16) << ctx.Rdx
+      << " RSI:" << Debug::Width(16) << ctx.Rsi
+      << " RDI:" << Debug::Width(16) << ctx.Rdi << "\n"
+      <<  "R8 :" << Debug::Width(16) << ctx.R8
+      << " R9 :" << Debug::Width(16) << ctx.R9
+      << " R10:" << Debug::Width(16) << ctx.R10 << "\n"
+      <<  "R11:" << Debug::Width(16) << ctx.R11
+      << " R12:" << Debug::Width(16) << ctx.R12
+      << " R13:" << Debug::Width(16) << ctx.R13 << "\n"
+      <<  "R14:" << Debug::Width(16) << ctx.R14
+      << " R15:" << Debug::Width(16) << ctx.R15 << "\n"
+      <<  "RIP:" << Debug::Width(16) << ctx.Rip
+      << " RSP:" << Debug::Width(16) << ctx.Rsp
+      << " RBP:" << Debug::Width(16) << ctx.Rbp << "\n"
+#else
       <<  "EAX:" << Debug::Width(8) << ctx.Eax
       << " EBX:" << Debug::Width(8) << ctx.Ebx
       << " ECX:" << Debug::Width(8) << ctx.Ecx << "\n"
@@ -129,6 +153,7 @@ void DebugExceptionhandler::LogRegisters(Debug &dbg, struct _EXCEPTION_POINTERS 
       <<  "EIP:" << Debug::Width(8) << ctx.Eip
       << " ESP:" << Debug::Width(8) << ctx.Esp
       << " EBP:" << Debug::Width(8) << ctx.Ebp << "\n"
+#endif
       <<  "Flags:" << Debug::Bin() << Debug::Width(32) << ctx.EFlags << Debug::Hex() << "\n"
       <<  "CS:" << Debug::Width(4) << ctx.SegCs
       << " DS:" << Debug::Width(4) << ctx.SegDs
@@ -148,6 +173,12 @@ void DebugExceptionhandler::LogFPURegisters(Debug &dbg, struct _EXCEPTION_POINTE
     return;
   }
 
+  // GeneralsX @bugfix Claude 27/07/2026 x87 state is x86-only. The x64 CONTEXT has no FloatSave
+  // member - it carries an XMM_SAVE_AREA32 named FltSave, laid out differently - and x64 code does
+  // its floating point in SSE, so dumping the x87 stack there would say nothing about the crash.
+#if !defined(_M_IX86)
+  dbg << "x87 register dump is 32-bit only\n";
+#else
   FLOATING_SAVE_AREA &flt=ctx.FloatSave;
   dbg << Debug::Bin() << Debug::FillChar('0')
       << "CW:" << Debug::Width(16) << (flt.ControlWord&0xffff) << "\n"
@@ -180,6 +211,7 @@ void DebugExceptionhandler::LogFPURegisters(Debug &dbg, struct _EXCEPTION_POINTE
 
     dbg << "\n";
   }
+#endif // _M_IX86
   dbg << Debug::FillChar() << Debug::Dec();
 }
 

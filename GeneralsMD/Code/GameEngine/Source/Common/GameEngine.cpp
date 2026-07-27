@@ -55,8 +55,16 @@
 #include "Common/Debug.h"
 #include "Common/Diagnostic/SimulationId.h"
 #include "Common/GameState.h"
+// GeneralsX @bugfix Claude 27/07/2026 Neither header exists in the MSVC CRT.
+// Utility/dirent_compat.h reimplements opendir/readdir/closedir on _findfirst/_findnext and maps
+// strcasecmp onto _stricmp, so the save-directory walk below stays one piece of code. The shim is
+// entirely inside #ifdef _WIN32; this arm is never taken off Windows.
+#ifdef _WIN32
+#include "Utility/dirent_compat.h"
+#else
 #include <dirent.h>
 #include <strings.h>
+#endif
 #include "Common/GameStateMap.h"
 #include "Common/Science.h"
 #include "Common/FunctionLexicon.h"

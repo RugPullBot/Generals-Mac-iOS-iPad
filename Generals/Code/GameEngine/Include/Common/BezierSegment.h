@@ -29,10 +29,18 @@
 
 #pragma once
 
-#ifdef _WIN32
-#include <d3dx8math.h>
-#elif defined(SAGE_USE_GLM)
+// GeneralsX @bugfix Claude 27/07/2026 Test SAGE_USE_GLM first, the way Zero Hour's copy does.
+//
+// The member below is chosen by "#ifndef SAGE_USE_GLM", so whenever SAGE_USE_GLM is defined the
+// class needs <glm/glm.hpp>. On Windows both SAGE_USE_GLM and _WIN32 are defined (every Windows
+// preset sets SAGE_USE_GLM=ON), and with _WIN32 tested first this header pulled in d3dx8math.h and
+// never glm - then declared a glm::mat4 member. GeneralsMD's identical header already orders the
+// two arms this way; only this copy was left. Inert wherever the two macros are not both defined,
+// which is every non-Windows target.
+#ifdef SAGE_USE_GLM
 #include <glm/glm.hpp>
+#elif defined(_WIN32)
+#include <d3dx8math.h>
 #else
 #error "Missing a math library"
 #endif

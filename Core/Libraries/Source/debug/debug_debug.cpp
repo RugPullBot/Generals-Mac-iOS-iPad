@@ -33,6 +33,9 @@
 #include "internal_io.h"
 #include <stdlib.h>
 #include <windows.h>
+// GeneralsX @bugfix Claude 27/07/2026 _ReturnAddress and __debugbreak, replacing the two MSVC
+// __asm blocks below. The x64 compiler does not accept __asm at all.
+#include <intrin.h>
 #include <WWCommon.h>
 #include <new>      // needed for placement new prototype
 
@@ -303,25 +306,18 @@ bool Debug::SkipNext()
   if (Instance.disableAssertsEtc)
     return true;
 
-  // do not implement this function inline, we do need
-  // a valid frame pointer here!
-  unsigned help;
+  // GeneralsX @bugfix Claude 27/07/2026 Ask the compiler for the return address.
+  //
+  // "mov eax,[ebp+4]" is the return address read off an x86 frame - which needs a frame pointer,
+  // hence the note above, and which x64 does not have. _ReturnAddress() is the intrinsic for
+  // exactly this and works on every MSVC target; GCC and Clang spell it
+  // __builtin_return_address(0). The value is only ever used as an identity key for the
+  // assert-suppression table, so narrowing it to unsigned costs nothing beyond a marginally
+  // higher chance of two frames colliding in that table on a 64-bit build.
 #if defined(_MSC_VER)
-  _asm
-  {
-    mov eax,[ebp+4]   // return address
-    mov help,eax
-  };
-#elif (defined(__GNUC__) || defined(__clang__)) && (defined(__i386__) || defined(_M_IX86))
-  // GCC/Clang inline assembly for x86-32
-  __asm__ __volatile__(
-    "mov 4(%%ebp), %0"
-    : "=r"(help)
-    :
-    : "memory"
-  );
+  unsigned help = (unsigned)(UINT_PTR)_ReturnAddress();
 #else
-  #error "Unsupported compiler or architecture for inline assembly"
+  unsigned help = (unsigned)(UINT_PTR)__builtin_return_address(0);
 #endif
   curStackFrame=help;
 
@@ -434,8 +430,10 @@ bool Debug::AssertDone()
           }
           break;
         case IDRETRY:
+          // GeneralsX @bugfix Claude 27/07/2026 __debugbreak() is the intrinsic form of "int 3"
+          // and is available on every MSVC architecture; "_asm int 0x03" is x86-only.
 #if defined(_MSC_VER)
-          _asm int 0x03
+          __debugbreak();
 #elif defined(__GNUC__)
           __builtin_trap();
 #else
@@ -708,8 +706,10 @@ bool Debug::CrashDone(bool die)
             }
             break;
           case IDRETRY:
+            // GeneralsX @bugfix Claude 27/07/2026 See the identical case above: __debugbreak()
+            // is the architecture-neutral intrinsic for "int 3".
 #if defined(_MSC_VER)
-            _asm int 0x03
+            __debugbreak();
 #elif defined(__GNUC__)
             __builtin_trap();
 #else

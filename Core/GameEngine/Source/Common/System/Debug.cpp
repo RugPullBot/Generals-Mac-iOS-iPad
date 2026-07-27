@@ -837,6 +837,16 @@ void ReleaseCrash(const char *reason)
 	_exit(1);
 }
 
+// GeneralsX @bugfix Claude 27/07/2026 Declare TheSystemIsUnicode before using it.
+//
+// It is defined per game in <game>/Code/GameEngine/Source/Common/GameEngine.cpp but was never
+// declared anywhere a Core translation unit could see, so the reference below was an undeclared
+// identifier. It went unnoticed because the only use is inside the #ifdef _WIN32 arm of
+// ReleaseCrashLocalized(), which macOS and Linux never compile.
+#ifdef _WIN32
+extern const Bool TheSystemIsUnicode;
+#endif
+
 void ReleaseCrashLocalized(const AsciiString& p, const AsciiString& m)
 {
 	if (!TheGameText) {

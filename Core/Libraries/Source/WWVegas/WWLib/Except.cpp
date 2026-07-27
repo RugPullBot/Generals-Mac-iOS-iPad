@@ -63,6 +63,10 @@
 
 #include	<conio.h>
 #include	<imagehlp.h>
+// GeneralsX @bugfix Claude 27/07/2026 GX_CTX_PC/SP/FP, GX_IMAGE_FILE_MACHINE_NATIVE and
+// GXCaptureContextRegisters(): see Dependencies/Utility/Utility/cpu_context_compat.h. The
+// x86 CONTEXT field names and MSVC __asm used below do not exist at x64.
+#include "Utility/cpu_context_compat.h"
 #include <crtdbg.h>
 
 #ifdef WWDEBUG
@@ -117,14 +121,17 @@ DynamicVectorClass<ThreadInfoType*> ThreadList;
 **
 */
 typedef BOOL  (WINAPI *SymCleanupType) (HANDLE hProcess);
-typedef BOOL  (WINAPI *SymGetSymFromAddrType) (HANDLE hProcess, DWORD Address, LPDWORD Displacement, PIMAGEHLP_SYMBOL Symbol);
+// GeneralsX @bugfix Claude 27/07/2026 dbghelp.h remaps all of these to their ...64 forms under
+// _WIN64, and those take DWORD64 addresses. DWORD_PTR is DWORD at 32-bit and DWORD64 at 64-bit, so
+// both architectures get exactly the type dbghelp declares and the 32-bit build is unchanged.
+typedef BOOL  (WINAPI *SymGetSymFromAddrType) (HANDLE hProcess, DWORD_PTR Address, PDWORD_PTR Displacement, PIMAGEHLP_SYMBOL Symbol);
 typedef BOOL  (WINAPI *SymInitializeType) (HANDLE hProcess, LPSTR UserSearchPath, BOOL fInvadeProcess);
-typedef BOOL  (WINAPI *SymLoadModuleType) (HANDLE hProcess, HANDLE hFile, LPSTR ImageName, LPSTR ModuleName, DWORD BaseOfDll, DWORD SizeOfDll);
+typedef BOOL  (WINAPI *SymLoadModuleType) (HANDLE hProcess, HANDLE hFile, LPSTR ImageName, LPSTR ModuleName, DWORD_PTR BaseOfDll, DWORD SizeOfDll);
 typedef DWORD (WINAPI *SymSetOptionsType) (DWORD SymOptions);
-typedef BOOL  (WINAPI *SymUnloadModuleType) (HANDLE hProcess, DWORD BaseOfDll);
+typedef BOOL  (WINAPI *SymUnloadModuleType) (HANDLE hProcess, DWORD_PTR BaseOfDll);
 typedef BOOL  (WINAPI *StackWalkType) (DWORD MachineType, HANDLE hProcess, HANDLE hThread, LPSTACKFRAME StackFrame, LPVOID ContextRecord, PREAD_PROCESS_MEMORY_ROUTINE ReadMemoryRoutine, PFUNCTION_TABLE_ACCESS_ROUTINE FunctionTableAccessRoutine, PGET_MODULE_BASE_ROUTINE GetModuleBaseRoutine, PTRANSLATE_ADDRESS_ROUTINE TranslateAddress);
-typedef LPVOID (WINAPI *SymFunctionTableAccessType) (HANDLE hProcess, DWORD AddrBase);
-typedef DWORD (WINAPI *SymGetModuleBaseType) (HANDLE hProcess, DWORD dwAddr);
+typedef LPVOID (WINAPI *SymFunctionTableAccessType) (HANDLE hProcess, DWORD_PTR AddrBase);
+typedef DWORD_PTR (WINAPI *SymGetModuleBaseType) (HANDLE hProcess, DWORD_PTR dwAddr);
 
 
 static SymCleanupType							_SymCleanup = nullptr;
@@ -408,7 +415,8 @@ void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
 
 
 	unsigned char symbol [256];
-	unsigned long displacement;
+	// GeneralsX @bugfix Claude 27/07/2026 SymGetSymFromAddr64 writes a DWORD64 displacement.
+	DWORD_PTR displacement;
 	IMAGEHLP_SYMBOL *symptr = (IMAGEHLP_SYMBOL*)&symbol;
 
 	/*
@@ -465,21 +473,21 @@ void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
 	symptr->SizeOfStruct = sizeof (IMAGEHLP_SYMBOL);
 	symptr->MaxNameLength = 256-sizeof (IMAGEHLP_SYMBOL);
 	symptr->Size = 0;
-	symptr->Address = context->Eip;
+	symptr->Address = GX_CTX_PC(context);
 
-	if (!IsBadCodePtr((FARPROC)context->Eip)) {
-		if (_SymGetSymFromAddr != nullptr && _SymGetSymFromAddr (GetCurrentProcess(), context->Eip, &displacement, symptr)) {
-			snprintf(scrap, ARRAY_SIZE(scrap), "Exception occurred at %08X - %s + %08X\r\n",
-				context->Eip, symptr->Name, displacement);
+	if (!IsBadCodePtr((FARPROC)GX_CTX_PC(context))) {
+		if (_SymGetSymFromAddr != nullptr && _SymGetSymFromAddr (GetCurrentProcess(), GX_CTX_PC(context), &displacement, symptr)) {
+			snprintf(scrap, ARRAY_SIZE(scrap), "Exception occurred at %p - %s + %p\r\n",
+				(void *)(DWORD_PTR)GX_CTX_PC(context), symptr->Name, (void *)(DWORD_PTR)displacement);
 		} else {
-			DebugString ("Exception Handler: Failed to get symbol for EIP\r\n");
+			DebugString ("Exception Handler: Failed to get symbol for the instruction pointer\r\n");
 			if (_SymGetSymFromAddr != nullptr) {
 				DebugString ("Exception Handler: SymGetSymFromAddr failed with code %d - %s\n", GetLastError(), Last_Error_Text());
 			}
-			sprintf (scrap, "Exception occurred at %08X\r\n", context->Eip);
+			sprintf (scrap, "Exception occurred at %p\r\n", (void *)(DWORD_PTR)GX_CTX_PC(context));
 		}
 	} else {
-		DebugString ("Exception Handler: context->Eip is bad code pointer\n");
+		DebugString ("Exception Handler: the instruction pointer is a bad code pointer\n");
 	}
 
 	Add_Txt (scrap);
@@ -510,7 +518,7 @@ void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
 
 				if (_SymGetSymFromAddr != nullptr && _SymGetSymFromAddr (GetCurrentProcess(), temp_addr, &displacement, symptr)) {
 					char symbuf[256];
-					snprintf(symbuf, ARRAY_SIZE(symbuf), "%s + %08X\r\n", symptr->Name, displacement);
+					snprintf(symbuf, ARRAY_SIZE(symbuf), "%s + %p\r\n", symptr->Name, (void *)displacement);
 					Add_Txt(symbuf);
 				}
 			} else {
@@ -585,12 +593,28 @@ void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
 	/*
 	** Dump the registers.
 	*/
+	// GeneralsX @bugfix Claude 27/07/2026 The general-purpose register set differs per architecture.
+#if defined(_M_X64) || defined(_M_AMD64)
+	sprintf(scrap, "Rip:%016llX\tRsp:%016llX\tRbp:%016llX\r\n", (unsigned long long)context->Rip, (unsigned long long)context->Rsp, (unsigned long long)context->Rbp);
+	Add_Txt(scrap);
+	sprintf(scrap, "Rax:%016llX\tRbx:%016llX\tRcx:%016llX\r\n", (unsigned long long)context->Rax, (unsigned long long)context->Rbx, (unsigned long long)context->Rcx);
+	Add_Txt(scrap);
+	sprintf(scrap, "Rdx:%016llX\tRsi:%016llX\tRdi:%016llX\r\n", (unsigned long long)context->Rdx, (unsigned long long)context->Rsi, (unsigned long long)context->Rdi);
+	Add_Txt(scrap);
+	sprintf(scrap, "R8 :%016llX\tR9 :%016llX\tR10:%016llX\r\n", (unsigned long long)context->R8, (unsigned long long)context->R9, (unsigned long long)context->R10);
+	Add_Txt(scrap);
+	sprintf(scrap, "R11:%016llX\tR12:%016llX\tR13:%016llX\r\n", (unsigned long long)context->R11, (unsigned long long)context->R12, (unsigned long long)context->R13);
+	Add_Txt(scrap);
+	sprintf(scrap, "R14:%016llX\tR15:%016llX\r\n", (unsigned long long)context->R14, (unsigned long long)context->R15);
+	Add_Txt(scrap);
+#else
 	sprintf(scrap, "Eip:%08X\tEsp:%08X\tEbp:%08X\r\n", context->Eip, context->Esp, context->Ebp);
 	Add_Txt(scrap);
 	sprintf(scrap, "Eax:%08X\tEbx:%08X\tEcx:%08X\r\n", context->Eax, context->Ebx, context->Ecx);
 	Add_Txt(scrap);
 	sprintf(scrap, "Edx:%08X\tEsi:%08X\tEdi:%08X\r\n", context->Edx, context->Esi, context->Edi);
 	Add_Txt(scrap);
+#endif
 	sprintf(scrap, "EFlags:%08X \r\n", context->EFlags);
 	Add_Txt(scrap);
 	sprintf(scrap, "CS:%04x  SS:%04x  DS:%04x  ES:%04x  FS:%04x  GS:%04x\r\n", context->SegCs, context->SegSs, context->SegDs, context->SegEs, context->SegFs, context->SegGs);
@@ -600,6 +624,10 @@ void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
 	/*
 	** Now the FP registers.
 	*/
+	// GeneralsX @bugfix Claude 27/07/2026 x87 state is x86-only. The x64 CONTEXT has no FloatSave
+	// member - it carries an XMM_SAVE_AREA32 called FltSave with a different layout - and x64 code
+	// does its floating point in SSE anyway, so an x87 register dump would be meaningless there.
+#if defined(_M_IX86)
 	Add_Txt("\r\nFloating point status\r\n");
 	sprintf(scrap, "     Control word: %08x\r\n", context->FloatSave.ControlWord);
 	Add_Txt(scrap);
@@ -639,14 +667,15 @@ void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
 		sprintf(scrap, "   %+#.17e\r\n", fp_value);
 		Add_Txt(scrap);
 	}
+#endif // _M_IX86
 
 	/*
 	** Dump the bytes at EIP. This will make it easier to match the crash address with later versions of the game.
 	*/
 	DebugString("EIP bytes dump...\n");
-	sprintf(scrap, "\r\nBytes at CS:EIP (%08X)  : ", context->Eip);
+	sprintf(scrap, "\r\nBytes at CS:IP (%p)  : ", (void *)(DWORD_PTR)GX_CTX_PC(context));
 
-	unsigned char *eip_ptr = (unsigned char *) (context->Eip);
+	unsigned char *eip_ptr = (unsigned char *) (DWORD_PTR)GX_CTX_PC(context);
 	char bytestr[32];
 
 	for (int c = 0 ; c < 32 ; c++) {
@@ -667,7 +696,7 @@ void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
 	*/
 	DebugString("Stack dump...\n");
 	Add_Txt("Stack dump (* indicates possible code address) :\r\n");
-	unsigned long *stackptr = (unsigned long*) context->Esp;
+	unsigned long *stackptr = (unsigned long*) (DWORD_PTR)GX_CTX_SP(context);
 
 	for (int j=0 ; j<2048 ; j++) {
 		if (IsBadReadPtr(stackptr, 4)) {
@@ -694,7 +723,7 @@ void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
 
 					if (_SymGetSymFromAddr != nullptr && _SymGetSymFromAddr (GetCurrentProcess(), *stackptr, &displacement, symptr)) {
 						char symbuf[256];
-						snprintf(symbuf, ARRAY_SIZE(symbuf), " - %s + %08X", symptr->Name, displacement);
+						snprintf(symbuf, ARRAY_SIZE(symbuf), " - %s + %p", symptr->Name, (void *)displacement);
 						strlcat(scrap, symbuf, ARRAY_SIZE(scrap));
 					}
 				} else {
@@ -1169,12 +1198,18 @@ bool Lookup_Symbol(void *code_ptr, char *symbol, int &displacement)
 	symbol_struct_ptr->SizeOfStruct = sizeof (symbol_struct_buf);
 	symbol_struct_ptr->MaxNameLength = sizeof(symbol_struct_buf)-sizeof (IMAGEHLP_SYMBOL);
 	symbol_struct_ptr->Size = 0;
-	symbol_struct_ptr->Address = (unsigned long)code_ptr;
+	symbol_struct_ptr->Address = (DWORD_PTR)code_ptr;
 
 	/*
 	** See if we have the symbol for that address.
+	** GeneralsX @bugfix Claude 27/07/2026 Cannot reinterpret the caller's int& as the DWORD64 out
+	** parameter SymGetSymFromAddr64 writes - that would scribble over four bytes of the caller's
+	** stack at x64. Take it into a correctly sized local and narrow afterwards.
 	*/
-	if (_SymGetSymFromAddr(GetCurrentProcess(), (unsigned long)code_ptr, (unsigned long *)&displacement, symbol_struct_ptr)) {
+	DWORD_PTR symbol_displacement = 0;
+	if (_SymGetSymFromAddr(GetCurrentProcess(), (DWORD_PTR)code_ptr, &symbol_displacement, symbol_struct_ptr)) {
+
+		displacement = (int)symbol_displacement;
 
 		/*
 		** Copy it back into the buffer provided.
@@ -1229,27 +1264,10 @@ int Stack_Walk(unsigned long *return_addresses, int num_addresses, CONTEXT *cont
 	STACKFRAME stack_frame;
 	memset(&stack_frame, 0, sizeof(stack_frame));
 
-	unsigned long reg_eip, reg_ebp, reg_esp;
-
-#if defined(_MSC_VER)
-	__asm {
-here:
-		lea	eax,here
-		mov	reg_eip,eax
-		mov	reg_ebp,ebp
-		mov	reg_esp,esp
-	}
-#elif (defined(__GNUC__) || defined(__clang__)) && (defined(__i386__) || defined(_M_IX86))
-	__asm__ __volatile__ (
-		"call 1f\n\t"
-		"1: pop %0\n\t"
-		"mov %%ebp, %1\n\t"
-		"mov %%esp, %2"
-		: "=r" (reg_eip), "=r" (reg_ebp), "=r" (reg_esp)
-	);
-#else
-#error "Unsupported compiler or architecture for register capture"
-#endif
+	// GeneralsX @bugfix Claude 27/07/2026 RtlCaptureContext in place of per-architecture assembly.
+	GXCtxReg reg_eip, reg_ebp, reg_esp;
+	CONTEXT walk_context;
+	GXCaptureContextRegisters(&walk_context, &reg_eip, &reg_esp, &reg_ebp);
 
 	stack_frame.AddrPC.Mode = AddrModeFlat;
 	stack_frame.AddrPC.Offset = reg_eip;
@@ -1262,9 +1280,11 @@ here:
 	** Use the context struct if it was provided.
 	*/
 	if (context) {
-		stack_frame.AddrPC.Offset = context->Eip;
-		stack_frame.AddrStack.Offset = context->Esp;
-		stack_frame.AddrFrame.Offset = context->Ebp;
+		stack_frame.AddrPC.Offset = GX_CTX_PC(context);
+		stack_frame.AddrStack.Offset = GX_CTX_SP(context);
+		stack_frame.AddrFrame.Offset = GX_CTX_FP(context);
+		// x64 has no frame-pointer chain to follow, so StackWalk64 needs the record itself.
+		walk_context = *context;
 	}
 
 	int pointer_index = 0;
@@ -1273,7 +1293,7 @@ here:
 	** Walk the stack by the requested number of return address iterations.
 	*/
 	for (int i = 0; i < num_addresses + 1; i++) {
-		if (_StackWalk(IMAGE_FILE_MACHINE_I386, GetCurrentProcess(), GetCurrentThread(), &stack_frame, nullptr, nullptr, _SymFunctionTableAccess, _SymGetModuleBase, nullptr)) {
+		if (_StackWalk(GX_IMAGE_FILE_MACHINE_NATIVE, GetCurrentProcess(), GetCurrentThread(), &stack_frame, GX_STACKWALK_CONTEXT(&walk_context), nullptr, _SymFunctionTableAccess, _SymGetModuleBase, nullptr)) {
 
 			/*
 			** First result will always be the return address we were called from.

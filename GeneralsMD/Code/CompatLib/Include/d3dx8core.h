@@ -133,6 +133,28 @@ D3DXCreateVolumeTexture(
 	D3DPOOL Pool,
 	LPDIRECT3DVOLUMETEXTURE8 *ppVolumeTexture);
 
+// GeneralsX @bugfix Claude 27/07/2026 Give D3DXBUFFER a body, not just a forward declaration.
+//
+// Core/GameEngineDevice/Source/W3DDevice/GameClient/Water/W3DWater.cpp:943 calls
+// compiledShader->GetBufferPointer() and ->Release() on the LPD3DXBUFFER that D3DXAssembleShader
+// hands back, which an opaque "struct D3DXBUFFER *" cannot satisfy (C2027, use of undefined type).
+// It stayed hidden because that whole shader-assembly block sits inside #ifdef _WIN32 and no
+// Windows target had ever compiled far enough to reach it.
+//
+// Laid out exactly like D3DX8's ID3DXBuffer so the vtable matches, though nothing here ever
+// constructs one: both D3DXAssembleShader and D3DXAssembleShaderFromFileA in
+// GeneralsMD/Code/CompatLib/Source/d3dx8_compat.cpp return D3DERR_INVALIDCALL without touching
+// ppCompiledShader, and every call site tests the HRESULT before dereferencing. The COM macros
+// come from objbase.h (via <d3d8.h>) on Windows and from com_compat.h elsewhere, so this is a pure
+// addition on macOS and Linux - a type that previously had no definition now has one.
+#ifdef __cplusplus
+struct D3DXBUFFER : public IUnknown
+{
+	STDMETHOD_(LPVOID, GetBufferPointer)(THIS) PURE;
+	STDMETHOD_(DWORD,  GetBufferSize)(THIS) PURE;
+};
+#endif
+
 typedef struct D3DXBUFFER *LPD3DXBUFFER;
 
 HRESULT WINAPI
