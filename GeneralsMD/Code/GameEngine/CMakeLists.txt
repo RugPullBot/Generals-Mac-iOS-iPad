@@ -92,6 +92,7 @@ set(GAMEENGINE_SRC
 #    Include/Common/Radar.h
 #    Include/Common/RAMFile.h
 #    Include/Common/RandomValue.h
+    Include/Common/HeadlessMatch.h
     Include/Common/Recorder.h
 #    Include/Common/ReplaySimulation.h
     Include/Common/Registry.h
@@ -572,6 +573,7 @@ set(GAMEENGINE_SRC
     Source/Common/GameEngine.cpp
     Source/Common/GameLOD.cpp
     Source/Common/GameMain.cpp
+    Source/Common/HeadlessMatch.cpp
     Source/Common/GlobalData.cpp
 #    Source/Common/INI/INI.cpp
     Source/Common/INI/INIAiData.cpp

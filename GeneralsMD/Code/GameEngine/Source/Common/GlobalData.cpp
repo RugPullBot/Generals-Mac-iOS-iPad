@@ -1012,6 +1012,19 @@ GlobalData::GlobalData()
 	m_simulateReplays.clear();
 	m_simulateReplayJobs = SIMULATE_REPLAYS_SEQUENTIAL;
 
+	// GeneralsX @feature Claude 28/07/2026 Headless LAN host/join defaults.
+	m_lanRole = LANROLE_NONE;
+	m_lanGameName.clear();
+	m_lanJoinIP = 0;
+	m_lanMap.clear();
+	m_lanPlayerName.clear();
+	m_lanAiSpecs.clear();
+	m_lanWaitPeers = 0;
+	m_lanFrameLimit = 0;
+	// Generous by default: a joiner may be waiting on a human to finish launching the host,
+	// and a spurious timeout in a soak test looks exactly like a network fault.
+	m_lanTimeoutMs = 120000;
+
 	for (i = LEVEL_FIRST; i <= LEVEL_LAST; ++i)
 		m_healthBonus[i] = 1.0f;
 

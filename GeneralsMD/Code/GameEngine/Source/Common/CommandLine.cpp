@@ -35,8 +35,10 @@
 #include "GameClient/TerrainVisual.h" // for TERRAIN_LOD_MIN definition
 #include "GameClient/GameText.h"
 #include "GameNetwork/NetworkDefs.h"
+#include "GameNetwork/networkutil.h"	// ResolveIP, for -lanjoin
 #include "trim.h"
 
+#include <cctype>
 #include <string>
 
 #ifndef _WIN32
@@ -470,6 +472,165 @@ Int parseJobs(char *args[], int num)
 		return 2;
 	}
 	return 1;
+}
+
+// GeneralsX @feature Claude 28/07/2026 Headless LAN host/join. See Common/HeadlessMatch.h.
+//
+// These share parseReplay's preamble - no intro, no shell map - but deliberately NOT its
+// setMultiInstance(TRUE).
+//
+// Multi-instance makes IPEnumeration::getAddresses inject a synthetic 127.<instance> address
+// (IPEnumeration.cpp:118-126) so parallel replay workers get distinct identities. For a LAN
+// peer that is actively wrong twice over: ipSortClass only deprioritises 169.254 link-local,
+// so 127.x sorts ahead of 192.168.x and the peer advertises itself on loopback where nobody
+// can reach it; and on macOS 127.0.0.2 is not a configured alias at all, so the bind simply
+// fails. A headless LAN peer wants the real NIC.
+//
+// The consequence is that two headless peers cannot share one box. That is not a loss worth
+// paying for here: same-platform peers agree by construction and have never desynced across
+// 80,000+ frames. The soak test that finds determinism bugs is Mac vs Windows, on two
+// machines, which is exactly the case this supports.
+static void setUpHeadlessLanRole(LanRole role)
+{
+	TheWritableGlobalData->m_lanRole = role;
+
+	TheWritableGlobalData->m_playIntro = FALSE;
+	TheWritableGlobalData->m_afterIntro = TRUE;
+	TheWritableGlobalData->m_playSizzle = FALSE;
+	TheWritableGlobalData->m_shellMapOn = FALSE;
+}
+
+Int parseLanHost(char *args[], int num)
+{
+	if (num > 1)
+	{
+		TheWritableGlobalData->m_lanGameName.translate(AsciiString(args[1]));
+		setUpHeadlessLanRole(LANROLE_HOST);
+		return 2;
+	}
+	printf("-lanhost requires a game name\n");
+	exit(1);
+}
+
+Int parseLanJoin(char *args[], int num)
+{
+	if (num > 1)
+	{
+		// ResolveIP also accepts a hostname, which is what a relay will be addressed by.
+		const UnsignedInt ip = ResolveIP(AsciiString(args[1]));
+		if (ip == 0)
+		{
+			printf("Cannot resolve -lanjoin address \"%s\"\n", args[1]);
+			exit(1);
+		}
+		TheWritableGlobalData->m_lanJoinIP = ip;
+		setUpHeadlessLanRole(LANROLE_JOIN);
+		return 2;
+	}
+	printf("-lanjoin requires an IP address or hostname\n");
+	exit(1);
+}
+
+Int parseLanMap(char *args[], int num)
+{
+	if (num > 1)
+	{
+		TheWritableGlobalData->m_lanMap = args[1];
+		return 2;
+	}
+	printf("-lanmap requires a map name\n");
+	exit(1);
+}
+
+Int parseLanName(char *args[], int num)
+{
+	if (num > 1)
+	{
+		TheWritableGlobalData->m_lanPlayerName.translate(AsciiString(args[1]));
+		return 2;
+	}
+	printf("-lanname requires a player name\n");
+	exit(1);
+}
+
+Int parseLanAI(char *args[], int num)
+{
+	if (num > 1)
+	{
+		// Format is <E|M|H>xN, e.g. "Hx3" for three Brutal AIs. May be repeated.
+		const char *spec = args[1];
+		LanAiSpec parsed;
+		parsed.difficulty = (char)toupper((unsigned char)spec[0]);
+		if (parsed.difficulty != 'E' && parsed.difficulty != 'M' && parsed.difficulty != 'H')
+		{
+			printf("Invalid -lanai difficulty in \"%s\" - expected E, M or H\n", spec);
+			exit(1);
+		}
+		if (tolower((unsigned char)spec[1]) != 'x')
+		{
+			printf("Invalid -lanai spec \"%s\" - expected <E|M|H>xN, e.g. Hx3\n", spec);
+			exit(1);
+		}
+		parsed.count = atoi(spec + 2);
+		if (parsed.count <= 0)
+		{
+			printf("Invalid -lanai count in \"%s\"\n", spec);
+			exit(1);
+		}
+		TheWritableGlobalData->m_lanAiSpecs.push_back(parsed);
+		return 2;
+	}
+	printf("-lanai requires a spec like Hx3\n");
+	exit(1);
+}
+
+Int parseLanWait(char *args[], int num)
+{
+	if (num > 1)
+	{
+		TheWritableGlobalData->m_lanWaitPeers = atoi(args[1]);
+		if (TheGlobalData->m_lanWaitPeers < 0 || TheGlobalData->m_lanWaitPeers >= MAX_SLOTS)
+		{
+			printf("Invalid -lanwait peer count: %s\n", args[1]);
+			exit(1);
+		}
+		return 2;
+	}
+	printf("-lanwait requires a peer count\n");
+	exit(1);
+}
+
+Int parseLanFrames(char *args[], int num)
+{
+	if (num > 1)
+	{
+		TheWritableGlobalData->m_lanFrameLimit = atoi(args[1]);
+		if (TheGlobalData->m_lanFrameLimit < 0)
+		{
+			printf("Invalid -lanframes count: %s\n", args[1]);
+			exit(1);
+		}
+		return 2;
+	}
+	printf("-lanframes requires a frame count\n");
+	exit(1);
+}
+
+Int parseLanTimeout(char *args[], int num)
+{
+	if (num > 1)
+	{
+		const Int ms = atoi(args[1]);
+		if (ms <= 0)
+		{
+			printf("Invalid -lantimeout value: %s\n", args[1]);
+			exit(1);
+		}
+		TheWritableGlobalData->m_lanTimeoutMs = (UnsignedInt)ms;
+		return 2;
+	}
+	printf("-lantimeout requires a value in milliseconds\n");
+	exit(1);
 }
 
 Int parseXRes(char *args[], int num)
@@ -1178,6 +1339,20 @@ static CommandLineParam paramsForStartup[] =
 	// You can pass this multiple times to play back multiple replays.
 	// You can also include wildcards. The file must be in the replay folder or in a subfolder.
 	{ "-replay", parseReplay },
+
+	// GeneralsX @feature Claude 28/07/2026 Headless LAN host/join. Combine with -headless to
+	// host or join a match with no UI, on this LAN or across the internet by IP/hostname.
+	// Host:   -headless -lanhost soak -lanmap "maps/Tournament Desert/Tournament Desert.map" -lanai Hx1 -lanwait 1 -lanframes 20000
+	// Joiner: -headless -lanjoin 192.168.10.51 -lanframes 20000
+	// Both peers then emit a [GXCRC] line per frame that can be diffed directly.
+	{ "-lanhost", parseLanHost },
+	{ "-lanjoin", parseLanJoin },
+	{ "-lanmap", parseLanMap },
+	{ "-lanname", parseLanName },
+	{ "-lanai", parseLanAI },
+	{ "-lanwait", parseLanWait },
+	{ "-lanframes", parseLanFrames },
+	{ "-lantimeout", parseLanTimeout },
 
 	// TheSuperHackers @feature helmutbuhler 23/05/2025
 	// Simulate each replay in a separate process and use 1..N processes at the same time.

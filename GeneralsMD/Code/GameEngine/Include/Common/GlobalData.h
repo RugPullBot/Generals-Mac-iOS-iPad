@@ -31,6 +31,7 @@
 
 #include "Common/GameCommon.h"	// ensure we get DUMP_PERF_STATS, or not
 #include "Common/AsciiString.h"
+#include "Common/UnicodeString.h"
 #include "Common/GameType.h"
 #include "Common/GameMemory.h"
 #include "Common/SubsystemInterface.h"
@@ -52,6 +53,22 @@ enum AIDebugOptions CPP_11(: Int);
 
 constexpr const Int MAX_GLOBAL_LIGHTS = 3;
 constexpr const Int SIMULATE_REPLAYS_SEQUENTIAL = -1;
+
+// GeneralsX @feature Claude 28/07/2026 Headless LAN host/join. Declared here rather than in
+// HeadlessMatch.h so GlobalData can hold the parsed command line without including it.
+enum LanRole CPP_11(: Int)
+{
+	LANROLE_NONE = 0,
+	LANROLE_HOST,
+	LANROLE_JOIN,
+};
+
+/// One -lanai <E|M|H>xN request, expanded into slots by the host.
+struct LanAiSpec
+{
+	char difficulty;	///< 'E', 'M' or 'H'
+	Int  count;
+};
 
 //-------------------------------------------------------------------------------------------------
 class CommandLineData
@@ -359,6 +376,18 @@ public:
 
 	std::vector<AsciiString> m_simulateReplays; ///< If not empty, simulate this list of replays and exit.
 	Int m_simulateReplayJobs; ///< Maximum number of processes to use for simulation, or SIMULATE_REPLAYS_SEQUENTIAL for sequential simulation
+
+	// GeneralsX @feature Claude 28/07/2026 Headless LAN host/join. See Common/HeadlessMatch.h.
+	// These are set only from the command line and only ever read by HeadlessMatch.
+	LanRole m_lanRole;								///< LANROLE_NONE unless -lanhost or -lanjoin was given
+	UnicodeString m_lanGameName;			///< -lanhost <name>
+	UnsignedInt m_lanJoinIP;					///< -lanjoin <ip>, in host byte order
+	AsciiString m_lanMap;							///< -lanmap <mapname>
+	UnicodeString m_lanPlayerName;		///< -lanname <name>; falls back to the LAN preferences name
+	std::vector<LanAiSpec> m_lanAiSpecs;	///< -lanai <E|M|H>xN, may be repeated
+	Int m_lanWaitPeers;								///< -lanwait <n>: human slots to hold open and wait for
+	Int m_lanFrameLimit;							///< -lanframes <n>: stop after n logic frames, 0 = unbounded
+	UnsignedInt m_lanTimeoutMs;				///< -lantimeout <ms>: how long any single lobby step may take
 
 	Int m_maxParticleCount;						///< maximum number of particles that can exist
 	Int m_maxFieldParticleCount;			///< maximum number of field-type particles that can exist (roughly)
