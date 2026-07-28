@@ -539,6 +539,15 @@ void Win32BIGFileSystem::init() {
 	(void)loadedPrimaryAssets;
 	DEBUG_ASSERTCRASH(loadedPrimaryAssets, ("No BIG files were loaded for the primary game assets."));
 
+	// GeneralsX @bugfix Claude 28/07/2026 Propagate the resolved asset root to the local file
+	// system, mirroring StdBIGFileSystem. Windows already resolved CNC_GENERALS_ZH_PATH here and
+	// then discarded it, so every loose data file was cwd-relative only. That is not merely a
+	// convenience: it is the root cause of the AI-only frame-0 desync (Data\Scripts\*.scb missing
+	// from the run folder), the cursor bug, and built-in maps absent from the map cache.
+	if (primaryAssetsDirectory.isNotEmpty()) {
+		TheLocalFileSystem->setAssetRootPath(primaryAssetsDirectory);
+	}
+
 #if RTS_ZEROHOUR
     loadBaseGeneralsAssetsForZH(this, primaryAssetsDirectory);
 #endif

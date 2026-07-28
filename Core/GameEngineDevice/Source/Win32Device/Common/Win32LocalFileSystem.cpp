@@ -34,11 +34,64 @@
 #include "Win32Device/Common/Win32LocalFile.h"
 #include <io.h>
 
+// GeneralsX @bugfix Claude 28/07/2026 Asset-root fallback for loose data files on Windows.
+//
+// StdLocalFileSystem has had this since 23/03/2026, guarded by a comment reading "On Windows cwd
+// == install dir so this is never needed". That assumption is false whenever the game is launched
+// from a staging folder: the run folder is C:\dev\GeneralsX-run while the data lives in the Steam
+// install, so every loose (non-BIG) file opened by a relative path silently missed.
+//
+// Win32BIGFileSystem already resolves CNC_GENERALS_ZH_PATH into primaryAssetsDirectory - it just
+// never handed it to the local file system, which inherited the base class no-op. So Windows
+// resolved the asset root and then threw the answer away.
+//
+// Three separate desync/behaviour bugs are instances of this one defect, each carrying its own
+// staging workaround in setup-run-win64.ps1:
+//   * Data\Scripts\SkirmishScripts.scb  - the AI-only frame-0 desync (13,919 frames differing)
+//   * Data\Cursors                      - Win32Mouse.cpp:376
+//   * MapsZH.big                        - built-in maps missing from the map cache, so a joiner
+//                                         reports "You do not have the map" for a map it can play
+//
+// The fallback is strictly additive: it is consulted ONLY when the path is relative and the
+// normal cwd-relative lookup has already failed, so no currently-working resolution changes.
+static AsciiString s_win32AssetFallbackPath;
+
+/// Returns assetRoot\filename, or an empty string when no fallback is possible.
+static AsciiString buildAssetRootPath(const Char *filename)
+{
+	if (s_win32AssetFallbackPath.isEmpty() || filename == nullptr || *filename == '\0')
+		return AsciiString::TheEmptyString;
+
+	// Absolute paths must never be rewritten - only cwd-relative ones can be "missing".
+	// "C:\..." and a leading slash are both absolute; "\\server\share" is a UNC path.
+	if (filename[0] == '\\' || filename[0] == '/')
+		return AsciiString::TheEmptyString;
+	if (filename[1] == ':')
+		return AsciiString::TheEmptyString;
+
+	AsciiString candidate = s_win32AssetFallbackPath;
+	const Int len = candidate.getLength();
+	if (len > 0)
+	{
+		const char last = candidate.getCharAt(len - 1);
+		if (last != '\\' && last != '/')
+			candidate.concat('\\');
+	}
+	candidate.concat(filename);
+	return candidate;
+}
+
 Win32LocalFileSystem::Win32LocalFileSystem() : LocalFileSystem()
 {
 }
 
 Win32LocalFileSystem::~Win32LocalFileSystem() {
+}
+
+void Win32LocalFileSystem::setAssetRootPath(const AsciiString& path)
+{
+	s_win32AssetFallbackPath = path;
+	DEBUG_LOG(("Win32LocalFileSystem::setAssetRootPath - asset fallback path set to '%s'", path.str()));
 }
 
 //DECLARE_PERF_TIMER(Win32LocalFileSystem_openFile)
@@ -74,6 +127,24 @@ File * Win32LocalFileSystem::openFile(const Char *filename, Int access, size_t b
 	if (file->open(filename, access, bufferSize) == FALSE) {
 		deleteInstance(file);
 		file = nullptr;
+
+		// GeneralsX @bugfix Claude 28/07/2026 Retry from the asset root. Reads only - a WRITE that
+		// failed must NOT be silently redirected into the install directory, which on a Steam
+		// install is both read-only by policy and the wrong place for user data.
+		if (!(access & File::WRITE))
+		{
+			const AsciiString fallback = buildAssetRootPath(filename);
+			if (fallback.isNotEmpty())
+			{
+				Win32LocalFile *fallbackFile = newInstance( Win32LocalFile );
+				if (fallbackFile->open(fallback.str(), access, bufferSize) == FALSE) {
+					deleteInstance(fallbackFile);
+				} else {
+					fallbackFile->deleteOnClose();
+					file = fallbackFile;
+				}
+			}
+		}
 	} else {
 		file->deleteOnClose();
 	}
@@ -117,6 +188,14 @@ Bool Win32LocalFileSystem::doesFileExist(const Char *filename) const
 {
 	//USE_PERF_TIMER(Win32LocalFileSystem_doesFileExist)
 	if (_access(filename, 0) == 0) {
+		return TRUE;
+	}
+
+	// GeneralsX @bugfix Claude 28/07/2026 Same asset-root fallback as openFile. This must agree
+	// with openFile or callers that probe before opening (the map cache is one) conclude a file
+	// is absent that openFile would happily return.
+	const AsciiString fallback = buildAssetRootPath(filename);
+	if (fallback.isNotEmpty() && _access(fallback.str(), 0) == 0) {
 		return TRUE;
 	}
 	return FALSE;
