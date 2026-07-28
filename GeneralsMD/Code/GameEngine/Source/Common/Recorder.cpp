@@ -1108,16 +1108,29 @@ void RecorderClass::handleCRCMessage(UnsignedInt newCRC, Int playerIndex, Bool f
 			//
 			// TheSuperHackers @tweak helmutbuhler 03/04/2025
 			// More than 20 years later, but finally fixed and re-enabled!
-			TheInGameUI->message("GUI:CRCMismatch");
+			// GeneralsX @bugfix Claude 28/07/2026 Do not drive the UI from a headless run.
+			//
+			// `-headless` substitutes GameWindowManagerDummy and MouseDummy (GameClient.cpp:326,352)
+			// but TheInGameUI->message still walks the real text/font path, and a mismatch during a
+			// headless `-replay` run died there with an access violation (0xC0000005) on Windows -
+			// measured on three separate replays, each stopping at the first mismatch with the last
+			// line of output being a font/window creation. A console run has nowhere to show a
+			// message anyway; the fprintf below is the report that actually reaches the operator.
+			const Bool headless = TheGlobalData && TheGlobalData->m_headless;
 
 			// TheSuperHackers @info helmutbuhler 03/04/2025
 			// Note: We subtract the queue size from the frame number. This way we calculate the correct frame
 			// the mismatch first happened in case the NetCRCInterval is set to 1 during the game.
 			const UnsignedInt mismatchFrame = TheGameLogic->getFrame() - m_crcInfo->GetQueueSize() - 1;
 
-			// Now also prints a UI message for it.
-			const UnicodeString mismatchDetailsStr = TheGameText->FETCH_OR_SUBSTITUTE("GUI:CRCMismatchDetails", L"InGame:%8.8X Replay:%8.8X Frame:%d");
-			TheInGameUI->message(mismatchDetailsStr, playbackCRC, newCRC, mismatchFrame);
+			if (!headless)
+			{
+				TheInGameUI->message("GUI:CRCMismatch");
+
+				// Now also prints a UI message for it.
+				const UnicodeString mismatchDetailsStr = TheGameText->FETCH_OR_SUBSTITUTE("GUI:CRCMismatchDetails", L"InGame:%8.8X Replay:%8.8X Frame:%d");
+				TheInGameUI->message(mismatchDetailsStr, playbackCRC, newCRC, mismatchFrame);
+			}
 
 			DEBUG_LOG(("Replay has gone out of sync!\nInGame:%8.8X Replay:%8.8X\nFrame:%d",
 				playbackCRC, newCRC, mismatchFrame));
@@ -1129,9 +1142,21 @@ void RecorderClass::handleCRCMessage(UnsignedInt newCRC, Int playerIndex, Bool f
 				mismatchFrame, playbackCRC, newCRC);
 			fprintf(stderr, "[GeneralsX] This replay is incompatible with the current map/game-code state.\n");
 
+			// GeneralsX @diag Claude 28/07/2026 In cross-platform mode, report and KEEP GOING.
+			//
+			// The default behaviour marks the mismatch seen, which pauses the game and makes the
+			// headless driver (ReplaySimulation.cpp) break out of its update loop at the FIRST
+			// mismatch. For a determinism investigation the shape of the divergence over the whole
+			// match is the evidence - which frames differ, and crucially whether any of them
+			// re-converge - so stopping at the first one throws away the interesting part.
+			// Every mismatch is still printed, so nothing is hidden.
+			if (isCrossPlatformReplayEnabled())
+			{
+				// Report only; do not pause and do not latch, so playback runs to the end.
+			}
 			// TheSuperHackers @tweak Pause the game on mismatch.
 			// But not when a window with focus is opened, because that can make resuming difficult.
-			if (TheWindowManager->winGetFocus() == nullptr)
+			else if (headless || TheWindowManager->winGetFocus() == nullptr)
 			{
 				Bool pause = TRUE;
 				Bool pauseMusic = FALSE;
@@ -1146,6 +1171,43 @@ void RecorderClass::handleCRCMessage(UnsignedInt newCRC, Int playerIndex, Bool f
 	}
 
 	//DEBUG_LOG(("RecorderClass::handleCRCMessage() - Skipping CRC of %8.8X from %d (our index is %d)", newCRC, playerIndex, localPlayerIndex));
+}
+
+// GeneralsX @diag Claude 28/07/2026 Cross-platform replay simulation, for lockstep debugging.
+//
+// WHY. Reproducing the cross-platform desync used to need a human at the Mac and a human at the
+// Windows PC playing a LAN match simultaneously - about an hour per iteration. But a .rep already
+// contains everything the simulation needs (map, seed, slot list, and BOTH players' command
+// streams), and `-headless -replay` re-runs it through the real GameLogic with no window and no
+// input. So the same match can be replayed offline on each platform and the two [GXCRC] streams
+// diffed, which turns an hour with two people into seconds with none.
+//
+// WHAT BLOCKED IT. replayMatchesGameVersion below compares exeCRC, versionString and
+// versionNumber. Those are properties of the BINARY, so an arm64 Mac build and an x64 MSVC build
+// can never agree on them no matter how identical the source is - the check rejects every
+// cross-platform replay by construction. Measured: the Mac refuses a Windows .rep (exit 1) and
+// Windows refuses a Mac .rep.
+//
+// WHAT THIS DOES NOT DO. It does not weaken any sync check. iniCRC - the hash of the actual game
+// DATA, which genuinely must match for the simulation to agree - is still compared and still
+// refuses the replay when it differs. Only the three binary-identity fields are waived, and every
+// field is printed either way so a real data mismatch stays visible rather than being masked.
+// Off unless GX_REPLAY_XPLAT=1 is set in the environment, so normal play is untouched.
+Bool RecorderClass::isCrossPlatformReplayEnabled()
+{
+	static Int s_enabled = -1;
+	if (s_enabled < 0)
+	{
+		const char *v = getenv("GX_REPLAY_XPLAT");
+		s_enabled = (v && atoi(v) != 0) ? 1 : 0;
+		if (s_enabled)
+		{
+			fprintf(stderr, "[GXREPLAY] cross-platform replay enabled: exe identity checks waived, "
+				"iniCRC still enforced\n");
+			fflush(stderr);
+		}
+	}
+	return s_enabled != 0;
 }
 
 /**
@@ -1165,6 +1227,31 @@ Bool RecorderClass::replayMatchesGameVersion(AsciiString filename)
 
 Bool RecorderClass::replayMatchesGameVersion(const ReplayHeader& header)
 {
+	// GeneralsX @diag Claude 28/07/2026 See isCrossPlatformReplayEnabled above for why the three
+	// binary-identity fields are waivable and iniCRC is not.
+	if (isCrossPlatformReplayEnabled())
+	{
+		AsciiString localVersion, replayVersion;
+		localVersion.translate(TheVersion->getUnicodeVersion());
+		replayVersion.translate(header.versionString);
+		fprintf(stderr, "[GXREPLAY] version  local=[%s] replay=[%s] %s\n",
+			localVersion.str(), replayVersion.str(),
+			header.versionString == TheVersion->getUnicodeVersion() ? "match" : "DIFFER (waived)");
+		fprintf(stderr, "[GXREPLAY] versionNum local=%08X replay=%08X %s\n",
+			TheVersion->getVersionNumber(), header.versionNumber,
+			header.versionNumber == TheVersion->getVersionNumber() ? "match" : "DIFFER (waived)");
+		fprintf(stderr, "[GXREPLAY] exeCRC   local=%08X replay=%08X %s\n",
+			TheGlobalData->m_exeCRC, header.exeCRC,
+			header.exeCRC == TheGlobalData->m_exeCRC ? "match" : "DIFFER (waived)");
+		fprintf(stderr, "[GXREPLAY] iniCRC   local=%08X replay=%08X %s\n",
+			TheGlobalData->m_iniCRC, header.iniCRC,
+			header.iniCRC == TheGlobalData->m_iniCRC ? "match" : "DIFFER (ENFORCED - refusing)");
+		fflush(stderr);
+
+		// The game DATA still has to agree; only the binary identity is waived.
+		return header.iniCRC == TheGlobalData->m_iniCRC;
+	}
+
 	// TheSuperHackers @fix No longer checks the build time here to prevent incorrect Replay playback incompatibility messages when the Replay playback would actually be technically compatible.
 	if (header.versionString != TheVersion->getUnicodeVersion())
 		return false;

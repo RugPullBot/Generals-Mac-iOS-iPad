@@ -82,6 +82,9 @@ public:
 	Bool playbackFile(AsciiString filename);					///< Starts playback of the specified file.
 	Bool replayMatchesGameVersion(AsciiString filename); ///< Returns true if the playback is a valid playback file for this version.
 	static Bool replayMatchesGameVersion(const ReplayHeader& header); ///< Returns true if the playback is a valid playback file for this version.
+	// GeneralsX @diag Claude 28/07/2026 GX_REPLAY_XPLAT=1 waives the binary-identity header checks so
+	// one .rep can be simulated on both Mac and Windows and the CRC streams diffed. iniCRC still enforced.
+	static Bool isCrossPlatformReplayEnabled();
 	AsciiString getCurrentReplayFilename();			///< valid during playback only
 	UnsignedInt getPlaybackFrameCount() const { return m_playbackFrameCount; }			///< valid during playback only
 	void stopPlayback();															///< Stops playback.  Its fine to call this even if not playing back a file.
