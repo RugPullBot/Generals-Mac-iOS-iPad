@@ -1640,6 +1640,54 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	// Tell the script engine that a newe set of scripts is loaded.
 	TheScriptEngine->newMap();
 
+	// GeneralsX @diag Claude 28/07/2026 Bisect the AI-only frame-0 desync in ONE line.
+	//
+	// Measured: every LAN match containing an AI player diverges at frame 0 (3 of 3); every AI-free
+	// match is clean for tens of thousands of frames, including with players on Random armies. At
+	// frame 0 the peers' object COUNTS differ by exactly the number of AI players, objects 1..212 are
+	// byte-identical, every Command Center is identical, and every randomly-placed STARTING UNIT
+	// differs - at the SAME radius from its Command Center but a different angle. Same ring, same
+	// radius, different angle means the shared logic RNG was out of step, not that a float drifted.
+	//
+	// The suspected amplifier is directly above: ThePlayerList->newGame() attaches a duplicated
+	// skirmish ScriptList to every AI player's side, and TheScriptEngine->newMap() then draws
+	// GameLogicRandomValue once for every script with getDelayEvalSeconds()>0
+	// (ScriptEngine.cpp:6889). N more AI players means N more script lists means a different number
+	// of draws, so every later draw differs - starting with the placement angle at
+	// PartitionManager.cpp:3989.
+	//
+	// [GXPOS] already proves the streams still agree at populateRandomStartPosition (:1397), so the
+	// divergence is strictly between there and here. This print closes the window:
+	//   aiPlayers differs      -> one peer never constructed the AI. skirmishSides then says why:
+	//                             matching => Player.cpp:806-820 forceHuman fired silently
+	//                             (DEBUG_ASSERTCRASH is a no-op in release); differing => the slot
+	//                             never reached TheKey_playerIsSkirmish (GameLogic.cpp:1384).
+	//   aiPlayers same, seed differs -> the amplifier theory is wrong and the RNG split elsewhere.
+	//   both same              -> the divergence is downstream of this line entirely.
+	{
+		// isSkirmishAIPlayer() is m_ai && m_ai->isSkirmishAI(), i.e. "this peer actually built an AI
+		// brain for this player". computerCount counts PLAYER_COMPUTER separately, because the
+		// forceHuman theory (Player.cpp:806-820) predicts the TYPE flips to human on the failing
+		// peer while the slot data is otherwise intact - so the two counters disagreeing is itself
+		// the answer.
+		Int aiCount = 0, computerCount = 0;
+		for (Int p = 0; p < ThePlayerList->getPlayerCount(); ++p)
+		{
+			Player *pl = ThePlayerList->getNthPlayer(p);
+			if (!pl) continue;
+			if (pl->isSkirmishAIPlayer()) ++aiCount;
+			if (pl->getPlayerType() == PLAYER_COMPUTER) ++computerCount;
+		}
+		Int sidesWithScripts = 0;
+		for (Int s = 0; s < TheSidesList->getNumSides(); ++s)
+			if (TheSidesList->getSideInfo(s) && TheSidesList->getSideInfo(s)->getScriptList())
+				++sidesWithScripts;
+		fprintf(stderr, "[GXAI] afterScriptNewMap seed=%u aiPlayers=%d computers=%d sides=%d sidesWithScripts=%d skirmishSides=%d\n",
+			(unsigned)GetGameLogicRandomSeedCRC(), aiCount, computerCount, TheSidesList->getNumSides(),
+			sidesWithScripts, TheSidesList->getNumSkirmishSides());
+		fflush(stderr);
+	}
+
 	// update the loadscreen
 	updateLoadProgress(LOAD_PROGRESS_POST_SCRIPT_ENGINE_NEW_MAP);
 
