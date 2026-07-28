@@ -30,6 +30,10 @@
 
 // INCLUDES ///////////////////////////////////////////////////////////////////////////////////////
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
+// GeneralsX @build Claude 28/07/2026 wcslcpy is a BSD/macOS libc function with no glibc
+// equivalent, so this compiles on macOS and fails on Linux. WWLib/stringex.h provides a portable
+// inline fallback guarded by HAVE_WCSLCPY - the same one LANAPI.cpp already relies on.
+#include "WWLib/stringex.h"
 
 #include "Common/AudioEventRTS.h"
 #include "Common/PlayerList.h"
