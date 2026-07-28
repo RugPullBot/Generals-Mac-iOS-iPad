@@ -53,6 +53,45 @@ Copy-Item "$dxvk\d3d9.dll" $run -Force
 Copy-Item "$build\_deps\miles-build\Release\mss32.dll"   $run -Force
 Copy-Item "$build\_deps\bink-build\Release\binkw32.dll"  $run -Force
 
+# GeneralsX @bugfix Claude 28/07/2026 Stage Data\Scripts. WITHOUT THIS, ANY MATCH CONTAINING AN AI
+# PLAYER DESYNCS AT FRAME 0 AGAINST A NON-WINDOWS PEER.
+#
+# SidesList::prepareForMP_or_Skirmish (SidesList.cpp:520) loads "Data\Scripts\SkirmishScripts.scb"
+# by a path RELATIVE TO THE WORKING DIRECTORY when the map supplies no skirmish scripts of its own.
+# The run folder is the working directory and had no Data\Scripts, so on Windows that open failed -
+# silently, because the only diagnostics for it sit behind #ifdef ALLOW_DEBUG_UTILS, which is off in
+# release. The Mac's working directory IS its game folder, so the Mac loaded the file fine.
+#
+# Consequence, measured by replaying one .rep headless on both platforms:
+#   Windows  ScriptEngine::newMap  delayDraws=0   seed unchanged  2805577022 -> 2805577022
+#   Mac      ScriptEngine::newMap  delayDraws=91  seed changed    2805577022 -> 1560412358
+# Every delayed-eval script draws once from the SHARED simulation RNG to jitter its first evaluation
+# frame (ScriptEngine.cpp:6892). 91 draws on one peer and 0 on the other offsets the stream
+# permanently, and the first visible symptom is every starting unit placed at the same radius from
+# its Command Center but a DIFFERENT ANGLE.
+#
+# It is AI-only because skirmish scripts are attached only for skirmish/AI players, so an AI-free
+# match has zero scripts on both peers and stays in sync - which is why 74,705-frame human-only
+# matches were clean while every AI match died at frame 0.
+#
+# Before staging: 13,919 of 13,919 frames differed. After: 0 differed. Same binaries, same replay.
+#
+# NOTE this is a WORKAROUND at the same layer as the Data\Cursors one. The real bug is that loose
+# data files are opened by a working-directory-relative path that ignores CNC_GENERALS_ZH_PATH -
+# the same defect as Win32Mouse.cpp:376. Fixing the engine's path resolution would cover both.
+#
+# NOTE ALSO that SimID cannot catch this: .scb files are not INI, so they are outside m_iniCRC.
+# Two peers can present identical engine/source/data/ordinal IDs and still simulate differently.
+$scriptsSrc = Join-Path $steam "Data\Scripts"
+$scriptsDst = "$run\Data\Scripts"
+if (Test-Path $scriptsSrc) {
+    New-Item -ItemType Directory -Force -Path $scriptsDst | Out-Null
+    Copy-Item "$scriptsSrc\*" $scriptsDst -Force
+    Write-Host "[setup] staged Data\Scripts ($((Get-ChildItem $scriptsDst).Count) files)"
+} else {
+    Write-Warning "[setup] $scriptsSrc NOT FOUND - matches with AI players will desync against other platforms"
+}
+
 @"
 # Logs and shader cache are pinned inside the run folder so nothing lands in Steam.
 dxvk.logLevel = info
