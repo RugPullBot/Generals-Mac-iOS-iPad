@@ -249,6 +249,47 @@ public:
 	}
 };
 
+/// Throttle for the joiner's re-accept, so the 10 ms pump does not flood the lobby.
+UnsignedInt s_lastAcceptSent = 0;
+
+/// Is OUR OWN slot currently marked accepted?
+Bool localSlotAccepted()
+{
+	LANGameInfo *game = TheLAN ? TheLAN->GetMyGame() : nullptr;
+	if (!game)
+		return TRUE;	// not in a game yet - nothing to assert
+
+	const Int slotNum = game->getLocalSlotNum();
+	if (slotNum < 0)
+		return TRUE;	// we are not in the slot list yet
+
+	GameSlot *slot = game->getSlot(slotNum);
+	return (slot == nullptr) || slot->isAccepted();
+}
+
+/// Re-assert our accept if the host has cleared it.
+///
+/// LANAPI::OnPlayerJoin calls resetAccepted() and re-broadcasts the slot list, on EVERY join. So a
+/// peer that accepted once is silently un-accepted the moment the NEXT peer arrives, and the host
+/// then waits out its entire timeout for a player that believes it is ready. In a UI lobby a human
+/// sees the tick vanish and clicks again; a headless peer accepted once and never looked back.
+///
+/// This could not show up with a single joiner - nothing ever followed its accept - which is why
+/// it survived until a second one joined. Joiners do not even receive OnPlayerJoin, so this is
+/// driven off our own slot state rather than off an event: whatever clears the flag, we notice.
+void reassertAcceptIfNeeded()
+{
+	if (localSlotAccepted())
+		return;
+
+	const UnsignedInt now = timeGetTime();
+	if ((now - s_lastAcceptSent) < 250)
+		return;
+
+	s_lastAcceptSent = now;
+	TheLAN->RequestAccept();
+}
+
 /// How many peers the host waits for, and how many are currently accepted.
 Int countAcceptedPeers()
 {
@@ -529,11 +570,21 @@ Bool HeadlessMatch::driveLobby()
 
 		TheLAN->RequestHasMap();
 		TheLAN->RequestAccept();
+		s_lastAcceptSent = timeGetTime();
 	}
 
 	// Both roles land here. The host reaches OnGameStart through its own RequestGameStart
 	// round trip, so it waits too rather than assuming.
-	if (!pumpUntil([]{ return s_gameStarted != FALSE; }, lobbyTimeout, "game start"))
+	//
+	// A joiner keeps re-asserting its accept while it waits - see reassertAcceptIfNeeded. Without
+	// it, any lobby with more than one joiner deadlocks: the second join resets the first peer's
+	// accept, the host never counts two, and every peer sits there believing it is ready.
+	const Bool isJoiner = (TheGlobalData->m_lanRole != LANROLE_HOST);
+	if (!pumpUntil([isJoiner]{
+			if (isJoiner)
+				reassertAcceptIfNeeded();
+			return s_gameStarted != FALSE;
+		}, lobbyTimeout, "game start"))
 		return FALSE;
 
 	return TRUE;
@@ -624,6 +675,7 @@ int HeadlessMatch::run()
 	s_gameStarted = FALSE;
 	s_lobbyReady = FALSE;
 	s_lobbyFailed = FALSE;
+	s_lastAcceptSent = 0;
 	s_lobbyFailureReason.clear();
 
 	if (!setUpLan())
