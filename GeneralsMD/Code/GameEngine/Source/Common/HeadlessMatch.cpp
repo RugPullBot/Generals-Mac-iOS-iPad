@@ -333,7 +333,8 @@ Bool HeadlessMatch::publishGameOptions()
 		// ("maps/twilight flame/twilight flame.map"); the M= field on the wire carries only the
 		// directory, because GameInfoToAsciiString strips the last component.
 		TheMapCache->updateCache();
-		if (TheMapCache->findMap(TheGlobalData->m_lanMap) == nullptr)
+		const MapMetaData *mapData = TheMapCache->findMap(TheGlobalData->m_lanMap);
+		if (mapData == nullptr)
 		{
 			headlessLog("map \"%s\" is not in the map cache", TheGlobalData->m_lanMap.str());
 			headlessLog("expected a full path including the filename, e.g. \"maps/twilight flame/twilight flame.map\"");
@@ -346,7 +347,18 @@ Bool HeadlessMatch::publishGameOptions()
 			return FALSE;
 		}
 		game->setMap(TheGlobalData->m_lanMap);
-		headlessLog("map set to %s", TheGlobalData->m_lanMap.str());
+
+		// The CRC and size are NOT cosmetic and nothing else fills them in - the lobby UI does
+		// it when a map is picked. A joiner decides whether it has the map by comparing the
+		// host's advertised CRC against its own cache entry (GameInfo::setMapCRC), so a host
+		// that advertises 0 makes every peer conclude it is missing a map it actually has. The
+		// peer then sits at "You do not have the map" and never becomes ready, while the host
+		// only sees a peer that joined and never accepted.
+		game->setMapCRC(mapData->m_CRC);
+		game->setMapSize(mapData->m_filesize);
+
+		headlessLog("map set to %s (crc=%08X size=%u)",
+			TheGlobalData->m_lanMap.str(), mapData->m_CRC, mapData->m_filesize);
 	}
 
 	// Open the slots we are holding for human peers. This is NOT optional and nothing else does
