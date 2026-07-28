@@ -37,6 +37,7 @@
 #include "GameNetwork/NetworkDefs.h"
 #include "GameNetwork/NetworkInterface.h"	// TheNetwork, for the live desync flag
 #include "Common/UserPreferences.h"	// LANPreferences
+#include "Common/OptionPreferences.h"	// relay settings, read from Options.ini
 #include "GameNetwork/GUIUtil.h"			// EnableSlotListUpdates
 
 // ------------------------------------------------------------------------------------------
@@ -310,19 +311,43 @@ Bool HeadlessMatch::setUpLan()
 	}
 	TheLAN = NEW HeadlessLANAPI();
 
-	// Same interface election the lobby does. -defaultIP wins if it was given, which is the
-	// escape hatch on a multi-homed box; otherwise take the first enumerated address.
-	UnsignedInt ip = TheGlobalData->m_defaultIP;
-	if (!ip)
+	// GeneralsX @feature Relay transport. With a relay configured our identity is the VIRTUAL LAN
+	// address, not a NIC address: the lobby is a two-machine LAN whose members are 10.42.0.1 and
+	// 10.42.0.2 wherever the machines physically are. NetworkDirectConnectInit does exactly this
+	// and skips the interface enumeration for the same reason - the virtual address is on no
+	// interface, so anything that "corrects" it back to a real one puts a NAT-side address into
+	// the slot list, and the peer then spends the whole match trying to reach an IP that was
+	// never routable from where it is.
+	//
+	// Binding is already handled: Transport::init calls initRelay() and forces INADDR_ANY when
+	// relay mode is on, precisely because a virtual address can never be bound.
+	OptionPreferences prefs;
+	const UnsignedInt virtualIP = prefs.getLocalVirtualIP();
+	const Bool relayMode = !prefs.getRelayAddress().isEmpty() && (virtualIP != 0);
+
+	UnsignedInt ip;
+	if (relayMode)
 	{
-		IPEnumeration ips;
-		EnumeratedIP *list = ips.getAddresses();
-		if (!list)
+		ip = virtualIP;
+		headlessLog("relay mode: local identity is the virtual address %d.%d.%d.%d (relay %s, room %s)",
+			PRINTF_IP_AS_4_INTS(ip), prefs.getRelayAddress().str(), prefs.getRelayRoom().str());
+	}
+	else
+	{
+		// Same interface election the lobby does. LANIPAddress wins if it was set, which is the
+		// escape hatch on a multi-homed box; otherwise take the first enumerated address.
+		ip = TheGlobalData->m_defaultIP;
+		if (!ip)
 		{
-			headlessLog("no local IP addresses - cannot host or join");
-			return FALSE;
+			IPEnumeration ips;
+			EnumeratedIP *list = ips.getAddresses();
+			if (!list)
+			{
+				headlessLog("no local IP addresses - cannot host or join");
+				return FALSE;
+			}
+			ip = list->getIP();
 		}
-		ip = list->getIP();
 	}
 
 	// Raise the pending-action deadline before init so a WAN join is not abandoned mid-handshake.
