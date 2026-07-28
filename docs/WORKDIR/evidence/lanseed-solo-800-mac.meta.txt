@@ -1,0 +1,15 @@
+[SIMID] local valid=1 rev=2143 engine=4D31F2F2 source=AD022C38 data=FEAAE3F3 ordinal=9F43F7B5 parse=CD8F767F asset=8E504171 platform=BF013216 | epoch=1 tag=53494431 sizeof(SimIdWire)=36 sizeof(LANMessage)=471
+[GXLAN] join action timeout 60000 ms
+[GXLAN] local IP 192.168.10.51
+[GXLAN] hosted game created
+[GXLAN] map set to maps\twilight flame\twilight flame.map (crc=F0F7E3EB size=400412)
+[GXLAN] seed forced to 424242
+[GXLAN] game options: US=1;M=03maps/twilight%20flame;MC=F0F7E3EB;MS=400412;SD=424242;C=100;SR=0;SC=10000;O=N;S=HMegumis-Mac-,C0A80A33,8088,TT,-1,-1,-1,-1,1:CH,-1,-1,-1,-1:X:X:X:X:X:X:;
+[GXLAN] starting match
+[GXLAN] game starting
+[GXSCRIPT] newMap ENTER seed=1386634993
+[GXSCRIPT] newMap EXIT seed=3044963377 delayDraws=80 noDelay=327
+[GXAI] afterScriptNewMap seed=3044963377 aiPlayers=1 computers=3 sides=5 sidesWithScripts=3 skirmishSides=14
+[GXLAN] frame limit 800 reached
+[GXLAN] simulated 800 frames
+[GXLAN] a player left

@@ -1,0 +1,23 @@
+Live gdb backtrace of the hung headless Linux host (VPS 163.5.210.131, pre-fix binary),
+sampled 3x while State=R (spinning at 100% CPU, NOT blocked on I/O). All three samples
+land in the same place. This is what identified the hang; instrumenting the match loop
+would not have, because the process never reached the match loop.
+
+Thread 1 (GeneralsXZH):
+ #7  alGetError () at _deps/openal_soft-src/al/error.cpp:110
+ #8  OpenALAudioStream::bufferData (...) at Core/GameEngineDevice/Source/OpenALAudioDevice/OpenALAudioStream.cpp:147
+ #14 FFmpegFile::decodePacket () at GeneralsMD/.../VideoDevice/FFmpeg/FFmpegFile.cpp:222
+ #20 OpenALAudioStream::update () at .../OpenALAudioStream.cpp:330
+ #21 OpenALAudioManager::processPlayingList () at .../OpenALAudioManager.cpp:2538
+ #22 OpenALAudioManager::update () at .../OpenALAudioManager.cpp:549
+ #23 MultiPlayerLoadScreen::init () at Core/GameEngine/Source/GameClient/GUI/LoadScreen.cpp:1338
+ #24 GameLogic::tryStartNewGame () at GeneralsMD/.../GameLogic/System/GameLogic.cpp:1410
+
+OpenALAudioStream.cpp:147 was:   while (alGetError() != AL_NO_ERROR) {}
+
+Why it can never exit - openal_soft al/error.cpp, the no-current-context path:
+    static const ALenum deferror{get_value("__ALSOFT_DEFAULT_ERROR", "default-error")};
+    WARN("Querying error state on null context (implicitly {:#04x})", as_unsigned(deferror));
+    return deferror;                      // get_value() defaults to AL_INVALID_OPERATION
+alGetError() therefore returns AL_INVALID_OPERATION on EVERY call and never AL_NO_ERROR.
+The per-call WARN is why the stack is usually inside fmt - that is where the CPU went.

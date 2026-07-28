@@ -214,6 +214,18 @@ after every restage. Fixing path resolution once would cover all three.
 * **Never pipe a command whose failure matters.** `apt-get ... | tail` then `$?` reads *tail's*
   exit code. This cost a wasted VPS build cycle tonight. Capture `$?` before any pipe, and verify
   installs by checking the tool is present, not by trusting an exit code.
+* **A headless run that starts and then goes silent is not necessarily stuck in the match loop.**
+  It hung in `MultiPlayerLoadScreen::init`, pumping OpenAL while loading the map — upstream of the
+  first frame. `State: R` in `/proc/<pid>/status` said it was spinning rather than blocked on I/O,
+  and three `gdb -p <pid> -batch -ex "thread apply all bt"` samples named the line. **Attach to the
+  live process before adding instrumentation**; the plan to log the match loop would have printed
+  nothing at all. Root cause was `while (alGetError() != AL_NO_ERROR) {}` in
+  `OpenALAudioStream::bufferData` — with no current context OpenAL Soft returns
+  `AL_INVALID_OPERATION` forever, so the drain never terminated. Fixed in `aa776b7eb`.
+* **Headless on Mac/Linux still builds the REAL audio backend.**
+  `SDL3GameEngine::createAudioManager(Bool dummy)` does `(void)dummy;`, while the Win32 factory
+  honours the flag and returns `MilesAudioManagerDummy`. Anything that assumes a headless server has
+  no audio subsystem is wrong on these two platforms.
 
 ## VPS state — Ubuntu 24.04, BUILD IS GREEN (2026-07-28)
 

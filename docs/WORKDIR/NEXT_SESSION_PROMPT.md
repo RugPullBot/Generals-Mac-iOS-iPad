@@ -6,17 +6,20 @@ Paste everything below the line into a fresh session.
 
 Read these first, in this order:
 
-1. `~/GeneralsX-src/docs/WORKDIR/STATE_2026-07-28_session4.md` — **START HERE.** The most recent
-   dropoff: what is proven, the one open question, and the exact experiment left half-finished.
-   Its "THE ONE OPEN QUESTION" section is the task.
+1. `~/GeneralsX-src/docs/WORKDIR/STATE_2026-07-28_session5.md` — **START HERE.** The most recent
+   dropoff. Session 4's open question is **ANSWERED**: macOS and Linux simulate identically
+   (800 frames, byte for byte), so the divergence seen online is **transport**. Build the relay.
 2. `~/GeneralsX-src/docs/WORKDIR/DESIGN_headless_and_relay.md` — the relay design, the table of
    eight silent failures, and the working VPS build recipe.
-3. `~/GeneralsX-src/docs/WORKDIR/STATE_2026-07-28_session3.md` — older, for the two desyncs only.
+3. `~/GeneralsX-src/docs/WORKDIR/STATE_2026-07-28_session4.md` — the headless CLI, the asset-root
+   fix, and the rules that came out of them. Its "THE ONE OPEN QUESTION" is now closed by session 5.
+4. `~/GeneralsX-src/docs/WORKDIR/STATE_2026-07-28_session3.md` — older, for the two desyncs only.
    Anything it says about the `.scb` workaround is superseded by session 4.
-4. `git -C ~/GeneralsX-src log --oneline -30` — the commit messages carry the *why*.
+5. `git -C ~/GeneralsX-src log --oneline -30` — the commit messages carry the *why*.
 
 **Goal:** Mac, iPad and Windows play together without desyncing — **DONE, see below** — and next,
-online play through a relay server so it is not limited to one LAN.
+online play through a relay server so it is not limited to one LAN. **The relay is now unblocked:
+nothing is waiting on a determinism question any more.**
 
 ## What is FIXED and PROVEN (do not re-investigate)
 
@@ -175,52 +178,48 @@ it behaviourally by re-simulating replays, not by trying to prevent it.
   `PermitRootLogin prohibit-password` were set instead, which needs no new secret. Verified both
   ways — key auth succeeds, password auth returns `Permission denied (publickey)`. Backup at
   `/root/sshd_config.bak-20260728-115835`. **Key auth is now the ONLY way in — do not remove the
-  key.** `79.110.49.24` in the panel is the hypervisor NODE, not the VM; do not log in there. Ubuntu 20.04.6 (EOL, glibc 2.31), Xeon E5-2680 v4, 4 cores.
-  **RAM is not what was sold:** dmidecode says 8192 MB and the kernel saw `8100900K/8388064K` at
-  boot, but `MemTotal` is 3941808 kB — ~4.3 GB held by `virtio_balloon`
-  (`/sys/bus/virtio/drivers/virtio_balloon/virtio0`, built-in so it does not show in `lsmod`).
-  A plan sold as "8 GB Dedicated" is ballooned. **Raise a ticket** — memory reclaimed mid-match
-  would stall the sim for every player.
+  key.** `79.110.49.24` in the panel is the hypervisor NODE, not the VM; do not log in there.
+  **Reinstalled as Ubuntu 24.04.4 LTS** (session 4), Xeon E5-2680 v4, 4 cores. `gdb` installed in
+  session 5. **The build is GREEN.**
+  **RAM is still not what was sold, on a FRESH install:** `MemTotal` 3.75 GB on a plan sold as
+  "8 GB Dedicated", with `virtio_balloon` bound at
+  `/sys/bus/virtio/drivers/virtio_balloon/virtio0`. The reinstall ruled out the old OS as the
+  cause, so it is plan-level config. **Raise a ticket** — memory reclaimed mid-match stalls the sim
+  for every player.
 
-### FIRST ACTION ON THE VPS: reinstall it as Ubuntu 24.04
+### VPS build recipe — WORKING and reproducible
 
-**Do not keep fighting 20.04.** It blocked the build at every layer and the last one is fatal without
-building ffmpeg from source:
-
-| blocker on 20.04 | 24.04 |
-|---|---|
-| CMake 3.16, project needs >= 3.25 | 3.28 |
-| GCC 9 | GCC 13 |
-| glibc 2.31 - no `strlcpy`, never any `wcslcpy` | 2.39 |
-| **ffmpeg 4.2 - no `AVFrame::ch_layout`, which the OpenAL audio manager requires** | 6.x |
-| EOL since April 2025 | supported to 2029 |
-
-`SAGE_USE_OPENAL=OFF` is NOT an escape: the build then falls back to the Miles path and needs
-`mss.h`, a proprietary SDK header that does not exist on Linux. So OpenAL must stay ON, so ffmpeg
-5.1+ is mandatory. The savoury1 ffmpeg PPAs do not resolve on focal ("held broken packages").
-
-24.04 is also what `build-linux.yml` and `replay-tests.yml` use, so it is the proven configuration.
-The box is empty; a reinstall costs nothing. Afterwards redo: SSH key, `Acquire::ForceIPv4`, vcpkg
-full clone, and the apt list below (most of which 24.04 already satisfies).
-
-### VPS build recipe (done on 20.04; most of it becomes unnecessary on 24.04)
+`scripts/build/linux/build-linux-relay.sh` (mirrored on the box at `/root/vpsbuild.sh`) configures
+and builds. `GeneralsXZH` comes out a 197 MB ELF with every library resolved; it hosts and
+simulates headless. Deploy with `cp build/linux64-deploy/GeneralsMD/GeneralsXZH /root/gamedata/`.
 
 ```
-apt: Acquire::ForceIPv4 "true" in /etc/apt/apt.conf.d/99force-ipv4   # DNS returns IPv6-only
-                                                                     # mirrors and the box has no v6
-CMake 3.28.6 to /usr/local/bin        # distro 3.16 < the project's required 3.25
-g++-11 from ppa:ubuntu-toolchain-r/test
-vcpkg at /root/vcpkg, FULL clone      # --depth 1 fails: the manifest pins a baseline commit
-apt: autotools, nasm/yasm, SDL3 X11 dev deps, libpng/jpeg/tiff/webp-dev,
-     libav*/libsw*-dev  (libdecor-0-dev does not exist on 20.04 and is not needed)
-cmake --preset linux64-deploy -DRTS_BUILD_OPTION_FFMPEG=OFF
+apt: build-essential cmake ninja-build git pkg-config curl zip unzip tar ca-certificates
+     autoconf automake libtool nasm yasm gdb
+     libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev libxfixes-dev
+     libxss-dev libxkbcommon-dev libwayland-dev libdecor-0-dev libgl1-mesa-dev
+     libpng-dev libjpeg-dev libtiff-dev libwebp-dev
+     libav*-dev libsw*-dev libasound2-dev
+     libxtst-dev libxxf86vm-dev libxinerama-dev libdrm-dev libgbm-dev
+     libpulse-dev libudev-dev libdbus-1-dev libibus-1.0-dev libsndio-dev
+vcpkg at /root/vcpkg, FULL clone   # --depth 1 fails: the manifest pins a baseline commit
+repo  at /root/GeneralsX           # keep it a PURE MIRROR:
+                                   # git fetch && git reset --hard origin/main, never pull
 ```
 
 **Use the preset** — a bare `cmake -S . -B` defaults to Unix Makefiles and collides with the
-preset's Ninja. Build with `setsid nohup`; a plain `nohup ... &` over SSH does not survive.
-`RTS_BUILD_OPTION_FFMPEG=OFF` is right for a server: ffmpeg is iOS-gated in the manifest so Linux
-wants *system* ffmpeg, and `FFmpegVideoPlayer.cpp` uses the 5.1+ `AVFrame::ch_layout` API while
-20.04 ships 4.2. A relay decodes no video.
+preset's Ninja. Build detached with `setsid nohup`; a plain `nohup ... &` over SSH does not survive.
+
+Turn the tool targets OFF (`RTS_BUILD_*_TOOLS=OFF`, `*_EXTRAS=OFF`). Nearly every one is a Windows
+GUI program pulling `afxwin.h`/`commctrl.h`, they default to **ON**, and `linux64-deploy` overrides
+none of them — so the build compiles thousands of game objects and then dies in an editor a relay
+does not ship.
+
+**`RTS_BUILD_OPTION_FFMPEG` must be ON**, despite a relay decoding no video. This REVERSES the older
+advice that OFF suits a server. `Core/GameEngineDevice/CMakeLists.txt:305` *compiles*
+`FFmpegFile.cpp` when the option is OFF — OpenALAudioCache needs it for **audio** decoding — but
+links the ffmpeg libraries only when it is ON, so OFF dies at the final link of `GeneralsXZH` with
+~30 undefined `av_*`/`avcodec_*` symbols. **Latent on every platform, not a Linux quirk.**
 
 ## Bugs fixed this session that were NOT desyncs
 
@@ -274,7 +273,17 @@ wants *system* ffmpeg, and `FFmpegVideoPlayer.cpp` uses the 5.1+ `AVFrame::ch_la
    AI goal/path state are invisible. Divergence can incubate unhashed for hundreds of frames.
 5. **Commit before building the binaries that will face each other**, or `sourceID` differs and the
    join is refused. The digest hashes HEAD plus a dirty-file overlay.
-6. Count processes: `pkill -f GeneralsXZH` then `pgrep -f GeneralsXZH | wc -l`. macOS `pgrep` has
-   no `-c`.
+6. **Never `pkill -f` / `pgrep -f` for the game.** `-f` matches the FULL command line, including
+   your own — `ssh root@host '... pkill -f GeneralsXZH ...'` kills the remote shell running the
+   command and the ssh returns 255. Recorded in session 4 for `pgrep`, hit twice again in session 5
+   for `pkill`. Use `pkill -x GeneralsXZH` and count with `ps -eo comm | grep -cx GeneralsXZH`.
+   A `pkill` that killed nothing looks identical to one that worked — always confirm the count.
+7. **Give every check its own exit-code test.** `a && b && c || echo OK` prints OK when `a` fails.
+   That reported a verification as passed in session 5 when the command had never run. Same family
+   as `grep -c` exiting 0 on a match.
+8. **Attach to a live process before adding printfs.** A hung headless run was root-caused in three
+   `gdb -p <pid> -batch -ex "thread apply all bt"` samples; `State: R` in `/proc/<pid>/status` had
+   already ruled out an I/O block. The plan to instrument the match loop would have found nothing,
+   because the hang was upstream of it.
 7. Never write into the Steam folder. Baseline manifest
    `9793E5EE7FCEDAF250C7403B6D7D01C0426F993B260EB233E49B079A27134033` — unchanged.
