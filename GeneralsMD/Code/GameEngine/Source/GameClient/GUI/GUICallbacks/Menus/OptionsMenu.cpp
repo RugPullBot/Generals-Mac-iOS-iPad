@@ -44,7 +44,6 @@
 #include "Common/version.h"
 
 #include "GameClient/ClientInstance.h"
-#include "GameClient/DebugMenu.h"
 #include "GameClient/GadgetPushButton.h"
 #include "GameClient/GameClient.h"
 #include "GameClient/InGameUI.h"
@@ -1531,7 +1530,6 @@ WindowMsgHandledType OptionsMenuSystem( GameWindow *window, UnsignedInt msg,
 	static NameKeyType buttonAccept = NAMEKEY_INVALID;
 	static NameKeyType buttonReplayMenu = NAMEKEY_INVALID;
 	static NameKeyType buttonKeyboardOptionsMenu = NAMEKEY_INVALID;
-	static NameKeyType buttonDebugMenu = NAMEKEY_INVALID;
 
 	switch( msg )
 	{
@@ -1546,41 +1544,19 @@ WindowMsgHandledType OptionsMenuSystem( GameWindow *window, UnsignedInt msg,
 			buttonAccept = TheNameKeyGenerator->nameToKey( "OptionsMenu.wnd:ButtonAccept" );
 			buttonKeyboardOptionsMenu = TheNameKeyGenerator->nameToKey( "OptionsMenu.wnd:ButtonKeyboardOptions" );
 
-			// GeneralsX @feature fbraz3 08/06/2026 Create the entry button dynamically
-			// (OptionsMenu.wnd in WindowZH.big has no such button, so we add it at runtime)
+			// GeneralsX @tweak Claude 28/07/2026 Removed the runtime-created "Debug" button.
 			//
-			// GeneralsX @feature Claude 26/07/2026 This is now the Debug screen, and the
-			// Extras settings live inside it. No file-existence gate any more: the screen
-			// is built entirely in code (GameClient/DebugMenu.h), so there is nothing that
-			// can be missing from the shipped data and no null layout to walk into.
-			{
-				GameWindow *backBtn = TheWindowManager->winGetWindowFromId(window, buttonBack);
-				if (backBtn) {
-					WinInstanceData instData;
-					instData.init();
-					BitSet(instData.m_style, GWS_PUSH_BUTTON | GWS_MOUSE_TRACK);
-
-					// GeneralsX @bugfix Claude 26/07/2026 Dropped WIN_STATUS_IMAGE and
-					// m_textLabelString. gogoGadgetPushButton latches the image draw func at
-					// creation, so with no PushButton* mapped image in the shipped data the
-					// button drew nothing at all; and the label string goes through
-					// TheGameText->fetch, which renders "MISSING: 'Extras'" for a literal.
-					// Colours plus GadgetButtonSetText avoid both.
-					GameWindow *dbgBtn = TheWindowManager->gogoGadgetPushButton(
-						backBtn->winGetParent(),
-						WIN_STATUS_ENABLED,
-						320, 528,
-						145, 32,
-						&instData, nullptr, TRUE);
-
-					if (dbgBtn) {
-						buttonDebugMenu = TheNameKeyGenerator->nameToKey("OptionsMenu.wnd:ButtonDebug");
-						dbgBtn->winSetWindowId(buttonDebugMenu);
-						dbgBtn->winSetSystemFunc(OptionsMenuSystem);
-						GadgetButtonSetText(dbgBtn, UnicodeString(L"Debug"));
-					}
-				}
-			}
+			// It was added dynamically here because OptionsMenu.wnd in WindowZH.big has no such
+			// control, which meant it could only be positioned by hardcoded coordinates - it was
+			// placed at (320,528) at a 145x32 size. Those are layout-space constants in a screen
+			// whose real controls come from the .wnd, so at 1600x900 it landed directly ON TOP of
+			// the Scroll Speed slider, drawing as a coloured block over the middle of the bar and
+			// swallowing clicks meant for the slider.
+			//
+			// The Debug screen itself is untouched and is still reachable from the floating debug
+			// overlay (DebugFloatButton.cpp), which is drawn parentless with WIN_STATUS_ABOVE and
+			// so cannot collide with any screen's layout. That overlay is the supported entry
+			// point; this second one only existed before it did.
 
 			break;
 
@@ -1700,16 +1676,8 @@ WindowMsgHandledType OptionsMenuSystem( GameWindow *window, UnsignedInt msg,
 			{
 				TheShell->push( "Menus/KeyboardOptionsMenu.wnd" );
 			}
-			// GeneralsX @feature Claude 26/07/2026 Open the code-built Debug overlay instead of
-			// pushing a shell screen: the same screen has to open over a running match, where
-			// Shell::push would run the underlying menu's Shutdown. The NAMEKEY_INVALID guard is
-			// required - NAMEKEY_INVALID is 0 and so is an un-ID'd window's id, so without it any
-			// unnamed control routing GBM_SELECTED here would open the screen when the button was
-			// never created.
-			else if ( buttonDebugMenu != NAMEKEY_INVALID && controlID == buttonDebugMenu )
-			{
-				DebugMenuOpen();
-			}
+			// GeneralsX @tweak Claude 28/07/2026 Handler removed with the button that fed it - see
+			// GWM_CREATE above. DebugMenuOpen() is still called from the floating debug overlay.
 			else if(controlID == checkDrawAnchorID )
       {
         if( GadgetCheckBoxIsChecked( control ) )
