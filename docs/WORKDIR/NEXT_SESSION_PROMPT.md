@@ -62,7 +62,39 @@ It was blocked until this session by a format bug: replay strings were written w
 `0xC0000005`. Now pinned to UTF-16, which also matches retail. Old Mac-written `.rep` files no
 longer load; they were never readable elsewhere anyway.
 
-## THE NEXT TASK: headless host/join + relay
+## THE HEADLESS CLI IS DONE AND PROVEN (2026-07-28 session 4)
+
+**Mac headless host + Windows headless joiner, 1200 frames, zero differing. Reproduced twice.**
+
+```bash
+FRAMES=1200 ./scripts/test/xplat-lan-soak.sh     # prints PASS/FAIL on its own
+```
+
+`-lanhost -lanjoin -lanmap -lanname -lanai -lanwait -lanframes -lantimeout`, implemented in
+`GeneralsMD/.../Common/HeadlessMatch.{h,cpp}` and entered from `GameMain` as a third branch beside
+`ReplaySimulation`. **ZH only** — `Generals/` needs the same treatment.
+
+`RequestGameJoinDirectConnect` takes a hostname as well as an IP (it goes through `ResolveIP`), so
+the off-LAN primitive the relay needs is already exercised.
+
+Read `DESIGN_headless_and_relay.md` for the eight silent failures this cost. All eight look
+identical from the host — "no peer never joined" — so **when a peer does not appear, read the
+OTHER machine's log first**. Two rules came out of it that will bite again:
+
+1. **`LANAPI` mixes state mutation into its `On*` callbacks.** `OnAccept` is where `setAccept()`
+   happens; `OnHasMap` is where `setMapAvailability()` happens; `OnPlayerJoin` calls
+   `resetAccepted()`. In `HeadlessLANAPI` override ONLY what touches `TheShell` or
+   `LANbuttonPushed` and delegate the rest, or the host silently stops tracking its own lobby.
+2. **Commit, THEN build, on BOTH machines.** `sourceID` bakes HEAD plus a dirty-file overlay in at
+   COMPILE time, so matching `git rev-parse` output proves nothing. The soak now refuses to run
+   when either binary predates the last commit that touched the digested source dirs.
+
+Also: the Windows run folder needs `MapsZH.big` staged into it (`setup-run-win64.ps1` does not do
+this, so re-copy after every restage) and `CNC_GENERALS_ZH_PATH` set, or the joiner hangs forever
+at `[INI] ERROR: No files read from directory` with 1239 bytes of stderr. That is NOT the session-0
+problem — a headless replay fails identically without it and succeeds from session 0 with it.
+
+## THE NEXT TASK: the relay
 
 Read `DESIGN_headless_and_relay.md` — it has the full plan. The short version:
 
@@ -113,9 +145,12 @@ it behaviourally by re-simulating replays, not by trying to prevent it.
 - **iPad Air 11-inch (M3)** — **UNPLUGGED and on an older build.** `sourceID` has moved, so it
   cannot join until replugged and reinstalled: `./scripts/build/ios/package-ios-zh.sh --install`.
   Install over USB, never WiFi.
-- **VPS `163.5.210.131`** — root, SSH key installed. **Password auth still on and the password was
-  pasted in chat — ROTATE IT.** `79.110.49.24` in the panel is the hypervisor NODE, not the VM; do
-  not log in there. Ubuntu 20.04.6 (EOL, glibc 2.31), Xeon E5-2680 v4, 4 cores.
+- **VPS `163.5.210.131`** — root, SSH key installed. **Password auth is now DISABLED** (2026-07-28):
+  the leaked password was never rotated, so `PasswordAuthentication no` +
+  `PermitRootLogin prohibit-password` were set instead, which needs no new secret. Verified both
+  ways — key auth succeeds, password auth returns `Permission denied (publickey)`. Backup at
+  `/root/sshd_config.bak-20260728-115835`. **Key auth is now the ONLY way in — do not remove the
+  key.** `79.110.49.24` in the panel is the hypervisor NODE, not the VM; do not log in there. Ubuntu 20.04.6 (EOL, glibc 2.31), Xeon E5-2680 v4, 4 cores.
   **RAM is not what was sold:** dmidecode says 8192 MB and the kernel saw `8100900K/8388064K` at
   boot, but `MemTotal` is 3941808 kB — ~4.3 GB held by `virtio_balloon`
   (`/sys/bus/virtio/drivers/virtio_balloon/virtio0`, built-in so it does not show in `lsmod`).

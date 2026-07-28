@@ -2,6 +2,36 @@
 
 Written 2026-07-28. Everything referenced here is on `main` unless marked NOT DONE.
 
+## STATUS: the headless CLI is DONE and PROVEN cross-platform
+
+**Mac headless host + Windows headless joiner, 1200 frames, zero differing.**
+Reproduced twice. Harness: `scripts/test/xplat-lan-soak.sh`, which prints
+`PASS: 1200 frames, zero differing` on its own.
+
+```bash
+FRAMES=1200 ./scripts/test/xplat-lan-soak.sh
+```
+
+Implemented in `GeneralsMD/.../Common/HeadlessMatch.{h,cpp}`, entered from `GameMain` as a third
+branch beside `ReplaySimulation` — it drives the engine itself instead of `TheGameEngine->execute()`.
+Flags: `-lanhost -lanjoin -lanmap -lanname -lanai -lanwait -lanframes -lantimeout`.
+**ZH only.** `Generals/` has its own `CommandLine`/`GlobalData`/`GameMain` and needs the same work.
+
+### The design's central assumption was right, but the cost was elsewhere
+
+`LANAPI` really does expose the whole lifecycle as plain calls, and `OnGameStart` really is UI-free.
+The work was NOT in the netcode. It was in eight silent failures, each of which presented to the
+host as "no peer ever joined" — i.e. exactly like a network fault. They are listed under Traps
+below. Budget for that shape of problem, not for protocol work.
+
+### Still open on this path
+
+* **Windows exits `0xC0000005` at the END of a headless run**, after every frame and CRC is
+  written. Pre-existing (it already did this for `-replay`), now also on the LAN path. The soak
+  deliberately does not gate on the Windows exit code — it compares CRC streams and frame counts,
+  so a truncating crash would still show as a frame-count mismatch. Worth fixing; not blocking.
+* `-lanwait` peers must be humans. Mixed human+AI slot layouts beyond `-lanai` are untested.
+
 ## Why this is smaller than it looks
 
 `TheLAN` (LANAPI) already exposes the entire lobby lifecycle as plain method calls. The menus are
@@ -110,6 +140,45 @@ That costs no latency and requires no client trust.
 What the relay *can* do: reject illegal commands, rate-limit, hold the authoritative CRC so a
 mismatch names the guilty peer instead of triggering a majority vote, and give clean desync
 forensics.
+
+## The eight silent failures, in the order they were hit
+
+Every one of these looks identical from the host: a peer that never joined. Six needed the
+JOINER's log to diagnose, and one needed bisecting against the known-good replay path. If a peer
+never appears, read the other machine's log before touching anything.
+
+| # | cause | how it presented |
+|---|---|---|
+| 1 | `LANbuttonPushed` — `LANAPI::update()` returns early on it, and `OnGameCreate`/`OnGameJoin` SET it; only `LanLobbyMenuInit` clears it | host goes deaf forever, immediately |
+| 2 | `setMultiInstance(TRUE)` copied from `parseReplay` injects a synthetic `127.<instance>` IP that outranks `192.168.x`, and is unbindable on macOS | `failed to bind local IP 127.0.0.2` |
+| 3 | `generalszh.exe` is a GUI-subsystem binary; PowerShell does not wait for it | instant exit 0, no output at all |
+| 4 | `CNC_GENERALS_ZH_PATH` unset on the joiner | hangs forever at `[INI] ERROR: No files read from directory`, 1239 bytes of stderr. **Not session 0** — a headless replay fails the same way without it and succeeds from session 0 with it |
+| 5 | binaries built BEFORE the commit — `sourceID` bakes in HEAD plus a dirty-file overlay at COMPILE time | join refused; `git rev-parse` agrees on both machines so the commit check passes |
+| 6 | every slot defaults to `SLOT_CLOSED` (`GameSlot::reset`); the lobby UI is what opens them | joiner logs `Join Deny`, host logs nothing |
+| 7 | host advertised map CRC/size of 0, so `GameInfo::setMapCRC` told every peer it lacked a map it had | peer reports "You do not have the map", never readies |
+| 8 | log-only overrides of `OnAccept`/`OnHasMap`/`OnPlayerJoin` — these callbacks MUTATE lobby state, they are not UI | host logged `accept ... = 1` and still never counted it. The self-contradicting log is what cracked it |
+
+Plus two that corrupted the RESULT rather than the run:
+
+* **`LANEnableStartButton` dereferenced null widgets**, reached from `LANGameInfo::resetAccepted()`
+  — a state operation. Crashed the host the instant a peer joined. Now guarded; a real latent bug,
+  unreachable from the UI flow, and `Generals/` still has it.
+* **CRLF.** The Windows peer writes `\r\n`, so `diff` called a perfectly matching 1200-frame run a
+  total desync from frame 0. The first clean cross-platform run was nearly recorded as a failure.
+  The harness now strips CR.
+
+**Rule this produced:** `LANAPI` mixes state mutation into its `On*` callbacks. In `HeadlessLANAPI`,
+override ONLY what touches `TheShell` or `LANbuttonPushed`; delegate everything else to the base.
+
+## Environment asymmetry worth fixing properly
+
+The Windows run folder had **no `.big` files** and leaned on `CNC_GENERALS_ZH_PATH`, so its map
+cache indexed only user maps from Documents — zero built-in `maps\` entries — while the Mac game
+folder is self-contained (25 `.big`s including `MapsZH.big`). Worked around by staging
+`MapsZH.big` into `C:\dev\GeneralsX-run\`. **That is a workaround**, and it is the same
+working-directory-relative resolution class as the `SkirmishScripts.scb` desync and the
+`Win32Mouse.cpp:376` cursor bug. `setup-run-win64.ps1` does not stage it, so it must be re-copied
+after every restage. Fixing path resolution once would cover all three.
 
 ## Traps, all learned the hard way
 
