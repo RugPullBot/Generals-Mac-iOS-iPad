@@ -349,6 +349,18 @@ Bool HeadlessMatch::publishGameOptions()
 		headlessLog("map set to %s", TheGlobalData->m_lanMap.str());
 	}
 
+	// Open the slots we are holding for human peers. This is NOT optional and nothing else does
+	// it: GameSlot::reset defaults every slot to SLOT_CLOSED, and it is the lobby UI that opens
+	// them in a normal game. handleRequestJoin accepts a peer only if some slot isOpen(), so a
+	// headless host that skips this denies every join with RET_GAME_FULL while looking, from the
+	// host side, like a peer that simply never arrived.
+	for (Int i = 1; i <= TheGlobalData->m_lanWaitPeers && i < MAX_SLOTS; ++i)
+	{
+		LANGameSlot openSlot;
+		openSlot.setState(SLOT_OPEN);
+		game->setSlot(i, openSlot);
+	}
+
 	// Fill slots with AI, starting after the host and after any human slots we are holding
 	// open for -lanwait peers.
 	Int nextSlot = 1 + TheGlobalData->m_lanWaitPeers;
