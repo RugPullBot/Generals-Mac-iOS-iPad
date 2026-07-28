@@ -89,7 +89,7 @@ Transport::Transport()
 	m_udpsock = nullptr;
 	m_relayEnabled = FALSE;
 	m_relayAddr = 0;
-	m_peerVirtualIP = 0;
+	m_localVirtualIP = 0;
 	m_lastRelayRegistration = 0;
 	m_relayRegistration[0] = '\0';
 	m_relayRegistrationLen = 0;
@@ -102,7 +102,7 @@ void Transport::initRelay( UnsignedShort port )
 {
 	m_relayEnabled = FALSE;
 	m_relayAddr = 0;
-	m_peerVirtualIP = 0;
+	m_localVirtualIP = 0;
 	m_lastRelayRegistration = 0;
 	m_relayRegistration[0] = '\0';
 	m_relayRegistrationLen = 0;
@@ -136,12 +136,14 @@ void Transport::initRelay( UnsignedShort port )
 		return;
 	}
 
+	// Only OUR identity is configured now. The destination of each packet comes from the game
+	// itself - peers learn each other's virtual addresses from the slot list, exactly as they
+	// would learn real ones on a LAN - so there is no longer a PeerVirtualIP to keep in sync, and
+	// no two-player assumption baked into the configuration.
 	const UnsignedInt localVirtualIP = prefs.getLocalVirtualIP();
-	const UnsignedInt peerVirtualIP = prefs.getPeerVirtualIP();
-	if (localVirtualIP == 0 || peerVirtualIP == 0 || localVirtualIP == peerVirtualIP)
+	if (localVirtualIP == 0)
 	{
-		DEBUG_LOG(("Transport::initRelay - relay disabled: LocalVirtualIP and PeerVirtualIP must be two different 10.x addresses (got 0x%8.8X and 0x%8.8X)",
-			localVirtualIP, peerVirtualIP));
+		DEBUG_LOG(("Transport::initRelay - relay disabled: LocalVirtualIP must be set to this machine's virtual 10.x address"));
 		return;
 	}
 
@@ -176,12 +178,46 @@ void Transport::initRelay( UnsignedShort port )
 	}
 
 	m_relayAddr = relayAddr;
-	m_peerVirtualIP = peerVirtualIP;
+	m_localVirtualIP = localVirtualIP;
 	m_relayEnabled = TRUE;
 
-	DEBUG_LOG(("Transport::initRelay - relaying through %d.%d.%d.%d in room '%s'; we are %d.%d.%d.%d, peer is %d.%d.%d.%d",
-		PRINTF_IP_AS_4_INTS(m_relayAddr), roomToken,
-		PRINTF_IP_AS_4_INTS(localVirtualIP), PRINTF_IP_AS_4_INTS(m_peerVirtualIP)));
+	DEBUG_LOG(("Transport::initRelay - relaying through %d.%d.%d.%d in room '%s'; we are %d.%d.%d.%d",
+		PRINTF_IP_AS_4_INTS(m_relayAddr), roomToken, PRINTF_IP_AS_4_INTS(m_localVirtualIP)));
+}
+
+// GeneralsX @feature Relay transport. The header is written and read here rather than through
+// queueSend, for the same reason sendRelayRegistration bypasses it: everything that goes through
+// the normal path is CRC'd and XOR-encrypted, and the relay has to be able to read the destination
+// without being able to interpret - or corrupt - anything else in the packet.
+//
+// Fields are big-endian on the wire so the relay, which is not C++ and does not share this
+// struct, can read them with a plain readUInt32BE and the two ends cannot disagree about byte
+// order across four client platforms.
+Int Transport::writeRelayHeader( UnsignedByte *dest, UnsignedInt dstVirtualIP ) const
+{
+	dest[0] = 'G'; dest[1] = 'X'; dest[2] = 'R'; dest[3] = '1';
+	dest[4]  = (UnsignedByte)((m_localVirtualIP >> 24) & 0xFF);
+	dest[5]  = (UnsignedByte)((m_localVirtualIP >> 16) & 0xFF);
+	dest[6]  = (UnsignedByte)((m_localVirtualIP >>  8) & 0xFF);
+	dest[7]  = (UnsignedByte)( m_localVirtualIP        & 0xFF);
+	dest[8]  = (UnsignedByte)((dstVirtualIP    >> 24) & 0xFF);
+	dest[9]  = (UnsignedByte)((dstVirtualIP    >> 16) & 0xFF);
+	dest[10] = (UnsignedByte)((dstVirtualIP    >>  8) & 0xFF);
+	dest[11] = (UnsignedByte)( dstVirtualIP           & 0xFF);
+	return GX_RELAY_HEADER_SIZE;
+}
+
+Bool Transport::readRelayHeader( const UnsignedByte *src, Int len, UnsignedInt &srcVirtualIP ) const
+{
+	if (len < GX_RELAY_HEADER_SIZE)
+		return FALSE;
+
+	if (src[0] != 'G' || src[1] != 'X' || src[2] != 'R' || src[3] != '1')
+		return FALSE;
+
+	srcVirtualIP = ((UnsignedInt)src[4] << 24) | ((UnsignedInt)src[5] << 16)
+	             | ((UnsignedInt)src[6] <<  8) | ((UnsignedInt)src[7]);
+	return TRUE;
 }
 
 // GeneralsX @feature Relay transport. Written straight to the socket rather than through
@@ -375,6 +411,11 @@ Bool Transport::doSend() {
 		sendRelayRegistration();
 	}
 
+	// GeneralsX @feature Relay transport. Staging buffer for the relay header plus the packet.
+	// Declared once for the whole sweep rather than per message: this loop runs MAX_MESSAGES
+	// times every send and the buffer is a kilobyte.
+	UnsignedByte relayScratch[GX_RELAY_HEADER_SIZE + sizeof(TransportMessage)];
+
 	// Send all messages
 	int i;
 	for (i=0; i<MAX_MESSAGES; ++i)
@@ -388,15 +429,33 @@ Bool Transport::doSend() {
 			// Therefore, transmitted data needs to add the extra bytes of the network header to the payloads length
 			int bytesToSend = m_outBuffer[i].length + sizeof(TransportMessageHeader);
 
-			// GeneralsX @feature Relay transport. The message keeps the address the game chose -
-			// a virtual LAN address, or the LAN broadcast - but goes out to the relay, which
-			// forwards it to the other member of the room. The PORT is deliberately left alone:
-			// it is what lets the relay keep lobby (8086) and in-game (8088) traffic apart
-			// without ever looking inside a packet.
+			// GeneralsX @feature Relay transport. The datagram goes out to the relay instead of
+			// to the peer, and the address the game chose - a virtual LAN address, or the LAN
+			// broadcast - travels in the relay header so the relay can deliver it to that one
+			// peer, or to the whole room if it is a broadcast. The PORT is deliberately left
+			// alone: it is what lets one relay keep lobby (8086) and in-game (8088) traffic
+			// apart without ever looking inside a packet.
 			const UnsignedInt destAddr = m_relayEnabled ? m_relayAddr : m_outBuffer[i].addr;
 
 			// Send this message
-			if ((bytesSent = m_udpsock->Write((unsigned char *)(&m_outBuffer[i]), bytesToSend, destAddr, m_outBuffer[i].port)) > 0)
+			if (m_relayEnabled)
+			{
+				const Int headerLen = writeRelayHeader(relayScratch, m_outBuffer[i].addr);
+				memcpy(relayScratch + headerLen, &m_outBuffer[i], bytesToSend);
+
+				bytesSent = m_udpsock->Write(relayScratch, bytesToSend + headerLen, destAddr, m_outBuffer[i].port);
+
+				// Report GAME bytes, so the short-write check below compares like with like and
+				// the statistics stay directly comparable to a LAN run.
+				if (bytesSent > 0)
+					bytesSent -= headerLen;
+			}
+			else
+			{
+				bytesSent = m_udpsock->Write((unsigned char *)(&m_outBuffer[i]), bytesToSend, destAddr, m_outBuffer[i].port);
+			}
+
+			if (bytesSent > 0)
 			{
 				//DEBUG_LOG(("Sending %d bytes to %d.%d.%d.%d:%d", bytesToSend, PRINTF_IP_AS_4_INTS(m_outBuffer[i].addr), m_outBuffer[i].port));
 				m_outgoingPackets[m_statisticsSlot]++;
@@ -482,8 +541,15 @@ Bool Transport::doRecv()
 	TransportMessage incomingMessage;
 	unsigned char *buf = (unsigned char *)&incomingMessage;
 	int len = MAX_NETWORK_MESSAGE_LEN;
+
+	// GeneralsX @feature Relay transport. Read into a staging buffer rather than straight into
+	// incomingMessage: a relayed datagram arrives with GX_RELAY_HEADER_SIZE bytes of routing
+	// ahead of the game packet, and the packet has to be decrypted and inspected without them.
+	// The extra copy is one sub-kilobyte memcpy against a CRC and an XOR pass over the same bytes.
+	UnsignedByte recvScratch[MAX_NETWORK_MESSAGE_LEN];
+	int rawLen = 0;
 //	DEBUG_LOG(("Transport::doRecv - checking"));
-	while ( (len=m_udpsock->Read(buf, MAX_NETWORK_MESSAGE_LEN, &from)) > 0 )
+	while ( (rawLen=m_udpsock->Read(recvScratch, MAX_NETWORK_MESSAGE_LEN, &from)) > 0 )
 	{
 #if defined(RTS_DEBUG)
 		// Packet loss simulation
@@ -503,6 +569,47 @@ Bool Transport::doRecv()
 //			DEBUG_LOG_RAW(("%02x", *(buf + munkee)));
 //		}
 //		DEBUG_LOG_RAW(("\n"));
+		// GeneralsX @feature Relay transport. Strip our routing header and take the sender's
+		// identity from it. On a LAN the sender is the socket's source address; through a relay
+		// EVERY datagram arrives from the relay, which is not an identity anything above this
+		// layer can match against a slot - so the sender's virtual address travels in the header.
+		//
+		// This replaced a single configured peer address, which was unambiguous for two machines
+		// and wrong for any more: with eight players every packet was attributed to one peer.
+		const UnsignedByte *packet = recvScratch;
+		len = rawLen;
+		UnsignedInt senderAddr = ntohl(from.sin_addr.s_addr);
+
+		if (m_relayEnabled)
+		{
+			UnsignedInt srcVirtualIP = 0;
+			if (!readRelayHeader(packet, len, srcVirtualIP))
+			{
+				// On a relayed socket anything without our header is not ours - a stray, a
+				// scanner, or relay control traffic that bounced back. Count it as unknown
+				// rather than trying to interpret it as a game packet.
+				m_unknownPackets[m_statisticsSlot]++;
+				m_unknownBytes[m_statisticsSlot] += len;
+				continue;
+			}
+			senderAddr = srcVirtualIP;
+			packet += GX_RELAY_HEADER_SIZE;
+			len -= GX_RELAY_HEADER_SIZE;
+		}
+
+		// Bound the length BEFORE copying into a fixed-size struct. A valid packet is at most one
+		// full payload plus its header, and incomingMessage is sized for exactly that; a datagram
+		// larger than it - corrupt, hostile, or from a build with a different payload cap - would
+		// otherwise overrun it. The raw read is already bounded, this bounds the copy.
+		if (len > (Int)(MAX_PACKET_SIZE + sizeof(TransportMessageHeader)))
+		{
+			DEBUG_LOG(("Transport::doRecv - oversize packet! len = %d", len));
+			m_unknownPackets[m_statisticsSlot]++;
+			m_unknownBytes[m_statisticsSlot] += len;
+			continue;
+		}
+
+		memcpy(buf, packet, len);
 		decryptBuf(buf, len);
 
 		incomingMessage.length = len - sizeof(TransportMessageHeader);
@@ -537,9 +644,9 @@ Bool Transport::doRecv()
 					// GeneralsX @bugfix Use POSIX s_addr here too - winsock #defines s_addr onto
 					// the S_un union, so it is the spelling that compiles on both, and this copy
 					// of the assignment was left behind when the one below was fixed.
-					// GeneralsX @feature Relay transport. Same virtual peer address substitution
-					// as the live path below, so simulated latency does not quietly opt out of it.
-					m_delayedInBuffer[i].message.addr = m_relayEnabled ? m_peerVirtualIP : ntohl(from.sin_addr.s_addr);
+					// GeneralsX @feature Relay transport. Same sender resolution as the live path
+					// below, so simulated latency does not quietly opt out of it.
+					m_delayedInBuffer[i].message.addr = senderAddr;
 					m_delayedInBuffer[i].message.port = ntohs(from.sin_port);
 					memcpy(&m_delayedInBuffer[i].message, buf, len);
 					break;
@@ -553,12 +660,11 @@ Bool Transport::doRecv()
 					// Empty slot; use it
 					m_inBuffer[i].length = incomingMessage.length;
 					// GeneralsX @bugfix BenderAI 13/02/2026 Use POSIX s_addr (no S_un union on Linux)
-					// GeneralsX @feature Relay transport. In relay mode the wire source is the
-					// relay, which is not an identity anything above this layer can match against
-					// a slot, so hand up the peer's virtual LAN address instead. Only two machines
-					// can be in a room, so the peer is unambiguous. This has to stay ahead of the
-					// memcpy, which overwrites header and data but stops short of these fields.
-					m_inBuffer[i].addr = m_relayEnabled ? m_peerVirtualIP : ntohl(from.sin_addr.s_addr);
+					// GeneralsX @feature Relay transport. senderAddr is the socket source on a
+					// LAN and the sender's virtual address through a relay - resolved once, above.
+					// This has to stay ahead of the memcpy, which overwrites header and data but
+					// stops short of these fields.
+					m_inBuffer[i].addr = senderAddr;
 					m_inBuffer[i].port = ntohs(from.sin_port);
 					memcpy(&m_inBuffer[i], buf, len);
 					break;

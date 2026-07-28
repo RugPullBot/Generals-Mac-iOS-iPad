@@ -83,16 +83,32 @@ private:
 	UDP *m_udpsock;
 
 	// GeneralsX @feature Relay transport. With a relay configured, every datagram is bounced off
-	// it and the peer is known by a virtual LAN address instead of its real one. That keeps the
+	// it and peers are known by virtual LAN addresses instead of their real ones. That keeps the
 	// whole IP-as-identity stack above this layer - AmIHost, the slot list, the join handshake -
-	// looking at the two-machine LAN it was written for, while the machines are on different
-	// networks and neither has forwarded a port.
+	// looking at the LAN it was written for, while the machines are on different networks and none
+	// of them has forwarded a port.
+	//
+	// Each relayed datagram carries GX_RELAY_HEADER_SIZE bytes ahead of the game packet:
+	//
+	//     [ 'GXR1' (4) ][ source virtual IP (4) ][ destination virtual IP (4) ][ game packet ]
+	//
+	// written and read HERE, outside the CRC and the XOR, because the relay has to read the
+	// destination without being able to interpret anything else. The destination is whatever
+	// address the game already chose: every peer advertises its virtual IP in the slot list, so
+	// the layers above are already addressing peers by virtual address and needed no change. A
+	// broadcast destination is forwarded to the whole room, which is what LAN discovery expects.
+	//
+	// This is what lifts the relay past two players. Before it, every relayed packet was reported
+	// as coming from one configured peer address, which is unambiguous for two machines and
+	// useless for eight.
 	void initRelay( UnsignedShort port );			///< Reads the relay config; relay mode is on only if all of it validates.
 	void sendRelayRegistration();					///< Unencrypted hello/keepalive that tells the relay where we are.
+	Int writeRelayHeader( UnsignedByte *dest, UnsignedInt dstVirtualIP ) const;	///< Returns bytes written.
+	Bool readRelayHeader( const UnsignedByte *src, Int len, UnsignedInt &srcVirtualIP ) const;
 
 	Bool m_relayEnabled;
 	UnsignedInt m_relayAddr;						///< Host order. Stands in for every outbound destination.
-	UnsignedInt m_peerVirtualIP;					///< Host order. Reported upwards as the source of everything received.
+	UnsignedInt m_localVirtualIP;					///< Host order. Our identity, stamped into every outgoing header.
 	UnsignedInt m_lastRelayRegistration;
 	char m_relayRegistration[64];					///< Prebuilt registration datagram. Never encrypted - see sendRelayRegistration.
 	Int m_relayRegistrationLen;

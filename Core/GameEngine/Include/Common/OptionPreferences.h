@@ -67,9 +67,16 @@ public:
 	void setOnlineIPAddress(AsciiString IP);
 	void setLANIPAddress(UnsignedInt IP);
 	void setOnlineIPAddress(UnsignedInt IP);
-	// GeneralsX @feature Relay transport. RelayAddress being set is what turns relay mode on;
-	// the two virtual addresses are the identities the lobby, the slot list and the in-game
-	// connections see, so neither machine ever has to know the other's public address.
+	// GeneralsX @feature Relay transport. RelayAddress being set, together with LocalVirtualIP,
+	// is what turns relay mode on. LocalVirtualIP is this machine's identity - what the lobby,
+	// the slot list and the in-game connections see - so no machine ever has to know another's
+	// public address.
+	//
+	// PeerVirtualIP is NOT part of routing and is not needed by a host. It is a convenience for
+	// the Direct Connect screen only: the address a joiner dials, i.e. the host's virtual
+	// identity, offered at the top of the remote-IP list before any history exists. Every other
+	// destination is learned from the slot list, exactly as it would be on a LAN, which is what
+	// lets a room hold eight peers instead of two.
 	AsciiString getRelayAddress() const;
 	AsciiString getRelayRoom() const;
 	UnsignedInt getLocalVirtualIP() const;

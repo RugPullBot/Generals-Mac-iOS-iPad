@@ -69,12 +69,29 @@ static constexpr const Int RETAIL_GAME_PACKET_SIZE = 476;
 // TheSuperHackers @info The legacy lanapi cannot use a larger packet size without breaking the gameinfo command
 static constexpr const Int MAX_LANAPI_PACKET_SIZE = RETAIL_GAME_PACKET_SIZE;
 
+// GeneralsX @feature Relay transport. Every relayed datagram carries a fixed header ahead of the
+// game packet - magic, source virtual IP, destination virtual IP - so the relay can route to one
+// of up to eight peers without ever looking at the payload. See Transport::initRelay.
+//
+// The cost is taken OUT of the payload budget rather than added on top, and unconditionally, even
+// on a LAN where no relay is involved. That is deliberate. MAX_UDP_PAYLOAD_SIZE is 1100 because
+// mobile MTUs run 1340-1500 before PPPoE/IPv6 encapsulation, and iOS/iPadOS are target clients:
+// a packet that exceeds it fragments, and a fragmented lockstep packet would present as a desync
+// that only ever reproduces on cellular. Paying 12 bytes on every platform costs ~1% of a payload
+// that carries commands, and it means there is exactly one size to reason about instead of a
+// LAN size and a relay size that callers would have to choose between.
+static constexpr const Int GX_RELAY_HEADER_SIZE = 12;
+
 // TheSuperHackers @bugfix Mauller 08/02/2026 Allow larger ethernet UDP payload to be used for game messages, this fixes connection issues and eliminates disconnection bugs
 #if RETAIL_COMPATIBLE_NETWORKING
+// Untouched: this branch exists to match the retail wire format exactly, and the relay is not
+// part of that format.
 static constexpr const Int MAX_PACKET_SIZE = RETAIL_GAME_PACKET_SIZE;
 static constexpr const Int MAX_NETWORK_MESSAGE_LEN = 1024;
 #else
-static constexpr const Int MAX_PACKET_SIZE = MAX_UDP_PAYLOAD_SIZE - sizeof(TransportMessageHeader);
+static constexpr const Int MAX_PACKET_SIZE = MAX_UDP_PAYLOAD_SIZE - sizeof(TransportMessageHeader) - GX_RELAY_HEADER_SIZE;
+// The RAW receive size still has to be the full payload: what arrives is the relay header plus a
+// game packet that was already capped above, so the total is exactly MAX_UDP_PAYLOAD_SIZE.
 static constexpr const Int MAX_NETWORK_MESSAGE_LEN = MAX_UDP_PAYLOAD_SIZE;
 #endif
 

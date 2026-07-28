@@ -85,15 +85,20 @@ void PopulateRemoteIPComboBox()
 	Int numRemoteIPs = userprefs.getNumRemoteIPs();
 	Color white = GameMakeColor(255,255,255,255);
 
-	// GeneralsX @feature Relay transport. In relay mode there is exactly one address worth
-	// dialling - the peer's virtual LAN identity - and it is not in the saved history until the
-	// first join, so offer it at the top and preselect it.
+	// GeneralsX @feature Relay transport. Relay mode is decided by OUR identity, the same test
+	// Transport::initRelay makes - a room can now hold up to eight peers, so there is no single
+	// "other machine" to key it on.
+	//
+	// PeerVirtualIP survives here as a pure convenience and no longer means "the other player":
+	// it is the address a JOINER dials, i.e. the host's virtual identity, and it is not in the
+	// saved history until the first join. A host does not need it set at all. Routing no longer
+	// reads it - every destination now comes from the slot list, like it would on a LAN.
 	OptionPreferences prefs;
+	const Bool relayMode = !prefs.getRelayAddress().isEmpty() && (prefs.getLocalVirtualIP() != 0);
 	const UnsignedInt peerVirtualIP = prefs.getPeerVirtualIP();
-	const Bool relayMode = !prefs.getRelayAddress().isEmpty() && (peerVirtualIP != 0);
 	UnicodeString peerEntry;
 
-	if (relayMode)
+	if (relayMode && peerVirtualIP != 0)
 	{
 		peerEntry.format(L"%d.%d.%d.%d", PRINTF_IP_AS_4_INTS(peerVirtualIP));
 		GadgetComboBoxAddEntry(comboboxRemoteIP, peerEntry, white);
@@ -103,7 +108,10 @@ void PopulateRemoteIPComboBox()
 	{
 		UnicodeString entry;
 		entry = userprefs.getRemoteIPEntry(i);
-		if (relayMode && entry.startsWith(peerEntry))
+		// Keyed on peerEntry rather than relayMode: relay mode no longer implies a peer address
+		// was offered above (a host does not set one), and an empty peerEntry would make
+		// startsWith match EVERY entry - dropping any history entry that is not an IP.
+		if (!peerEntry.isEmpty() && entry.startsWith(peerEntry))
 		{
 			// The history keeps a copy of the peer after the first join, and it is already offered
 			// above. Check the character that follows too, so that 10.42.0.1 does not swallow a
@@ -117,7 +125,7 @@ void PopulateRemoteIPComboBox()
 		GadgetComboBoxAddEntry(comboboxRemoteIP, entry, white);
 	}
 
-	if (relayMode || numRemoteIPs > 0)
+	if (!peerEntry.isEmpty() || numRemoteIPs > 0)
 	{
 		GadgetComboBoxSetSelectedPos(comboboxRemoteIP, 0, TRUE);
 	}
