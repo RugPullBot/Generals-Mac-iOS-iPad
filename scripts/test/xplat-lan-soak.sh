@@ -128,8 +128,11 @@ scp -q "$WIN_HOST:C:/dev/GeneralsX-run/win.err" "$OUT/win.err" || echo "WARN: co
 
 # --- 4. Diff the CRC streams ------------------------------------------------------------------
 say "comparing CRC streams"
-grep '^\[GXCRC\]' "$OUT/mac.err" > "$OUT/mac.crc"
-grep '^\[GXCRC\]' "$OUT/win.err" > "$OUT/win.crc"
+# Strip CR. The Windows peer writes CRLF, so without this every single line compares as
+# different and a perfectly matching run is reported as a total desync from frame 0 - the most
+# alarming possible false positive, and indistinguishable at a glance from a real one.
+grep '^\[GXCRC\]' "$OUT/mac.err" | tr -d '\r' > "$OUT/mac.crc"
+grep '^\[GXCRC\]' "$OUT/win.err" | tr -d '\r' > "$OUT/win.crc"
 
 MAC_N=$(wc -l < "$OUT/mac.crc" | tr -d ' ')
 WIN_N=$(wc -l < "$OUT/win.crc" | tr -d ' ')
