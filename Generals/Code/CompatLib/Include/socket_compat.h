@@ -214,6 +214,13 @@ inline void OutputDebugString(const char* lpOutputString) {
 }
 #endif
 
+// GeneralsX @bugfix Claude 28/07/2026 Guarded against WWLib/stringex.h's portable versions.
+// Mirror of the fix in GeneralsMD/Code/CompatLib/Include/socket_compat.h - both trees carry a copy.
+// These were unconditional extern "C" weak definitions that only coexisted with stringex.h's inline
+// strlcpy/strlcat because config-build.cmake used to define HAVE_STRLCPY for every UNIX. That
+// define is now a real libc probe, so on glibc < 2.38 both became active and the build failed with
+// "redefinition of size_t strlcpy(char*, const char*, size_t)". stringex.h is canonical.
+#ifdef GX_COMPAT_PROVIDE_STRLCPY
 // strlcpy weak symbol (FTP.cpp uses for safe string copy)
 // Declared weak to avoid conflicts with BSD libc or Dependencies/Utility version
 extern "C" __attribute__((weak))
@@ -259,5 +266,6 @@ size_t strlcat(char *dst, const char *src, size_t dsize) {
 
     return(dlen + (src - osrc)); // Total length that would have been created
 }
+#endif // GX_COMPAT_PROVIDE_STRLCPY
 
 #endif // !_WIN32
