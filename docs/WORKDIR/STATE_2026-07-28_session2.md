@@ -6,8 +6,34 @@ commit with clean trees, so their `sourceID` matches and a LAN join will not be 
 ## Headline
 
 The trig fix from session 1 only covered a fraction of the call sites. **69 libm calls in live
-simulation code never went through GameMath.** They are now routed. Whether that closes the
-mid-match divergence is NOT yet proven — that needs one cross-platform CRC comparison.
+simulation code never went through GameMath.** They are now routed, and **the desync is fixed —
+measured, not inferred.**
+
+**Mac + iPad + Windows played one LAN match to 44,590 frames (24m46s) with ZERO differing frames.**
+That is the whole goal of this workstream, met.
+
+| | before | after |
+|---|---|---|
+| desync onset | frame 9, then 255-541 | **none in 44,590** |
+| longest clean run | 539 frames | **44,590** (~83x) |
+| objects in world | 323 | **6,118** |
+| platforms in sync | 0 of 3 pairs | **3 of 3** |
+| peers | 2 | **3 devices, 6 players** |
+
+Evidence and how it was verified:
+
+* **Mac <-> Windows: per-frame.** Both peers' `[GXCRC] f=N v=XXXXXXXX` streams pulled and diffed
+  frame by frame. 44,590 overlapping frames, 0 differing. The Mac stream held **44,202 distinct CRC
+  values** — near-unique per frame, which is the control that proves the simulation was genuinely
+  active and not a quiet map where agreement is cheap.
+* **iPad: at checkpoint granularity.** The engine's own network CRC check compares *all* peers every
+  100 frames. Zero `[CRC] MISMATCH` lines in either log across ~445 checkpoints, with the iPad in the
+  player list throughout. So the third architecture (arm64-iOS) agreed at every checkpoint. It was
+  not diffed per-frame because its stderr is not reachable from the host.
+* An earlier 2-peer run the same night: 16,645 frames, 0 differing.
+
+Scale at the end: 6,118 objects (194 dead), 4,912 units belonging to other players, 6 players
+including AI and an observer, ~280 render FPS on the Mac.
 
 ## What was actually wrong
 
@@ -105,14 +131,17 @@ Two fixes were needed to make it usable, both committed:
 | Steam folder untouched | `9793E5EE…4033`, identical before and after |
 | Mac / Windows tree state | both `6696b10cc`, both clean |
 
-## What is NOT proven
+## What is still NOT proven
 
-**That this fixes the desync.** It needs one cross-platform CRC comparison. Two ways:
+The desync fix itself is proven (see Headline). What remains open:
 
-1. **A LAN match** (~5 minutes of play). Both peers are already at the same commit with matching
-   `sourceID`, so the join will work. Capture stderr on both, `grep '^\[GXCRC\]'`, diff. Previously
-   the first differing frame was 255/377/541.
-2. **Fully unattended**, once one blocker is cleared — see below.
+* **Code paths nobody exercised.** 44,590 clean frames only proves the paths that *ran* are
+  deterministic. `powf`, `expf`, `logf`, `fmodf`, fast-inverse-sqrt and any NEON/SSE intrinsic with
+  platform-specific precision have never been audited — same class of bug as the one just fixed,
+  same blast radius. An exhaustive sweep is the obvious next task.
+* **Long matches.** The longest run is ~25 minutes. Nothing is known about hour-long games.
+* **The iPad per-frame.** Verified only at 100-frame checkpoints, because its stderr is not
+  reachable. Worth wiring up if arm64-iOS ever needs finer proof.
 
 ## The one open blocker for the unattended loop
 
