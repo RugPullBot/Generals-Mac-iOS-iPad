@@ -18,6 +18,7 @@
 
 // Download.cpp : Implementation of CDownload
 #include "DownloadDebug.h"
+#include "WWLib/stringex.h"	// GeneralsX: portable strlcpy/strlcat (not in glibc)
 #include "Download.h"
 
 // GeneralsX @refactor BenderAI 10/02/2026

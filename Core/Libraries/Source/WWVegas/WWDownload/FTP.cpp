@@ -25,6 +25,7 @@
 // GeneralsX @build fbraz 11/02/2026
 // Must include class declaration BEFORE implementation
 #include "WWDownload/ftp.h"
+#include "WWLib/stringex.h"	// GeneralsX: portable strlcpy/strlcat (not in glibc)
 
 // GeneralsX @build fbraz 10/02/2026
 // Platform headers with socket_compat.h providing Winsock → POSIX mapping
