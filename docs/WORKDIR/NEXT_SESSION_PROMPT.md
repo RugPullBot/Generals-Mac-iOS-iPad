@@ -6,147 +6,194 @@ Paste everything below the line into a fresh session.
 
 Read these first, in this order:
 
-- `~/GeneralsX-src/docs/WORKDIR/STATE_2026-07-28.md` — what happened overnight and what is fixed
-- `~/GeneralsX-src/docs/WORKDIR/SCOPE_crossplay.md` — the goal and the six blockers (blockers 1-4 and
-  6 are done; its blocker-5 text is stale, see below)
-- `git -C ~/GeneralsX-src log --oneline -25` — the commit messages carry the *why*
+- `~/GeneralsX-src/docs/WORKDIR/STATE_2026-07-28_session3.md` — what the overnight session established
+- `~/GeneralsX-src/docs/WORKDIR/DESIGN_headless_and_relay.md` — the headless/relay design and VPS state
+- `git -C ~/GeneralsX-src log --oneline -30` — the commit messages carry the *why*
 
-**Goal:** my Mac, my iPad and my Windows PC — all on one WiFi — sit in one LAN lobby, start a match,
-and play it to completion without desyncing.
+**Goal:** Mac, iPad and Windows play together without desyncing — **DONE, see below** — and next,
+online play through a relay server so it is not limited to one LAN.
 
-## Where things stand
+## What is FIXED and PROVEN (do not re-investigate)
 
-**The three-way lobby works.** Mac + iPad + Windows have sat in one LAN lobby and started a match
-together. That was blocker 6 and test-ladder step 5, both previously untried.
+**1. The cross-platform desync. 74,705 frames across three architectures, zero differing.**
+Root cause: 69 libm calls the first `gamemath.h` work never reached, because `gamemath.h` had
+exactly ONE include site in the whole tree (`wwmath.h:40`) and nothing `#define`s the libm names.
+40 raw `sinf`/`cosf` in `matrix3d.h`/`matrix3.h`/`vector3.h` (the `Rotate_*` helpers, reached every
+frame from `PhysicsBehavior::doPhysics`) and 29 raw `atan2` in GameLogic. All routed now.
 
-**The cross-platform desync root cause was found and FIXED.** Apple's libm and MSVC's UCRT return
-results ONE ULP apart for `cosf`/`sinf` near 45 degrees. `Thing::setOrientation` wrote those raw
-results into each object's transform, and `Object::crc` hashes those 48 bytes with no epsilon — so
-one bit killed the match before frame 1.
+**2. The AI-only frame-0 desync. A MISSING DATA FILE.**
+`Data\Scripts\SkirmishScripts.scb` was absent from the Windows run folder.
+`SidesList::prepareForMP_or_Skirmish` (`SidesList.cpp:520`) opens it by a path relative to the
+WORKING DIRECTORY, which on Windows is `C:\dev\GeneralsX-run` — the Mac's working directory is its
+own game folder, so only the Mac loaded it. Every delayed-eval script draws once from the SHARED
+simulation RNG (`ScriptEngine.cpp:6892`), so the Mac made 91 draws and Windows 0, and the streams
+were permanently offset. First visible symptom: every starting unit at the same radius from its
+Command Center but a different ANGLE — that signature is what identifies an RNG desync rather than
+float drift. Proof by intervention: 13,919 of 13,919 frames differing → **0**, same binaries.
+It was AI-only because skirmish scripts attach only for AI players.
 
-The fix gives the engine its own trig (`Core/Libraries/Source/WWVegas/WWMath/gamemath.h`) built only
-from IEEE-754 basic arithmetic, which is correctly rounded and therefore identical on every
-platform. `WWMath`'s `Sin/Cos/Tan/ASin/ACos/Atan/Atan2` and the `*Trig` wrappers all route to it.
+Fixed by staging the file in `setup-run-win64.ps1`. **That is a workaround.** The real defect is
+that loose data files are opened by working-directory-relative paths ignoring
+`CNC_GENERALS_ZH_PATH` — same bug as `Win32Mouse.cpp:376` (the cursor issue). Fixing path
+resolution once would cover both and anything else silently missing.
 
-**Result, measured:**
+**SimID cannot catch this class of bug.** `.scb` files are not INI, so they are outside `m_iniCRC`.
+Both peers reported identical `engine`/`source`/`data`/`ordinal` while simulating different games.
+Extending the data fingerprint to cover loose simulation-relevant files would turn a silent desync
+into a refused join. **Worth doing.**
 
-| | before | after |
-|---|---|---|
-| frame-0 object transforms differing | 6 of 323, then 4 | **0 of 323** |
-| first CRC checkpoint | MISMATCH at 105, every time | **ok** through 205-505 |
-| identical frames | ~0 | 255-539 of 433-733 |
-| desync onset | frame 9 | frame 255-541, mid-match |
+## The tool that makes everything else fast
 
-## THE remaining task: the mid-match divergence
+Cross-platform headless replay now works. A `.rep` is a command log, not a recording, so replaying
+re-runs the whole simulation. One file played on two platforms reproduces a cross-platform desync
+with no lobby, no network, no second human, at **68x realtime**.
 
-Both peers now start **bit-identical** and drift apart during play. This is an ordinary lockstep bug,
-not a cross-platform maths problem.
+```bash
+cd ~/GeneralsX/GeneralsZH
+GX_REPLAY_XPLAT=1 ./run.sh -headless -replay aitest.rep 2> mac.err
+grep '^\[GXCRC\]' mac.err > mac.crc      # then diff against the other machine
+```
 
-Observed first differing frame: **255** in one run, **377** in another. It moves, so do not hardcode
-a window.
+This is what let the AI desync be solved alone in minutes. **Use it before asking anyone to play.**
+Fixture committed: `docs/WORKDIR/evidence/ai-hardai-fixture.rep` (one human + one Computer-Hard).
 
-**The method that worked, reuse it:**
+It was blocked until this session by a format bug: replay strings were written with native
+`wchar_t`, **4 bytes on macOS/clang and 2 on Windows/MSVC**, so a Mac `.rep` crashed Windows at
+`0xC0000005`. Now pinned to UTF-16, which also matches retail. Old Mac-written `.rep` files no
+longer load; they were never readable elsewhere anyway.
 
-1. Run a match. `[GXCRC] f=N v=XXXXXXXX` is printed every frame on both peers; pull both logs and
-   diff to find the first differing frame.
-2. Re-run with `GX_TRACE_LO` / `GX_TRACE_HI` set around that frame on BOTH peers. That makes
-   `[GXOBJ] f= id= tmpl= running=` print the running CRC after every object, so the diff names the
-   exact object that goes first — this is what found the tree.
-3. `[GXMTX]` dumps the raw transform bits on the first traced frame. A `bitdelta=1` means a rounding
-   difference; anything larger means a different code path or value.
+## THE NEXT TASK: headless host/join + relay
 
-Ruled out already, do not re-derive:
-* **libm** — `[MATHCRC] 97B538BF` identical on both peers with 14 real libm calls executing.
-* **Start positions** — both peers print identical RNG state either side of the pick
-  (`[GXPOS] slot=0 numPlayers=4 seedCRC=782092363` then `posIdx=2 seedCRC=2348106595`).
-* **Load-time state** — frame 0 hashes 0 of 323 objects differing.
+Read `DESIGN_headless_and_relay.md` — it has the full plan. The short version:
 
-One unexplained detail worth keeping: in one run, frames 377 and 461 differed for exactly ONE frame
-each and then RE-CONVERGED, before splitting permanently at 541. A rounding difference does not heal
-itself, so that pattern may have a separate cause — possibly ordering or timing.
+**This is smaller than it looks.** `LANAPI` already exposes the whole lobby lifecycle as plain
+calls; the menus are just callers. A headless driver calls the same methods:
 
-## The three machines
+| call | purpose |
+|---|---|
+| `RequestGameCreate(name, isDirectConnect)` | host |
+| `RequestGameJoinDirectConnect(ip)` | **join by IP, no UDP discovery — this is what enables off-LAN play** |
+| `RequestGameOptions(opts, isPublic)` | set map + slots (incl. AI) |
+| `RequestAccept()` / `RequestGameStart()` | ready / start |
 
-- **Mac mini M4** — repo `~/GeneralsX-src`, game data `~/GeneralsX/GeneralsZH/`, LAN `192.168.10.51`.
-  Build `./scripts/build/macos/build-macos-zh.sh --build-only`, deploy
-  `./scripts/build/macos/deploy-macos-zh.sh`, run `cd ~/GeneralsX/GeneralsZH && ./run.sh -win -xres 1600 -yres 900`.
-  Drive with `./scripts/build/macos/drive-macos-zh.sh` (cliclick; queries the window position at
-  runtime because it moves between launches).
-- **Windows 11 `r0se-desktop`** — `ssh User@192.168.10.89`, PowerShell (use `;` not `&&`), elevated.
-  Clone `C:\dev\GeneralsX`, build `cmd /c C:\dev\cb.bat win64 x64`, stage with
+**The one real gotcha:** `TheLAN->update()` is pumped from `LanLobbyMenu.cpp:732` and `TheLAN` is
+constructed there too — **the UI currently drives the network pump.** A headless path must construct
+and pump it itself. Model the loop on `ReplaySimulation::simulateReplaysInThisProcess`, which is the
+proven headless pattern.
+
+Proposed CLI: `-lanhost <name>`, `-lanjoin <ip>`, `-lanmap`, `-lanai <E|M|H>xN`, `-lanwait <peers>`,
+`-lanframes <N>`. Add to the table in `CommandLine.cpp` (101 entries, follow `parseReplay`, which
+also calls `setMultiInstance(TRUE)` + `skipPrimaryInstance()`).
+
+**The relay and the anticheat server are the same process.** A headless engine that receives
+commands, validates them, simulates authoritatively and holds the true CRC is simultaneously NAT
+relay, desync arbiter and cheat detector. Build it once.
+
+Measured sizing: **2,037 logic frames/sec on M4 = 67.9x realtime** at 432 objects; ~5x realtime at
+6,118 objects; a server x86 core is ~0.5-0.7x an M4 core, so budget **30-40% of one dedicated core
+per heavy match**. Lockstep sends commands only — a few KB/s per player, bandwidth is a non-issue.
+Single-core clock is the only CPU metric that matters. **Never use burstable CPU**: a throttled sim
+does not degrade gracefully, it stalls the match for everyone.
+
+**Maphack is unsolvable in lockstep** — every client must know the whole world to simulate it. Catch
+it behaviourally by re-simulating replays, not by trying to prevent it.
+
+## The three machines + the VPS
+
+- **Mac mini M4** — repo `~/GeneralsX-src`, game `~/GeneralsX/GeneralsZH/`, LAN `192.168.10.51`.
+  Build `./scripts/build/macos/build-macos-zh.sh --build-only` (drop `--build-only` if you cleared
+  the CMake cache), deploy `./scripts/build/macos/deploy-macos-zh.sh`.
+  `caffeinate -dimsu` is running; `sleep`/`disksleep` are 0. Monitor may be off — that is fine.
+- **Windows 11 `r0se-desktop`** — `ssh User@192.168.10.89`, PowerShell (`;` not `&&`).
+  Clone `C:\dev\GeneralsX`, build `cmd /c C:\dev\cb.bat win64 x64`, stage
   `scripts/build/windows/setup-run-win64.ps1`, run folder `C:\dev\GeneralsX-run\`.
-  Drive with `scripts/build/windows/drive-run-win64.ps1` — read its header, it documents five
-  failure modes that each cost an hour.
-- **iPad Air 11-inch (M3)** — full self-contained build installed (`com.karlhaykal.generalszh`).
-  Package with `./scripts/build/ios/package-ios-zh.sh --install`. **Install over USB, not WiFi** —
-  a 2.8 GB install over `transportType: localNetwork` fails with "Connection interrupted" every time.
+  Launch the game with `C:\dev\gxrun_session1.ps1` (a transient `schtasks /it` task).
+  **Straight from SSH you land in session 0**, where DXVK enumerates zero adapters and
+  `W3DDisplay::init()` dies at `0xC0000005`. `standby-timeout-ac` is 0; session 1 is active.
+- **iPad Air 11-inch (M3)** — **UNPLUGGED and on an older build.** `sourceID` has moved, so it
+  cannot join until replugged and reinstalled: `./scripts/build/ios/package-ios-zh.sh --install`.
+  Install over USB, never WiFi.
+- **VPS `163.5.210.131`** — root, SSH key installed. **Password auth still on and the password was
+  pasted in chat — ROTATE IT.** `79.110.49.24` in the panel is the hypervisor NODE, not the VM; do
+  not log in there. Ubuntu 20.04.6 (EOL, glibc 2.31), Xeon E5-2680 v4, 4 cores.
+  **RAM is not what was sold:** dmidecode says 8192 MB and the kernel saw `8100900K/8388064K` at
+  boot, but `MemTotal` is 3941808 kB — ~4.3 GB held by `virtio_balloon`
+  (`/sys/bus/virtio/drivers/virtio_balloon/virtio0`, built-in so it does not show in `lsmod`).
+  A plan sold as "8 GB Dedicated" is ballooned. **Raise a ticket** — memory reclaimed mid-match
+  would stall the sim for every player.
 
-## Rules I care about
+### VPS build recipe (all of this is already done, recorded so it can be reproduced)
 
-1. Do not start new investigations while a big task is unfinished.
-2. **Verify before claiming.** Gate on exit codes, never grep counts.
-3. When something behaves unexpectedly, invoke `systematic-debugging` before the second theory.
-4. Keep work in background workflows.
-5. Never let the Mac or iOS build regress. Prove it with the build script's exit code.
-6. Count game processes. `pkill -f GeneralsXZH` then `pgrep -f GeneralsXZH | wc -l`. macOS `pgrep`
-   has no `-c`.
-7. Never write into the Steam folder. `scripts/build/windows/steam-manifest.ps1` before and after;
-   baseline `9793E5EE7FCEDAF250C7403B6D7D01C0426F993B260EB233E49B079A27134033`.
+```
+apt: Acquire::ForceIPv4 "true" in /etc/apt/apt.conf.d/99force-ipv4   # DNS returns IPv6-only
+                                                                     # mirrors and the box has no v6
+CMake 3.28.6 to /usr/local/bin        # distro 3.16 < the project's required 3.25
+g++-11 from ppa:ubuntu-toolchain-r/test
+vcpkg at /root/vcpkg, FULL clone      # --depth 1 fails: the manifest pins a baseline commit
+apt: autotools, nasm/yasm, SDL3 X11 dev deps, libpng/jpeg/tiff/webp-dev,
+     libav*/libsw*-dev  (libdecor-0-dev does not exist on 20.04 and is not needed)
+cmake --preset linux64-deploy -DRTS_BUILD_OPTION_FFMPEG=OFF
+```
 
-## Mistakes made overnight — do not repeat these
+**Use the preset** — a bare `cmake -S . -B` defaults to Unix Makefiles and collides with the
+preset's Ninja. Build with `setsid nohup`; a plain `nohup ... &` over SSH does not survive.
+`RTS_BUILD_OPTION_FFMPEG=OFF` is right for a server: ffmpeg is iOS-gated in the manifest so Linux
+wants *system* ffmpeg, and `FFmpegVideoPlayer.cpp` uses the 5.1+ `AVFrame::ch_layout` API while
+20.04 ships 4.2. A relay decodes no video.
 
-* **ALWAYS COMMIT BEFORE BUILDING THE BINARIES THAT WILL FACE EACH OTHER.** I built the Mac from a
-  dirty tree TWICE, giving it a different `sourceID` than Windows, which refuses the join. The
-  digest hashes `git ls-tree` at HEAD **plus a dirty-file overlay**. Check `source=` matches on both
-  peers BEFORE asking anyone to play.
-* **Check whether the game is already running before diagnosing a launch failure.** The engine takes
-  a named mutex shared with retail Generals and Generals Online, so the second instance exits 1 with
-  no crash, no message, nothing past the command-line parse. I read that as a crash in new code and
-  reverted working changes chasing it.
-* **`RTS_DEBUG_MULTI_INSTANCE` BREAKS LAN DISCOVERY.** It looks like it only renames the mutex, and
-  the narrow socket bind it enables really is `#ifndef _WIN32` — but `IPEnumeration.cpp:118-126`
-  also injects a **loopback** address per instance, and 127.0.0.1 sorts below 192.168.x.x so it
-  becomes the head of the list and the peer advertises itself on loopback. If you want it, rank
-  loopback last in `ipSortsBefore` first.
-* **Do not mask a desync in the CRC.** Quantising the transform before hashing makes the warning go
-  away while the peers keep simulating different worlds — a detected desync becomes an undetected
-  one.
-* **Do not enable `DEBUG_CRC` to investigate.** The `TheModuleFactory` block at `GameLogic.cpp` is
-  inside `#ifdef DEBUG_CRC`, so such a build hashes different bytes and desyncs by construction.
-* Four confident theories died to measurement overnight: "SimID will refuse the join", "it's the
-  train", "libm is exonerated", "start positions are swapped". Measure before asserting.
+## Bugs fixed this session that were NOT desyncs
 
-## Other traps
+* **Terrain draw window ignored camera height** (`W3DView::updateTerrain`). Sized from camera PITCH
+  only, and zoom scales the camera position uniformly so pitch is invariant under zoom — the window
+  stayed ~1350 world units at every zoom, and past the design height the rest renders black with
+  objects still drawn over it (the heightmap is `Set_Force_Visible(TRUE)` and bounded solely by the
+  draw size; props are frustum-culled with whole-map bounds). **NOT VISUALLY VERIFIED — zoom out
+  and look.**
+* **Three Linux build breaks**, all masked by one wrong assumption: `config-build.cmake` defined
+  `HAVE_STRLCPY`/`HAVE_WCSLCPY` for every UNIX. glibc gained `strlcpy` only in 2.38 and has NEVER
+  had `wcslcpy`. Now detected with `check_symbol_exists`. That then exposed unconditional
+  `strlcpy`/`strlcat` definitions in BOTH trees' `CompatLib/socket_compat.h`, now behind
+  `GX_COMPAT_PROVIDE_STRLCPY`. **CI runs `ubuntu-latest` (glibc 2.39) where `strlcpy` exists, so CI
+  stays green while every older-distro build breaks** — that is why this survived.
+* Options "Debug" button removed (hardcoded at 320,528, landed on the Scroll Speed slider and ate
+  its clicks). The floating debug overlay is untouched and is still the way into the Debug screen.
+* Headless CRC-mismatch crash — `TheInGameUI->message()` killed headless runs; guarded on
+  `m_headless`.
 
-* **`DEBUG_LOG` is `((void)0)` in every shipping preset.** Use `fprintf(stderr, ...)`. Existing
-  traces: `[SIMID] [LAN] [CRC] [GXCRC] [GXOBJ] [GXMTX] [GXPOS] [GXTRACE] [ARCHIVES] [INI]`.
-* **Never capture the game's stderr through a pipe** — a PowerShell scriptblock cast to `[Action]`
-  never runs, nothing drains the pipe, and the child blocks forever on its next write. Redirect to a
-  file with the shell.
-* **The game window moves between launches** on both platforms. Use client-relative coordinates.
-* **Move, dwell ~900 ms, THEN press.** The shell resolves the hovered control once per frame, so a
-  move bundled with the press hits the previously hovered control.
-* **Force the game foreground before clicking** and abort if it fails — `SetForegroundWindow` from a
-  background process is silently ignored, and clicks land in whatever is on top.
-* **Windows desktop is 3640x1920 with `VirtualScreen Y=-475`**; screenshot pixel = screen coord +
-  475. Queried over SSH from session 0 it lies and says 1024x768.
-* `DXVK_LOG_LEVEL=none` on Windows too, or DXVK writes one stderr line per frame.
+## Known-open, root-caused, NOT fixed
 
-## Machine state not in git
+* **AWOL players block victory.** `hasSinglePlayerBeenDefeated` (`VictoryConditions.cpp:328`) is
+  purely asset-based and never consults connection state, so "Exit to lobby" leaves your base
+  standing and nobody can win. `GameLogic::quit()` DOES send `MSG_SELF_DESTRUCT` for multiplayer,
+  but there is an early `return` when `canOpenQuitMenu()` is true and a `!isInSkirmishGame()` gate.
+  Which branch was hit needs a trace. **CAUTION:** `VictoryConditions::update` calls
+  `p->killPlayer()`, so it mutates simulation state — any fix must use state all peers agree on or
+  it will desync.
+* Defeated observers are never pulled to the score screen.
+* Windows still exits `0xC0000005` at the END of a headless replay run (after all frames complete
+  and CRCs are written) — cosmetic for now, but it is a real crash.
+* `%` unescaped in the SagePatch.ini generator (`GameEngine.cpp:518`) — writes `~5more`, and is UB.
+* Windows cursor path (`Win32Mouse.cpp:376`) — same relative-path class as the `.scb` bug.
 
-* **Windows Firewall rule, required:** `GeneralsX LAN test (Claude, removable)` — inbound UDP
-  8086+8088, program-scoped, RemoteAddress 192.168.10.0/24. Without it the Mac's announcements are
-  dropped silently.
-* **Windows `Options.ini` `IPAddress`** was `10.5.0.2` (NordVPN) and is now `192.168.10.89`. Backup
-  at `Options.ini.bak-claude`. **Check this first if discovery ever breaks.**
-* **`C:\dev\GeneralsX-run\Data\Cursors\`** — 52 `.ANI` files copied from the Steam install so the
-  Windows build renders a cursor. This is a WORKAROUND; the real bug is `Win32Mouse.cpp:376` using a
-  relative `data\cursors\...` path that ignores `CNC_GENERALS_ZH_PATH`.
+## Rules that earned their place
 
-## Also open
-
-* Windows cursor source fix (see above).
-* The JOIN FAILED modal clips its own text — the message is correct and useful, the window is too
-  small.
-* Windows boots silent, no movies — audio/video stubbed by construction at x64.
-* `-autoload` crash, undiagnosed.
+1. **Verify before claiming. Gate on the command's own exit code.**
+   `apt-get ... | tail` then `$?` reads *tail's* exit code — that cost a wasted VPS build cycle this
+   session. Capture `$?` before any pipe, and verify installs by checking the tool is present.
+2. **Grep filters can hide the evidence that disproves you.** "TerrainDrawDistanceScale is dead
+   code" came from a grep excluding every line containing `GlobalData` — and the real usage line is
+   `TheGlobalData->m_terrainDrawDistanceScale`. It is live at `W3DView.cpp:3753`. Filter by PATH.
+3. **A subagent's confidence is not evidence.** A determinism sweep and its adversarial verifier
+   both rated the `AISkirmishPlayer` trig finding high-confidence and both were right that the code
+   was raw libm and reachable — but neither checked whether the two platforms actually DIFFER there.
+   They do not. A probe compiled on both toolchains settled it in minutes.
+   Evidence: `docs/WORKDIR/evidence/trigconf*`.
+4. **"The CRC agreed until frame N" does not mean the simulations agreed.** `Object::crc` hashes
+   nine fields per object and never walks the behavior modules, so velocity, Locomotor internals and
+   AI goal/path state are invisible. Divergence can incubate unhashed for hundreds of frames.
+5. **Commit before building the binaries that will face each other**, or `sourceID` differs and the
+   join is refused. The digest hashes HEAD plus a dirty-file overlay.
+6. Count processes: `pkill -f GeneralsXZH` then `pgrep -f GeneralsXZH | wc -l`. macOS `pgrep` has
+   no `-c`.
+7. Never write into the Steam folder. Baseline manifest
+   `9793E5EE7FCEDAF250C7403B6D7D01C0426F993B260EB233E49B079A27134033` — unchanged.
