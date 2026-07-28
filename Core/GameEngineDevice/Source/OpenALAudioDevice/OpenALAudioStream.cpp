@@ -144,7 +144,34 @@ bool OpenALAudioStream::bufferData(uint8_t *data, size_t data_size, ALenum forma
 
     ALuint &current_buffer = m_buffers[m_current_buffer_idx];
     // GeneralsX @bugfix BenderAI 22/04/2026 Detect and reject invalid OpenAL buffer/queue operations.
-    while (alGetError() != AL_NO_ERROR) {}
+    //
+    // GeneralsX @bugfix Claude 28/07/2026 This drain was UNBOUNDED, and alGetError() does not
+    // always clear. With no current context OpenAL Soft returns AL_INVALID_OPERATION from every
+    // call - and logs a warning per call - so `while (alGetError() != AL_NO_ERROR) {}` never
+    // terminates. It spins at 100% CPU inside the formatter for that warning.
+    //
+    // That is a real hang, not a theoretical one. A headless Linux host froze here, reached by
+    // MultiPlayerLoadScreen::init -> OpenALAudioManager::update while loading the map, and never
+    // simulated a single frame. It presented as "the match never starts", which reads exactly
+    // like a network fault and cost a session to find. It is latent on EVERY platform, not a
+    // Linux quirk: any context that is lost or never created - a headless run, or an output
+    // device disconnected mid-game - freezes the whole process the same way.
+    //
+    // The error state is depth-1 per the spec (alGetError returns AND clears), so a handful of
+    // passes is already generous. Anything that will not clear means there is no usable context,
+    // and every AL call below would be a silent no-op, so fail the buffer instead of spinning.
+    // The caller already handles that: OpenALAudioStream::update's refill loop breaks on its
+    // `refreshedQueued <= num_queued` guard, so the stream degrades to silence and the engine
+    // keeps running.
+    const int maxErrorDrain = 16;
+    for (int drained = 0; alGetError() != AL_NO_ERROR; ++drained) {
+        if (drained >= maxErrorDrain) {
+            DEBUG_LOG(("OpenALAudioStream::bufferData: AL error state will not clear (no current "
+                "context?) - dropping this buffer\n"));
+            return false;
+        }
+    }
+
     alBufferData(current_buffer, format, data, data_size, samplerate);
     ALenum err = alGetError();
     if (err != AL_NO_ERROR) {
