@@ -1,0 +1,13 @@
+Jul 28 21:00:19 Ubuntu-2404 node[165912]: 2026-07-28T21:00:19.156Z [8086] room gxtest-f96603c4: 10.42.0.1 joined from 10.200.0.2:8086 (2/8)
+Jul 28 21:01:02 Ubuntu-2404 node[165912]: 2026-07-28T21:01:02.076Z [8086] room gxtest-f96603c4: 10.42.0.2 joined from 10.200.1.2:8086 (2/8)
+Jul 28 21:01:06 Ubuntu-2404 node[165912]: 2026-07-28T21:01:06.429Z [8086] room gxtest-f96603c4: 10.42.0.3 joined from 185.115.100.15:8086 (3/8)
+Jul 28 21:01:10 Ubuntu-2404 node[165912]: 2026-07-28T21:01:10.693Z [8086] 1 room(s), forwarded 73 packets / 35697 bytes, dropped 0 from unknown senders, refused 0, unrouted 0, headerless 0
+Jul 28 21:06:10 Ubuntu-2404 node[165912]: 2026-07-28T21:06:10.693Z [8086] 1 room(s), forwarded 164 packets / 80196 bytes, dropped 0 from unknown senders, refused 0, unrouted 0, headerless 0
+Jul 28 21:09:07 Ubuntu-2404 node[165912]: 2026-07-28T21:09:07.631Z [8086] room gxtest-f96603c4: 10.42.0.1 joined from 10.200.0.2:8086 (1/8)
+Jul 28 21:09:49 Ubuntu-2404 node[165912]: 2026-07-28T21:09:49.641Z [8086] room gxtest-f96603c4: 10.42.0.2 joined from 10.200.1.2:8086 (2/8)
+Jul 28 21:09:54 Ubuntu-2404 node[165912]: 2026-07-28T21:09:54.901Z [8086] room gxtest-f96603c4: 10.42.0.3 joined from 185.115.100.15:8086 (3/8)
+Jul 28 21:09:56 Ubuntu-2404 node[165912]: 2026-07-28T21:09:56.291Z [8088] room gxtest-f96603c4: 10.42.0.1 joined from 10.200.0.2:8088 (1/8)
+Jul 28 21:09:56 Ubuntu-2404 node[165912]: 2026-07-28T21:09:56.363Z [8088] room gxtest-f96603c4: 10.42.0.3 joined from 185.115.100.15:8088 (2/8)
+Jul 28 21:09:56 Ubuntu-2404 node[165912]: 2026-07-28T21:09:56.401Z [8088] room gxtest-f96603c4: 10.42.0.2 joined from 10.200.1.2:8088 (3/8)
+Jul 28 21:11:10 Ubuntu-2404 node[165912]: 2026-07-28T21:11:10.704Z [8086] 1 room(s), forwarded 58 packets / 28362 bytes, dropped 0 from unknown senders, refused 0, unrouted 0, headerless 0
+Jul 28 21:11:10 Ubuntu-2404 node[165912]: 2026-07-28T21:11:10.705Z [8088] 1 room(s), forwarded 1657 packets / 80986 bytes, dropped 0 from unknown senders, refused 0, unrouted 2, headerless 0
