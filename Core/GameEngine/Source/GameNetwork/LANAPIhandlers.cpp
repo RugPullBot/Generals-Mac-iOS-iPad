@@ -621,8 +621,37 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
 
 void LANAPI::handleJoinAccept( LANMessage *msg, UnsignedInt senderIP )
 {
-	if (msg->GameJoined.playerIP == m_localIP) // Is it for us?
+	// GeneralsX @bugfix Claude 28/07/2026 NAT: the joiner and the host do not agree on the
+	// joiner's address.
+	//
+	// The stock test is `msg->GameJoined.playerIP == m_localIP`, which assumes the address the
+	// host saw is the address we know ourselves by. That holds on a LAN and fails through NAT:
+	// the host fills playerIP with the packet's source address (our PUBLIC IP), while m_localIP
+	// is the private one. The accept is then dropped in silence - the host logs
+	// "player joined slot 1" while the joiner sits until its deadline and reports a timeout, so
+	// both machines' logs look like the other end is at fault.
+	//
+	// Accept the second form only for a direct-connect join we ourselves initiated to this exact
+	// host. m_directConnectRemoteIP is zero for ordinary LAN joins, so LAN behaviour is
+	// unchanged, and an unsolicited accept from any other address is still ignored.
+	const Bool addressedToUs = (msg->GameJoined.playerIP == m_localIP);
+	const Bool answersOurDirectConnect =
+		(m_directConnectRemoteIP != 0) && (senderIP == m_directConnectRemoteIP);
+
+	if (addressedToUs || answersOurDirectConnect) // Is it for us?
 	{
+		// Adopt the address the host assigned us. Every peer in this game will refer to us by it,
+		// and the slot list we are about to parse is keyed on it - keeping the private address
+		// here would leave us unable to find our own slot.
+		if (!addressedToUs && msg->GameJoined.playerIP != 0)
+		{
+			DEBUG_LOG(("handleJoinAccept - NAT: host sees us as %d.%d.%d.%d, we call ourselves %d.%d.%d.%d",
+				PRINTF_IP_AS_4_INTS(msg->GameJoined.playerIP), PRINTF_IP_AS_4_INTS(m_localIP)));
+			fprintf(stderr, "[LAN] NAT: host sees us as %d.%d.%d.%d, local is %d.%d.%d.%d\n",
+				PRINTF_IP_AS_4_INTS(msg->GameJoined.playerIP), PRINTF_IP_AS_4_INTS(m_localIP));
+			fflush(stderr);
+		}
+
 		if (m_pendingAction == ACT_JOIN) // Are we trying to join?
 		{
 			// GeneralsX @feature Claude 27/07/2026 The host may be the un-upgraded machine:
