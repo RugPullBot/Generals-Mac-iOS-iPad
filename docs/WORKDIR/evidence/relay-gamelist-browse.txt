@@ -1,0 +1,14 @@
+=== macOS browsing the relay over the internet, -lanlist ===
+[GXLAN] relay mode: local identity is the virtual address 10.42.0.3 (relay 163.5.210.131, room gxtest-f96603c4)
+[GXLAN] join action timeout 60000 ms
+[GXLAN] local IP 10.42.0.3
+[GXLAN] 1 game(s) listed
+[GXLAN]   room=gxtest-f96603c4 host=10.42.0.1 players=2/8 name="Ubuntu-2404" map="maps\twilight flame\twilight flame.map"
+
+=== the relay's own view ===
+Jul 28 21:42:33 Ubuntu-2404 node[168533]: 2026-07-28T21:42:33.705Z [8086] room gxtest-f96603c4: delisted "0A2A000101249D48" - host stopped advertising
+Jul 28 21:42:53 Ubuntu-2404 node[168533]: 2026-07-28T21:42:53.910Z [8086] room gxtest-f96603c4: listed as "0A2A0001012733A9" on maps\twilight flame\twilight flame.map (2/8)
+Jul 28 21:43:13 Ubuntu-2404 node[168533]: 2026-07-28T21:43:13.717Z [8086] room gxtest-f96603c4: delisted "0A2A0001012733A9" - host stopped advertising
+Jul 28 21:44:22 Ubuntu-2404 node[168533]: 2026-07-28T21:44:22.572Z [8086] room gxtest-f96603c4: 10.42.0.1 joined from 10.200.0.2:8086 (1/8)
+Jul 28 21:44:27 Ubuntu-2404 node[168533]: 2026-07-28T21:44:27.672Z [8086] room gxtest-f96603c4: listed as "Ubuntu-2404" on maps\twilight flame\twilight flame.map (2/8)
+Jul 28 21:48:53 Ubuntu-2404 node[168533]: 2026-07-28T21:48:53.127Z [8086] room gxtest-f96603c4: 10.42.0.3 joined from 185.115.100.15:8086 (2/8)

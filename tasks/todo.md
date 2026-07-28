@@ -127,9 +127,9 @@ that crashes drops off the list on its own.
 - [x] 12. Relay: refuse a **duplicate** virtual IP within a room, the same way a full room is
       refused. Today two players sharing a `LocalVirtualIP` look to the relay like one member that
       keeps moving, which is the single most likely way to break a lobby and is currently invisible.
-- [ ] 13. Client: `Transport::setRelayRoom()` — rebuild the registration at runtime so a browser
+- [x] 13. Client: `Transport::setRelayRoom()` — rebuild the registration at runtime so a browser
       selection can switch rooms without an `Options.ini` edit and a restart.
-- [ ] 14. Client: send `GXADV` while hosting, from the same place the registration keepalive is
+- [x] 14. Client: send `GXADV` while hosting, from the same place the registration keepalive is
       sent, so it inherits the NAT-keepalive cadence for free.
 - [ ] 15. Client: query `GXLIST` and populate the **Direct Connect** screen's remote list with live
       games. Direct Connect, not the Online tab: the Online screens are wired through the GameSpy
