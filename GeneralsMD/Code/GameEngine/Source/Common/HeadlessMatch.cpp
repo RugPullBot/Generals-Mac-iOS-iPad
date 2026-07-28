@@ -485,6 +485,17 @@ Bool HeadlessMatch::runMatch()
 	const Int frameLimit = TheGlobalData->m_lanFrameLimit;
 	Bool sawMismatch = FALSE;
 
+	// OnGameStart only POSTS MSG_NEW_GAME; TheGameLogic does not report isInGame() until that
+	// message has been propagated and handled. So "started" and "in game" are not the same
+	// instant, and !isInGame() cannot be used as the game-over test until the game has actually
+	// been entered once.
+	//
+	// Getting this wrong is a race that hides on fast paths: macOS and Windows both happened to
+	// process the message inside the first update() and ran fine for thousands of frames, while
+	// Linux did not and exited having simulated 0 frames - reporting success. A third platform
+	// is what exposed it.
+	Bool everInGame = FALSE;
+
 	// Reuse GameEngine::update rather than open-coding the subsystem order. That ordering
 	// (client, message stream, network, then logic, all inside VERIFY_CRC) is load-bearing
 	// for determinism, and a second copy of it here would drift from the real one.
@@ -505,9 +516,13 @@ Bool HeadlessMatch::runMatch()
 			break;
 		}
 
+		if (TheGameLogic->isInGame())
+			everInGame = TRUE;
+
 		// Once the match ends the logic drops out of the game; without this the loop would
-		// spin in the post-game shell forever.
-		if (s_gameStarted && !TheGameLogic->isInGame())
+		// spin in the post-game shell forever. Gate on everInGame, not s_gameStarted - see the
+		// comment above the declaration.
+		if (everInGame && !TheGameLogic->isInGame())
 		{
 			headlessLog("game over at frame %d", (Int)TheGameLogic->getFrame());
 			break;
@@ -515,6 +530,14 @@ Bool HeadlessMatch::runMatch()
 	}
 
 	headlessLog("simulated %d frames", (Int)TheGameLogic->getFrame());
+
+	// A run that simulated nothing is a failure, not a success. Reporting exit 0 here is how the
+	// race above stayed invisible: the process looked like a clean run that simply had no work.
+	if (TheGameLogic->getFrame() == 0)
+	{
+		headlessLog("FAILED: the match never simulated a single frame");
+		return FALSE;
+	}
 
 	if (sawMismatch)
 	{
