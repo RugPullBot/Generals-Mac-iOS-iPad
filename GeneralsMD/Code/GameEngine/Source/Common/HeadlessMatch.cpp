@@ -367,15 +367,41 @@ Bool HeadlessMatch::setUpLan()
 	// Binding is already handled: Transport::init calls initRelay() and forces INADDR_ANY when
 	// relay mode is on, precisely because a virtual address can never be bound.
 	OptionPreferences prefs;
-	const UnsignedInt virtualIP = prefs.getLocalVirtualIP();
-	const Bool relayMode = !prefs.getRelayAddress().isEmpty() && (virtualIP != 0);
+	const AsciiString relayHost = prefs.getRelayAddress();
 
-	UnsignedInt ip;
-	if (relayMode)
+	UnsignedInt ip = 0;
+	if (!relayHost.isEmpty())
 	{
-		ip = virtualIP;
+		AsciiString room = prefs.getRelayRoom();
+		if (room.isEmpty())
+			room = "default";
+
+		// Ask the relay who we are before anything snapshots an identity. A relay-allocated
+		// address is what lets strangers play: hand-configured ones have to be unique by human
+		// agreement, and everyone who takes the default is 10.42.0.1.
+		UnsignedInt assignedIP = 0;
+		if (Transport::requestRelayIdentity(relayHost.str(), room.str(), assignedIP))
+		{
+			Transport::setAssignedIdentity(room.str(), assignedIP);
+			ip = assignedIP;
+			headlessLog("relay assigned us %d.%d.%d.%d in room %s",
+				PRINTF_IP_AS_4_INTS(ip), room.str());
+		}
+		else
+		{
+			// Falling back keeps LAN play and existing hand-configured setups working. It is
+			// logged loudly because two peers that both fall back to the default address will
+			// collide, and that presents as a lobby that corrupts rather than one that refuses.
+			ip = prefs.getLocalVirtualIP();
+			headlessLog("relay did not assign an identity; falling back to configured LocalVirtualIP %d.%d.%d.%d",
+				PRINTF_IP_AS_4_INTS(ip));
+		}
+	}
+
+	if (ip != 0)
+	{
 		headlessLog("relay mode: local identity is the virtual address %d.%d.%d.%d (relay %s, room %s)",
-			PRINTF_IP_AS_4_INTS(ip), prefs.getRelayAddress().str(), prefs.getRelayRoom().str());
+			PRINTF_IP_AS_4_INTS(ip), relayHost.str(), prefs.getRelayRoom().str());
 	}
 	else
 	{

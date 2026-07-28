@@ -130,6 +130,25 @@ public:
 	};
 	static const Int MAX_RELAY_LISTINGS = 32;
 
+	/// GeneralsX @feature Matchmaking. Ask the relay which virtual address we are in a room, over
+	/// a throwaway socket, BEFORE any transport or lobby object exists.
+	///
+	/// The ordering is not negotiable. LANGameInfo snapshots the local IP when it is constructed,
+	/// and AmIHost and slot matching read that snapshot rather than TheLAN - so an identity that
+	/// arrives after SetLocalIP reaches nothing that matters. This is why it is a static on its
+	/// own socket instead of a method on the live transport.
+	///
+	/// Returns FALSE if there is no relay configured or it did not answer, and the caller then
+	/// falls back to the configured LocalVirtualIP - which is what keeps LAN play and existing
+	/// hand-configured setups working unchanged.
+	static Bool requestRelayIdentity( const char *relayHost, const char *room,
+		UnsignedInt &outVirtualIP );
+
+	/// Pin the identity and room that initRelay should use, overriding Options.ini. Set from the
+	/// result of requestRelayIdentity before the transport is initialised.
+	static void setAssignedIdentity( const char *room, UnsignedInt virtualIP );
+	static void clearAssignedIdentity();
+
 	/// Ask the relay what games exist. Replies arrive asynchronously on this same socket, so the
 	/// caller pumps for a moment and then reads the list; there is no blocking form on purpose.
 	void requestGameList();

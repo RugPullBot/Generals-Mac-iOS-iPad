@@ -1,0 +1,18 @@
+Jul 28 23:28:10 Ubuntu-2404 node[168533]: 2026-07-28T23:28:10.945Z [8086] room gxtest-f96603c4: 10.42.0.5 joined from 185.115.100.15:8086 (2/8)
+Jul 28 23:33:03 Ubuntu-2404 node[168533]: 2026-07-28T23:33:03.351Z [8086] 1 room(s), 1 listed, forwarded 53 packets / 25293 bytes, dropped 0 from unknown senders, refused 0, unrouted 0, headerless 52, browsed 0, dupe-suspect 0
+Jul 28 23:38:03 Ubuntu-2404 node[168533]: 2026-07-28T23:38:03.354Z [8086] 1 room(s), 1 listed, forwarded 44 packets / 20988 bytes, dropped 0 from unknown senders, refused 0, unrouted 0, headerless 44, browsed 0, dupe-suspect 0
+Jul 28 23:38:46 Ubuntu-2404 node[168533]: 2026-07-28T23:38:46.115Z [8086] room gxtest-f96603c4: 10.42.0.3 joined from 185.115.100.15:51421 (3/8)
+Jul 28 23:39:05 Ubuntu-2404 node[168533]: 2026-07-28T23:39:05.056Z [8086] room gxtest-f96603c4: 10.42.0.4 joined from 185.115.100.15:53592 (4/8)
+Jul 28 23:41:19 Ubuntu-2404 node[168533]: 2026-07-28T23:41:19.519Z [8088] room gxtest-f96603c4: 10.42.0.1 joined from 10.200.0.2:8088 (1/8)
+Jul 28 23:41:19 Ubuntu-2404 node[168533]: 2026-07-28T23:41:19.649Z [8088] room gxtest-f96603c4: 10.42.0.3 joined from 185.115.100.15:8088 (2/8)
+Jul 28 23:41:19 Ubuntu-2404 node[168533]: 2026-07-28T23:41:19.721Z [8088] room gxtest-f96603c4: 10.42.0.4 joined from 185.115.100.15:29224 (3/8)
+Jul 28 23:41:35 Ubuntu-2404 node[168533]: 2026-07-28T23:41:35.678Z [8086] room gxtest-f96603c4: delisted "Ubuntu-2404" - host stopped advertising
+Jul 28 23:43:03 Ubuntu-2404 node[168533]: 2026-07-28T23:43:03.355Z [8086] 1 room(s), 0 listed, forwarded 230 packets / 112446 bytes, dropped 0 from unknown senders, refused 0, unrouted 7, headerless 2, browsed 4, dupe-suspect 0
+Jul 28 23:43:03 Ubuntu-2404 node[168533]: 2026-07-28T23:43:03.357Z [8088] 1 room(s), 0 listed, forwarded 3349 packets / 191251 bytes, dropped 0 from unknown senders, refused 0, unrouted 4, headerless 0, browsed 0, dupe-suspect 0
+Jul 28 23:48:03 Ubuntu-2404 node[168533]: 2026-07-28T23:48:03.355Z [8086] 1 room(s), 0 listed, forwarded 6 packets / 2934 bytes, dropped 0 from unknown senders, refused 0, unrouted 0, headerless 0, browsed 1, dupe-suspect 0
+Jul 28 23:48:03 Ubuntu-2404 node[168533]: 2026-07-28T23:48:03.358Z [8088] 1 room(s), 0 listed, forwarded 10345 packets / 515411 bytes, dropped 0 from unknown senders, refused 0, unrouted 0, headerless 0, browsed 0, dupe-suspect 0
+Jul 28 23:49:46 Ubuntu-2404 node[168533]: 2026-07-28T23:49:46.574Z [8086] room gxtest-f96603c4: 10.42.0.1 joined from 10.200.0.2:8086 (2/8)
+Jul 28 23:49:46 Ubuntu-2404 node[168533]: 2026-07-28T23:49:46.575Z [8086] room gxtest-f96603c4: listed as "Ubuntu-2404" on maps\twilight flame\twilight flame.map (4/8)
+Jul 28 23:50:05 Ubuntu-2404 node[168533]: 2026-07-28T23:50:05.700Z [8086] room gxtest-f96603c4: delisted "Ubuntu-2404" - host stopped advertising
+Jul 28 23:53:03 Ubuntu-2404 node[168533]: 2026-07-28T23:53:03.360Z [8086] 1 room(s), 0 listed, forwarded 1 packets / 489 bytes, dropped 0 from unknown senders, refused 0, unrouted 1, headerless 0, browsed 0, dupe-suspect 0
+Jul 28 23:53:03 Ubuntu-2404 node[168533]: 2026-07-28T23:53:03.362Z [8088] 0 room(s), 0 listed, forwarded 3512 packets / 135749 bytes, dropped 0 from unknown senders, refused 0, unrouted 0, headerless 0, browsed 0, dupe-suspect 0

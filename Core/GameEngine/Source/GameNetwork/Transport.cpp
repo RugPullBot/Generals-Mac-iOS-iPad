@@ -38,6 +38,16 @@ static const char RELAY_REGISTRATION_TAG[] = "GXRLY";
 // GeneralsX @feature Server list. Advertising a game is what puts it in the relay's browser, and
 // NOT advertising is what keeps a private game out of it. See tools/relay/relay.js.
 static const char RELAY_ADVERTISE_TAG[] = "GXADV";
+// GeneralsX @feature Matchmaking. Asks the relay to allocate our virtual address, so players do
+// not have to agree on one by hand. See Transport::requestRelayIdentity.
+static const char RELAY_WHO_TAG[] = "GXWHO";
+
+// The assigned identity, pinned before the transport exists. File-scope rather than threaded
+// through LANAPI because SetLocalIP -> Transport::init -> initRelay is the path that consumes it,
+// and every caller in between would otherwise have to carry it for no other reason. Declared here
+// so initRelay, which sits above the accessors, can read it.
+static char s_assignedRoom[32] = { 0 };
+static UnsignedInt s_assignedVirtualIP = 0;
 static const Int RELAY_MAX_ROOM_LEN = 31;
 static const UnsignedInt RELAY_REGISTRATION_INTERVAL = 5000;	// ms
 
@@ -160,18 +170,28 @@ void Transport::initRelay( UnsignedShort port )
 		return;
 	}
 
-	// Only OUR identity is configured now. The destination of each packet comes from the game
-	// itself - peers learn each other's virtual addresses from the slot list, exactly as they
-	// would learn real ones on a LAN - so there is no longer a PeerVirtualIP to keep in sync, and
-	// no two-player assumption baked into the configuration.
-	const UnsignedInt localVirtualIP = prefs.getLocalVirtualIP();
+	// Our identity, and only ours. Each packet's DESTINATION comes from the game itself - peers
+	// learn each other's virtual addresses from the slot list, exactly as they would learn real
+	// ones on a LAN - so there is no PeerVirtualIP to keep in sync and no two-player assumption
+	// baked into the configuration.
+	//
+	// An address ASSIGNED by the relay wins over the configured one. That is what makes public
+	// matchmaking possible: hand-configured addresses have to be unique by human agreement, which
+	// does not survive contact with strangers who all took the default.
+	UnsignedInt localVirtualIP = s_assignedVirtualIP;
+	if (localVirtualIP == 0)
+		localVirtualIP = prefs.getLocalVirtualIP();
+
 	if (localVirtualIP == 0)
 	{
-		DEBUG_LOG(("Transport::initRelay - relay disabled: LocalVirtualIP must be set to this machine's virtual 10.x address"));
+		DEBUG_LOG(("Transport::initRelay - relay disabled: no assigned identity and no LocalVirtualIP set"));
 		return;
 	}
 
-	AsciiString room = prefs.getRelayRoom();
+	// The room the identity was assigned IN wins, for the same reason the identity does: an
+	// address allocated for room A means nothing in room B, and using it there would collide with
+	// whoever the relay really gave that number to.
+	AsciiString room = (s_assignedRoom[0] != '\0') ? AsciiString(s_assignedRoom) : prefs.getRelayRoom();
 	if (room.isEmpty())
 	{
 		room = "default";
@@ -324,6 +344,83 @@ void Transport::clearGameAdvertisement()
 {
 	m_advertisement[0] = '\0';
 	m_advertisementLen = 0;
+}
+
+void Transport::setAssignedIdentity( const char *room, UnsignedInt virtualIP )
+{
+	if (room == nullptr || virtualIP == 0)
+	{
+		clearAssignedIdentity();
+		return;
+	}
+	strlcpy(s_assignedRoom, room, sizeof(s_assignedRoom));
+	s_assignedVirtualIP = virtualIP;
+}
+
+void Transport::clearAssignedIdentity()
+{
+	s_assignedRoom[0] = '\0';
+	s_assignedVirtualIP = 0;
+}
+
+Bool Transport::requestRelayIdentity( const char *relayHost, const char *room,
+	UnsignedInt &outVirtualIP )
+{
+	outVirtualIP = 0;
+	if (relayHost == nullptr || *relayHost == '\0' || room == nullptr || *room == '\0')
+		return FALSE;
+
+	const UnsignedInt relayAddr = ResolveIP(AsciiString(relayHost));
+	if (relayAddr == 0 || relayAddr == INADDR_NONE)
+		return FALSE;
+
+	// A throwaway socket on an ephemeral port. Deliberately NOT the game's port: this runs before
+	// the real transport binds, and reusing 8086 here would collide with it a moment later.
+	UDP sock;
+	if (sock.Bind((UnsignedInt)INADDR_ANY, 0) != 0)
+		return FALSE;
+
+	char query[64];
+	const Int queryLen = snprintf(query, sizeof(query), "%s %s", RELAY_WHO_TAG, room);
+	if (queryLen <= 0 || queryLen >= (Int)sizeof(query))
+		return FALSE;
+
+	// Retry rather than ask once: this is UDP over the internet before a game exists, and losing
+	// the only request would silently drop us back to the configured address - which, for two
+	// players who both took the default, is the identity collision this whole mechanism removes.
+	for (Int attempt = 0; attempt < 5; ++attempt)
+	{
+		sock.Write((const unsigned char *)query, queryLen, relayAddr, RELAY_LOBBY_PORT);
+
+		const UnsignedInt deadline = timeGetTime() + 400;
+		while (timeGetTime() < deadline)
+		{
+			unsigned char buf[128];
+			sockaddr_in from;
+			const Int len = sock.Read(buf, sizeof(buf) - 1, &from);
+			if (len > 0)
+			{
+				buf[len] = '\0';
+				char gotRoom[32] = { 0 };
+				char gotIP[24] = { 0 };
+				if (sscanf((const char *)buf, "GXYOU %31s %23s", gotRoom, gotIP) == 2
+					&& strcmp(gotRoom, room) == 0 && gotIP[0] != '-')
+				{
+					const UnsignedInt assigned = ResolveIP(AsciiString(gotIP));
+					if (assigned != 0 && assigned != INADDR_NONE)
+					{
+						outVirtualIP = assigned;
+						DEBUG_LOG(("Transport::requestRelayIdentity - relay assigned %s in room '%s'", gotIP, room));
+						return TRUE;
+					}
+				}
+			}
+			Sleep(10);
+		}
+	}
+
+	DEBUG_LOG(("Transport::requestRelayIdentity - no answer from %s for room '%s'", relayHost, room));
+	return FALSE;
 }
 
 void Transport::requestGameList()
