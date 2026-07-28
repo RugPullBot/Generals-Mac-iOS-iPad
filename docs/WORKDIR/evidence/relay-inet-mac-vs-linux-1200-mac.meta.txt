@@ -1,0 +1,12 @@
+[GXLAN] relay mode: local identity is the virtual address 10.42.0.2 (relay 163.5.210.131, room gxtest-f96603c4)
+[GXLAN] join action timeout 60000 ms
+[LAN] localIP=10.42.0.2 broadcast=255.255.255.255 port=8086 transportInit=ok
+[GXLAN] local IP 10.42.0.2
+[GXLAN] joining 10.42.0.1
+[GXLAN] joined game
+[GXLAN] game starting
+[GXSCRIPT] newMap ENTER seed=2436414128
+[GXSCRIPT] newMap EXIT seed=2585048188 delayDraws=91 noDelay=315
+[GXAI] afterScriptNewMap seed=2585048188 aiPlayers=1 computers=3 sides=6 sidesWithScripts=3 skirmishSides=14
+[GXLAN] frame limit 1200 reached
+[GXLAN] simulated 1200 frames
