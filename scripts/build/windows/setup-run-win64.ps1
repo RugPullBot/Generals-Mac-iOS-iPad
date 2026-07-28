@@ -92,6 +92,27 @@ if (Test-Path $scriptsSrc) {
     Write-Warning "[setup] $scriptsSrc NOT FOUND - matches with AI players will desync against other platforms"
 }
 
+# GeneralsX @bugfix Claude 28/07/2026 Stage MapsZH.big. THIRD instance of the same defect as
+# Data\Scripts above and Data\Cursors: the map cache is scanned relative to the WORKING
+# DIRECTORY, so with the run folder holding no .big files it indexed only the user maps under
+# Documents and found zero built-in "maps\..." entries. The Mac game folder is self-contained
+# (25 .big files including this one) and had them all, so the two machines disagreed about which
+# maps exist.
+#
+# The symptom is remote and misleading: the JOINER reports "You do not have the map" for a map it
+# can see in single player, while the HOST just logs a peer that joined and never accepted. It
+# cost a full cross-platform soak run to localise.
+#
+# Same WORKAROUND layer as the other two - fixing the engine's path resolution to honour
+# CNC_GENERALS_ZH_PATH would remove all three.
+$mapsSrc = Join-Path $steam "MapsZH.big"
+if (Test-Path $mapsSrc) {
+    Copy-Item $mapsSrc $run -Force
+    Write-Host "[setup] staged MapsZH.big ($([math]::Round((Get-Item "$run\MapsZH.big").Length/1MB,1)) MB)"
+} else {
+    Write-Warning "[setup] $mapsSrc NOT FOUND - built-in maps will be missing and cross-platform joins will fail on map availability"
+}
+
 @"
 # Logs and shader cache are pinned inside the run folder so nothing lands in Steam.
 dxvk.logLevel = info

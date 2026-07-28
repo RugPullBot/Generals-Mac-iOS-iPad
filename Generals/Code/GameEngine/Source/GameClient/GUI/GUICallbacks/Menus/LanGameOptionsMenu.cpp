@@ -376,10 +376,19 @@ void StartPressed()
 
 }
 
+// GeneralsX @bugfix Claude 28/07/2026 Null-guard the widgets. Mirrors the GeneralsMD fix.
+// These are only assigned by LanGameOptionsMenuInit, but the caller is
+// LANGameInfo::resetAccepted() - a STATE operation on the slot list that LANAPI::OnPlayerJoin
+// performs for every join. Any path that resets accepts without the lobby screen being up
+// therefore dereferences a null window. Not reachable from the UI flow, where the widgets
+// always exist, which is why it went unnoticed; it crashed a headless host in GeneralsMD the
+// instant a peer joined.
 void LANEnableStartButton(Bool enabled)
 {
-	buttonStart->winEnable(enabled);
-	buttonSelectMap->winEnable(enabled);
+	if (buttonStart != nullptr)
+		buttonStart->winEnable(enabled);
+	if (buttonSelectMap != nullptr)
+		buttonSelectMap->winEnable(enabled);
 }
 
 static void handleColorSelection(int index)
