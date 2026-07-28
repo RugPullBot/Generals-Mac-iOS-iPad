@@ -422,7 +422,14 @@ Bool HeadlessMatch::publishGameOptions()
 		}
 	}
 
-	TheLAN->RequestGameOptions(GameInfoToAsciiString(game), true);
+	// Log the serialised slot list. Without this there is no way to confirm from the logs that
+	// -lanai actually placed an AI, and a soak that silently ran human-only would "prove" a fix
+	// to the AI-only desync class while never exercising it - skirmish scripts attach ONLY for AI
+	// players. AI slots appear as CE/CM/CB in the S= field.
+	const AsciiString opts = GameInfoToAsciiString(game);
+	headlessLog("game options: %s", opts.str());
+
+	TheLAN->RequestGameOptions(opts, true);
 	return TRUE;
 }
 
