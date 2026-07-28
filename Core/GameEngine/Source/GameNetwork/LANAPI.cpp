@@ -970,7 +970,7 @@ void LANAPI::RequestGameOptions( AsciiString gameOptions, Bool isPublic, Unsigne
 		// A browser wants to show who is hosting, so advertise the host player's name.
 		AsciiString gameName;
 		GameSlot *hostSlot = m_currentGame->getSlot(0);
-		if (hostSlot != nullptr && hostSlot->getName().isNotEmpty())
+		if (hostSlot != nullptr && !hostSlot->getName().isEmpty())
 			gameName.translate(hostSlot->getName());
 		else
 			gameName.translate(m_currentGame->getName());
