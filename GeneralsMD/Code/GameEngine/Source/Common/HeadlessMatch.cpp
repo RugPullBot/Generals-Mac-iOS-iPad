@@ -519,6 +519,12 @@ Bool HeadlessMatch::runMatch()
 	// is what exposed it.
 	Bool everInGame = FALSE;
 
+	// Track the high-water mark as we go. TheGameLogic's frame counter is RESET when the game is
+	// torn down, so reading it after the loop reports the post-teardown value: a run that
+	// simulated 370 frames logged "simulated 1 frames" while its own [GXCRC] output ran to
+	// f=370. The log has to agree with the evidence beside it.
+	UnsignedInt maxFrame = 0;
+
 	// Reuse GameEngine::update rather than open-coding the subsystem order. That ordering
 	// (client, message stream, network, then logic, all inside VERIFY_CRC) is load-bearing
 	// for determinism, and a second copy of it here would drift from the real one.
@@ -533,7 +539,7 @@ Bool HeadlessMatch::runMatch()
 		if (TheNetwork != nullptr && TheNetwork->sawCRCMismatch())
 			sawMismatch = TRUE;
 
-		if (frameLimit > 0 && TheGameLogic->getFrame() >= (UnsignedInt)frameLimit)
+		if (frameLimit > 0 && maxFrame >= (UnsignedInt)frameLimit)
 		{
 			headlessLog("frame limit %d reached", frameLimit);
 			break;
@@ -541,22 +547,24 @@ Bool HeadlessMatch::runMatch()
 
 		if (TheGameLogic->isInGame())
 			everInGame = TRUE;
+		if (TheGameLogic->getFrame() > maxFrame)
+			maxFrame = TheGameLogic->getFrame();
 
 		// Once the match ends the logic drops out of the game; without this the loop would
 		// spin in the post-game shell forever. Gate on everInGame, not s_gameStarted - see the
 		// comment above the declaration.
 		if (everInGame && !TheGameLogic->isInGame())
 		{
-			headlessLog("game over at frame %d", (Int)TheGameLogic->getFrame());
+			headlessLog("game over at frame %d", (Int)maxFrame);
 			break;
 		}
 	}
 
-	headlessLog("simulated %d frames", (Int)TheGameLogic->getFrame());
+	headlessLog("simulated %d frames", (Int)maxFrame);
 
 	// A run that simulated nothing is a failure, not a success. Reporting exit 0 here is how the
 	// race above stayed invisible: the process looked like a clean run that simply had no work.
-	if (TheGameLogic->getFrame() == 0)
+	if (maxFrame == 0)
 	{
 		headlessLog("FAILED: the match never simulated a single frame");
 		return FALSE;
