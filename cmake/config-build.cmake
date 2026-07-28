@@ -88,10 +88,42 @@ endif()
 
 if(UNIX)
     target_compile_definitions(core_config INTERFACE _UNIX)
-    # Ubuntu 24.04+ and macOS have strlcpy/strlcat/wcslcpy/wcslcat in libc
-    # GeneralsX @TheSuperHackers @build BenderAI 11/02/2026 Added guards for glibc 2.38+
-    target_compile_definitions(core_config INTERFACE 
-        HAVE_STRLCPY HAVE_STRLCAT HAVE_WCSLCPY HAVE_WCSLCAT)
+
+    # GeneralsX @bugfix Claude 28/07/2026 DETECT these instead of assuming them.
+    #
+    # This previously defined HAVE_STRLCPY/HAVE_STRLCAT/HAVE_WCSLCPY/HAVE_WCSLCAT unconditionally
+    # for every UNIX, with a comment saying "Ubuntu 24.04+ and macOS have" them. That is wrong on
+    # two counts and it breaks the Linux build outright:
+    #
+    #   * glibc only gained strlcpy/strlcat in 2.38 (Ubuntu 23.10+). On anything older - Ubuntu
+    #     20.04 ships glibc 2.31 - they do not exist.
+    #   * glibc has NEVER provided wcslcpy/wcslcat, at any version. They are BSD/macOS functions.
+    #     No future glibc release makes that define correct.
+    #
+    # Defining the macro suppresses the portable inline fallbacks in WWLib/stringex.h (guarded by
+    # #ifndef HAVE_*), so the symbol ends up neither supplied by libc nor by the fallback, and the
+    # build fails with "'wcslcpy' was not declared in this scope". It went unnoticed because macOS
+    # genuinely has all four, so the assumption held on the platform people build on.
+    #
+    # A compile check costs one configure step and is correct on every libc, now and later.
+    include(CheckSymbolExists)
+    check_symbol_exists(strlcpy "string.h" GX_LIBC_HAS_STRLCPY)
+    check_symbol_exists(strlcat "string.h" GX_LIBC_HAS_STRLCAT)
+    check_symbol_exists(wcslcpy "wchar.h"  GX_LIBC_HAS_WCSLCPY)
+    check_symbol_exists(wcslcat "wchar.h"  GX_LIBC_HAS_WCSLCAT)
+
+    if(GX_LIBC_HAS_STRLCPY)
+        target_compile_definitions(core_config INTERFACE HAVE_STRLCPY)
+    endif()
+    if(GX_LIBC_HAS_STRLCAT)
+        target_compile_definitions(core_config INTERFACE HAVE_STRLCAT)
+    endif()
+    if(GX_LIBC_HAS_WCSLCPY)
+        target_compile_definitions(core_config INTERFACE HAVE_WCSLCPY)
+    endif()
+    if(GX_LIBC_HAS_WCSLCAT)
+        target_compile_definitions(core_config INTERFACE HAVE_WCSLCAT)
+    endif()
 endif()
 
 if(RTS_BUILD_OPTION_DEBUG)
