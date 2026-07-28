@@ -215,39 +215,77 @@ after every restage. Fixing path resolution once would cover all three.
   exit code. This cost a wasted VPS build cycle tonight. Capture `$?` before any pipe, and verify
   installs by checking the tool is present, not by trusting an exit code.
 
-## VPS state
+## VPS state — Ubuntu 24.04, BUILD IS GREEN (2026-07-28)
 
-`163.5.210.131`, root, SSH key installed (`~/.ssh/id_ed25519`). **Password auth still enabled and
-the password was pasted in chat — rotate it.** `79.110.49.24` in the panel is the hypervisor NODE,
-not the VM; do not log in there.
+`163.5.210.131`, root, **key auth only — password auth is disabled and verified refused.**
+The box was reinstalled as **Ubuntu 24.04.4 LTS** (4 cores, Xeon E5-2680 v4).
+`79.110.49.24` in the panel is the hypervisor NODE, not the VM; do not log in there.
 
-* Ubuntu 20.04.6 (EOL since April 2025, glibc 2.31), Xeon E5-2680 v4 (2016 Broadwell), 4 cores.
-* Installed: CMake 3.28.6 (`/usr/local/bin`, distro's 3.16 is below the project's 3.25 minimum),
-  GCC/G++ 11.5 from `ppa:ubuntu-toolchain-r/test`, vcpkg at `/root/vcpkg` (full clone — a `--depth 1`
-  clone fails, the manifest pins a baseline commit that shallow history lacks), autotools, nasm/yasm,
-  SDL3's X11 dev deps. `libdecor-0-dev` does not exist on 20.04 and is not required.
-* `Acquire::ForceIPv4 "true"` in `/etc/apt/apt.conf.d/99force-ipv4` — **required**: DNS returns
-  IPv6-only records for the Ubuntu mirrors and the box has no working IPv6, so apt hangs without it.
-* Build script `/root/vps_build2.sh`, log `/root/build.log`. Launch detached with `setsid nohup`;
-  a plain `nohup ... &` over SSH did not survive.
+**`GeneralsXZH` builds and runs.** 197 MB ELF, all shared libraries resolved, starts headless
+("Headless mode detected, skipping SDL3 video/Vulkan window initialization") and creates the
+engine. Reproducible with `scripts/build/linux/build-linux-relay.sh`.
 
-**RAM is not what was sold.** dmidecode reports 8192 MB and the kernel saw `8100900K/8388064K` at
-boot, but `MemTotal` is 3941808 kB — ~4.3 GB missing, reclaimed by `virtio_balloon` (bound at
-`/sys/bus/virtio/drivers/virtio_balloon/virtio0`, built into the kernel so it does not appear in
-`lsmod`). A plan advertised as "8 GB Dedicated" is being ballooned. Worth a support ticket, and it
-matters operationally: memory reclaimed mid-match would stall the sim for every player.
+**RAM is still short on a FRESH install:** `MemTotal` 3.75 GB on a plan sold as "8 GB Dedicated",
+with `virtio_balloon` bound at `/sys/bus/virtio/drivers/virtio_balloon/virtio0`. The reinstall
+ruled out the old OS as the cause — it is plan-level config. Still worth a ticket: memory
+reclaimed mid-match stalls the sim for every player.
 
-## Status of the Linux build
+### What 24.04 fixed for free
 
-NOT DONE. Failing in configure, being worked through:
-1. ~~CMake too old~~ fixed (3.28.6)
-2. ~~`VCPKG_ROOT` unset~~ fixed
-3. ~~shallow vcpkg clone~~ fixed (unshallowed)
-4. ~~alsa needs autotools~~ fixed (the piped-exit-code bug above)
-5. ~~SDL3 needs X11 dev packages~~ fixed
-6. in progress — rerun and read `/root/build.log`
+| blocker on 20.04 | 24.04 |
+|---|---|
+| CMake 3.16, project needs >= 3.25 | 3.28.3 from the distro — no manual build |
+| GCC 9 | 13.3 from the distro — no toolchain PPA |
+| glibc 2.31 | 2.39 |
+| ffmpeg 4.2, no `AVFrame::ch_layout` | 6.x (libavcodec 60) — the blocker that made 20.04 hopeless |
 
-For a headless server, consider whether SDL3/OpenAL/ffmpeg are needed at all. Dropping them would
-remove most of the dependency surface, but they are manifest dependencies in `vcpkg.json` and the
-preset sets `SAGE_USE_SDL3=ON` / `SAGE_USE_OPENAL=ON`, so it needs a deliberate headless preset
-rather than a flag flip.
+### The three blockers 24.04 did NOT fix
+
+Each surfaced only after the previous one was cleared, so budget for them in sequence.
+
+1. **SDL3 `CheckX11` needs XTEST.** `Couldn't find dependency package for XTEST`. The full dep set
+   is in the provisioning list below. Verify with `pkg-config --exists`, never by apt's exit code.
+2. **Nearly every tool target is a Windows GUI program.** 17 of 17 under `Core/Tools`, plus
+   GUIEdit / WorldBuilder / wdump, all pulling `afxwin.h` / `commctrl.h`. The `*_TOOLS` options
+   default to **ON** and `linux64-deploy` overrides none of them, so the build compiled thousands
+   of game objects and then died in an editor. Turn them all off (the script does).
+   The two MFC ones are additionally gated on MSVC in `Core/Tools/CMakeLists.txt`, since an
+   `afxwin.h` target can never build off-MSVC whatever the flags say.
+3. **`RTS_BUILD_OPTION_FFMPEG=OFF` cannot work with `SAGE_USE_OPENAL=ON`.** This contradicts the
+   earlier advice in this doc, which said OFF was right for a server because a relay decodes no
+   video. It is not: `Core/GameEngineDevice/CMakeLists.txt:305` *compiles*
+   `Source/VideoDevice/FFmpeg/FFmpegFile.cpp` when the option is OFF — OpenALAudioCache needs it
+   for **audio** decoding — while the ffmpeg libraries are linked only when it is ON. OFF
+   therefore compiles ffmpeg-calling code and links nothing, dying at the final link of
+   `GeneralsXZH` with ~30 undefined `av_*`/`avcodec_*` symbols. **This is a latent bug on every
+   platform, not a Linux quirk**, and the honest fix is to make the OFF path link ffmpeg too —
+   left alone here because it needs verifying on all three platforms.
+
+### Provisioning (reproducible)
+
+```
+apt: build-essential cmake ninja-build git pkg-config curl zip unzip tar ca-certificates
+     autoconf automake libtool nasm yasm
+     libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev libxfixes-dev
+     libxss-dev libxkbcommon-dev libwayland-dev libdecor-0-dev libgl1-mesa-dev
+     libpng-dev libjpeg-dev libtiff-dev libwebp-dev
+     libav*-dev libsw*-dev libasound2-dev
+     libxtst-dev libxxf86vm-dev libxinerama-dev libdrm-dev libgbm-dev
+     libpulse-dev libudev-dev libdbus-1-dev libibus-1.0-dev libsndio-dev
+vcpkg at /root/vcpkg, FULL clone   # --depth 1 fails: the manifest pins a baseline commit
+repo  at /root/GeneralsX
+```
+
+`Acquire::ForceIPv4 "true"` in `/etc/apt/apt.conf.d/99force-ipv4` was required on 20.04 (DNS
+returned IPv6-only mirrors with no working IPv6). Set again on 24.04 as a precaution; not
+re-tested as necessary.
+
+Build detached with `setsid nohup` — a plain `nohup ... &` over SSH does not survive.
+
+### Still worth doing: a real headless preset
+
+The X11/SDL3 stack was installed only to satisfy `SAGE_USE_SDL3=ON`, which a display-less relay
+has no use for. Dropping SDL3/OpenAL/ffmpeg needs a deliberate headless preset rather than a flag
+flip, because they are manifest dependencies in `vcpkg.json`. That would delete most of this
+dependency surface.
+
