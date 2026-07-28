@@ -64,10 +64,10 @@ longer load; they were never readable elsewhere anyway.
 
 ## THE HEADLESS CLI IS DONE AND PROVEN (2026-07-28 session 4)
 
-**Mac headless host + Windows headless joiner, 1200 frames, zero differing. Reproduced twice.**
+**Mac headless host + Windows headless joiner, 3000 frames, zero differing. Reproduced.**
 
 ```bash
-FRAMES=1200 ./scripts/test/xplat-lan-soak.sh     # prints PASS/FAIL on its own
+FRAMES=3000 ./scripts/test/xplat-lan-soak.sh     # prints PASS/FAIL on its own
 ```
 
 `-lanhost -lanjoin -lanmap -lanname -lanai -lanwait -lanframes -lantimeout`, implemented in
@@ -89,10 +89,17 @@ OTHER machine's log first**. Two rules came out of it that will bite again:
    COMPILE time, so matching `git rev-parse` output proves nothing. The soak now refuses to run
    when either binary predates the last commit that touched the digested source dirs.
 
-Also: the Windows run folder needs `MapsZH.big` staged into it (`setup-run-win64.ps1` does not do
-this, so re-copy after every restage) and `CNC_GENERALS_ZH_PATH` set, or the joiner hangs forever
-at `[INI] ERROR: No files read from directory` with 1239 bytes of stderr. That is NOT the session-0
+Also: the Windows joiner needs `CNC_GENERALS_ZH_PATH` set or it hangs forever at
+`[INI] ERROR: No files read from directory` with 1239 bytes of stderr. That is NOT the session-0
 problem — a headless replay fails identically without it and succeeds from session 0 with it.
+
+`setup-run-win64.ps1` now stages `MapsZH.big` as well (verified from a clean state). Without it the
+Windows map cache indexes only the user maps under Documents, finds zero built-in `maps\...`
+entries, and the joiner reports "You do not have the map" for a map it can play in single player.
+**That is the THIRD instance of the same defect**, after `Data\Scripts` (the AI desync) and
+`Data\Cursors`: loose data opened by a working-directory-relative path that ignores
+`CNC_GENERALS_ZH_PATH`. Fixing the engine's path resolution once retires all three workarounds and
+is probably the highest-value cleanup left.
 
 ## THE NEXT TASK: the relay
 

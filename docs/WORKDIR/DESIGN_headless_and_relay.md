@@ -4,12 +4,12 @@ Written 2026-07-28. Everything referenced here is on `main` unless marked NOT DO
 
 ## STATUS: the headless CLI is DONE and PROVEN cross-platform
 
-**Mac headless host + Windows headless joiner, 1200 frames, zero differing.**
+**Mac headless host + Windows headless joiner, 3000 frames, zero differing.**
 Reproduced twice. Harness: `scripts/test/xplat-lan-soak.sh`, which prints
-`PASS: 1200 frames, zero differing` on its own.
+`PASS: 3000 frames, zero differing` on its own.
 
 ```bash
-FRAMES=1200 ./scripts/test/xplat-lan-soak.sh
+FRAMES=3000 ./scripts/test/xplat-lan-soak.sh
 ```
 
 Implemented in `GeneralsMD/.../Common/HeadlessMatch.{h,cpp}`, entered from `GameMain` as a third
