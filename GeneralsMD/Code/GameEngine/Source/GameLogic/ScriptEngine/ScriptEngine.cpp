@@ -27,6 +27,7 @@
 // Author: John Ahlquist, Nov. 2001
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
+#include "Common/RandomValue.h"	// GeneralsX : GetGameLogicRandomSeedCRC for the desync bisect
 
 #include "Common/DataChunk.h"
 #include "Common/file.h"
@@ -5425,8 +5426,18 @@ void ScriptEngine::reset()
 //-------------------------------------------------------------------------------------------------
 /** newMap */
 //-------------------------------------------------------------------------------------------------
+// GeneralsX @diag Claude 28/07/2026 See checkConditionsForTeamNames - counts how many delayed-eval
+// scripts draw from the shared logic RNG during newMap, which is where the two peers diverge.
+Int g_gxScriptDelayDraws = 0;
+Int g_gxScriptNoDelay = 0;
+
 void ScriptEngine::newMap()
 {
+	g_gxScriptDelayDraws = 0;
+	g_gxScriptNoDelay = 0;
+	fprintf(stderr, "[GXSCRIPT] newMap ENTER seed=%u\n", (unsigned)GetGameLogicRandomSeedCRC());
+	fflush(stderr);
+
 	m_numCounters = 1;
 	Int i;
 	for (i=0; i<MAX_COUNTERS; i++) {
@@ -5489,6 +5500,11 @@ void ScriptEngine::newMap()
 	m_fadeFramesDecrease = FRAMES_TO_FADE_IN_AT_START;
 	m_curFadeValue = 0.0f;
 
+	// GeneralsX @diag Claude 28/07/2026 delayDraws is the number of shared-RNG draws this call made.
+	// If it differs between peers, every later draw differs and the match desyncs at frame 0.
+	fprintf(stderr, "[GXSCRIPT] newMap EXIT seed=%u delayDraws=%d noDelay=%d\n",
+		(unsigned)GetGameLogicRandomSeedCRC(), g_gxScriptDelayDraws, g_gxScriptNoDelay);
+	fflush(stderr);
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -6887,10 +6903,22 @@ void ScriptEngine::checkConditionsForTeamNames(Script *pScript)
 	AsciiString singletonTeamName;
 	AsciiString multiTeamName;
 
+	// GeneralsX @diag Claude 28/07/2026 Count the draws this makes - it is the ONLY live consumer of
+	// the shared logic RNG between populateRandomStartPosition and the end of ScriptEngine::newMap,
+	// and measurement says the two peers leave that window with different seeds. Replaying one .rep
+	// headless on each platform: both enter at seed 2805577022, Windows leaves at 2805577022 (zero
+	// draws) and the Mac at 1560412358. Structural counters (aiPlayers, sides, sidesWithScripts,
+	// skirmishSides) are IDENTICAL, so the peers are not disagreeing about who exists - they are
+	// disagreeing about how many delayed-eval scripts there are to jitter.
+	// The (void)0 DEBUG_ASSERTCRASH means nothing warns when the script sets differ.
 	if (pScript->getDelayEvalSeconds()>0) {
+		extern Int g_gxScriptDelayDraws;	// defined at newMap
+		++g_gxScriptDelayDraws;
 		// Offset by a random number of frames
 		pScript->setFrameToEvaluate(GameLogicRandomValue(0,2*LOGICFRAMES_PER_SECOND));
 	} else {
+		extern Int g_gxScriptNoDelay;
+		++g_gxScriptNoDelay;
 		pScript->setFrameToEvaluate(0);
 	}
 
