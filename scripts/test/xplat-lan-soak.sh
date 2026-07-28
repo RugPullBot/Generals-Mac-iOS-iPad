@@ -26,6 +26,10 @@ FRAMES="${FRAMES:-2000}"
 # a lobby timeout well above that or the host gives up while the peer is still loading.
 HOST_TIMEOUT="${HOST_TIMEOUT:-300000}"
 WIN_TIMEOUT="${WIN_TIMEOUT:-300000}"
+# AI="Hx1" adds one Brutal AI. This is the configuration that matters most for the
+# Data\\Scripts\\SkirmishScripts.scb class of bug: skirmish scripts attach ONLY for AI players,
+# so an AI-free match stays in sync even when the file is missing on one peer.
+AI="${AI:-}"
 MAC_IP="${MAC_IP:-192.168.10.51}"
 OUT="${OUT:-$(pwd)/soak-out}"
 
@@ -89,7 +93,8 @@ echo "windows processes remaining: $WIN_LEFT"
 say "starting Mac host"
 (
 	cd "$MAC_GAME" && ./run.sh -headless -lanhost soak \
-		-lanmap "$MAP" -lanwait 1 -lanframes "$FRAMES" -lantimeout "$HOST_TIMEOUT"
+		-lanmap "$MAP" -lanwait 1 -lanframes "$FRAMES" -lantimeout "$HOST_TIMEOUT" \
+		${AI:+-lanai "$AI"}
 ) > "$OUT/mac.out" 2> "$OUT/mac.err" &
 MAC_PID=$!
 
