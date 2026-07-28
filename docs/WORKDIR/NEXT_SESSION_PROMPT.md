@@ -122,7 +122,28 @@ it behaviourally by re-simulating replays, not by trying to prevent it.
   A plan sold as "8 GB Dedicated" is ballooned. **Raise a ticket** — memory reclaimed mid-match
   would stall the sim for every player.
 
-### VPS build recipe (all of this is already done, recorded so it can be reproduced)
+### FIRST ACTION ON THE VPS: reinstall it as Ubuntu 24.04
+
+**Do not keep fighting 20.04.** It blocked the build at every layer and the last one is fatal without
+building ffmpeg from source:
+
+| blocker on 20.04 | 24.04 |
+|---|---|
+| CMake 3.16, project needs >= 3.25 | 3.28 |
+| GCC 9 | GCC 13 |
+| glibc 2.31 - no `strlcpy`, never any `wcslcpy` | 2.39 |
+| **ffmpeg 4.2 - no `AVFrame::ch_layout`, which the OpenAL audio manager requires** | 6.x |
+| EOL since April 2025 | supported to 2029 |
+
+`SAGE_USE_OPENAL=OFF` is NOT an escape: the build then falls back to the Miles path and needs
+`mss.h`, a proprietary SDK header that does not exist on Linux. So OpenAL must stay ON, so ffmpeg
+5.1+ is mandatory. The savoury1 ffmpeg PPAs do not resolve on focal ("held broken packages").
+
+24.04 is also what `build-linux.yml` and `replay-tests.yml` use, so it is the proven configuration.
+The box is empty; a reinstall costs nothing. Afterwards redo: SSH key, `Acquire::ForceIPv4`, vcpkg
+full clone, and the apt list below (most of which 24.04 already satisfies).
+
+### VPS build recipe (done on 20.04; most of it becomes unnecessary on 24.04)
 
 ```
 apt: Acquire::ForceIPv4 "true" in /etc/apt/apt.conf.d/99force-ipv4   # DNS returns IPv6-only
