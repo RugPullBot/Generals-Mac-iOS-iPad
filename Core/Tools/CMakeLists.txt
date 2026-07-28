@@ -2,8 +2,16 @@
 
 # Build useful tool binaries.
 if(RTS_BUILD_CORE_TOOLS)
-    add_subdirectory(DebugWindow)
-    add_subdirectory(ParticleEditor)
+    # GeneralsX @build Claude 28/07/2026 DebugWindow and ParticleEditor are MFC applications -
+    # both pull in afxwin.h - so they can only ever build under MSVC. RTS_BUILD_CORE_TOOLS
+    # defaults to ON and linux64-deploy does not override it, so a Linux build added them and
+    # died with "fatal error: afxwin.h: No such file or directory" long before reaching the game
+    # binary. Neither is linked by the game; GeneralsMD/Generals only install them behind an
+    # if(TARGET ...) guard, which stays correct when the targets do not exist.
+    if(MSVC)
+        add_subdirectory(DebugWindow)
+        add_subdirectory(ParticleEditor)
+    endif()
 endif()
 
 # Build less useful tool/test binaries.
