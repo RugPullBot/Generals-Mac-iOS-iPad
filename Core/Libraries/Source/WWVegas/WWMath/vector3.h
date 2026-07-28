@@ -66,6 +66,10 @@
 #pragma once
 
 #include "always.h"
+// GeneralsX @bugfix Claude 28/07/2026 Deterministic trig - see the note in matrix3d.h. Included
+// explicitly rather than relying on wwmath.h below, so the ordering of these two headers cannot
+// leave GameMath undeclared at the point Rotate_* needs it.
+#include "gamemath.h"
 #include "wwmath.h"
 #include <assert.h>
 #ifdef _UNIX
@@ -715,7 +719,7 @@ WWINLINE void Vector3::Scale(const Vector3 & scale)
  *=============================================================================================*/
 WWINLINE void Vector3::Rotate_X(float angle)
 {
-	Rotate_X(sinf(angle),cosf(angle));
+	Rotate_X(GameMath::Sin(angle),GameMath::Cos(angle));
 }
 
 
@@ -755,7 +759,7 @@ WWINLINE void Vector3::Rotate_X(float s_angle,float c_angle)
  *=============================================================================================*/
 WWINLINE void Vector3::Rotate_Y(float angle)
 {
-	Rotate_Y(sinf(angle),cosf(angle));
+	Rotate_Y(GameMath::Sin(angle),GameMath::Cos(angle));
 }
 
 
@@ -795,7 +799,7 @@ WWINLINE void Vector3::Rotate_Y(float s_angle,float c_angle)
  *=============================================================================================*/
 WWINLINE void Vector3::Rotate_Z(float angle)
 {
-	Rotate_Z(sinf(angle),cosf(angle));
+	Rotate_Z(GameMath::Sin(angle),GameMath::Cos(angle));
 }
 
 

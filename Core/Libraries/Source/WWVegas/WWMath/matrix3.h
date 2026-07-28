@@ -59,6 +59,9 @@
 #pragma once
 
 #include "always.h"
+// GeneralsX @bugfix Claude 28/07/2026 Deterministic trig - see the note in matrix3d.h. Same class of
+// bug: the rotation helpers here called libm cosf/sinf directly and this header never saw gamemath.h.
+#include "gamemath.h"
 #include "vector3.h"
 #include "wwdebug.h"
 #ifdef _UNIX
@@ -361,7 +364,7 @@ WWINLINE Matrix3x3::Matrix3x3(const Vector3 & axis,float s_angle,float c_angle)
 
 WWINLINE void Matrix3x3::Set(const Vector3 & axis,float angle)
 {
-	Set(axis,sinf(angle),cosf(angle));
+	Set(axis,GameMath::Sin(angle),GameMath::Cos(angle));
 }
 
 WWINLINE void Matrix3x3::Set(const Vector3 & axis,float s,float c)
@@ -775,7 +778,7 @@ WWINLINE int operator != (const Matrix3x3 & a, const Matrix3x3 & b)
  *=============================================================================================*/
 WWINLINE void Matrix3x3::Rotate_X(float theta)
 {
-	Rotate_X(sinf(theta),cosf(theta));
+	Rotate_X(GameMath::Sin(theta),GameMath::Cos(theta));
 }
 
 WWINLINE void Matrix3x3::Rotate_X(float s,float c)
@@ -809,7 +812,7 @@ WWINLINE void Matrix3x3::Rotate_X(float s,float c)
  *=============================================================================================*/
 WWINLINE void Matrix3x3::Rotate_Y(float theta)
 {
-	Rotate_Y(sinf(theta),cosf(theta));
+	Rotate_Y(GameMath::Sin(theta),GameMath::Cos(theta));
 }
 
 WWINLINE void Matrix3x3::Rotate_Y(float s,float c)
@@ -844,7 +847,7 @@ WWINLINE void Matrix3x3::Rotate_Y(float s,float c)
  *=============================================================================================*/
 WWINLINE void Matrix3x3::Rotate_Z(float theta)
 {
-	Rotate_Z(sinf(theta),cosf(theta));
+	Rotate_Z(GameMath::Sin(theta),GameMath::Cos(theta));
 }
 
 WWINLINE void Matrix3x3::Rotate_Z(float s,float c)
@@ -898,7 +901,7 @@ WWINLINE Matrix3x3 Create_X_Rotation_Matrix3(float s,float c)
 
 WWINLINE Matrix3x3 Create_X_Rotation_Matrix3(float rad)
 {
-	return Create_X_Rotation_Matrix3(sinf(rad),cosf(rad));
+	return Create_X_Rotation_Matrix3(GameMath::Sin(rad),GameMath::Cos(rad));
 }
 
 /***********************************************************************************************
@@ -934,7 +937,7 @@ WWINLINE Matrix3x3 Create_Y_Rotation_Matrix3(float s,float c)
 
 WWINLINE Matrix3x3 Create_Y_Rotation_Matrix3(float rad)
 {
-	return Create_Y_Rotation_Matrix3(sinf(rad),cosf(rad));
+	return Create_Y_Rotation_Matrix3(GameMath::Sin(rad),GameMath::Cos(rad));
 }
 
 /***********************************************************************************************
@@ -970,7 +973,7 @@ WWINLINE Matrix3x3 Create_Z_Rotation_Matrix3(float s,float c)
 
 WWINLINE Matrix3x3 Create_Z_Rotation_Matrix3(float rad)
 {
-	return Create_Z_Rotation_Matrix3(sinf(rad),cosf(rad));
+	return Create_Z_Rotation_Matrix3(GameMath::Sin(rad),GameMath::Cos(rad));
 }
 
 WWINLINE void Matrix3x3::Rotate_Vector(const Matrix3x3 & A,const Vector3 & in,Vector3 * out)

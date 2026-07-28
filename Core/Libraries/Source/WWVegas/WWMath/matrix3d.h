@@ -85,6 +85,30 @@
 #endif
 
 #include "always.h"
+// GeneralsX @bugfix Claude 28/07/2026 Deterministic trig for the rotation helpers.
+//
+// The earlier fix gave the engine its own bit-identical Sin/Cos (gamemath.h) and routed
+// WWMath::Sin/Cos and the *Trig wrappers through it, which covered Thing::setOrientation - the path
+// that places objects at map load. That is why frame 0 went from 6 of 323 objects differing to 0.
+//
+// It did NOT cover THIS header, which is the OTHER way the engine writes an object transform.
+// Rotate_X/Y/Z, Pre_Rotate_*, In_Place_Pre_Rotate_* and the Set(axis,angle) constructor all called
+// libm cosf/sinf directly, and matrix3d.h never included gamemath.h - verified: gamemath.h had
+// exactly one include site in the whole tree (wwmath.h:40) and there is no #define redirecting
+// cosf/sinf anywhere. So every one of these calls still went to Apple libm on macOS and to the MSVC
+// UCRT on Windows, which are the two implementations already measured to disagree by 1 ULP near 45
+// degrees.
+//
+// This is live simulation code, not rendering: PhysicsBehavior::doPhysics does
+//   mtx.Rotate_X(rollRateToUse); mtx.Rotate_Y(pitchRateToUse); mtx.Rotate_Z(yawRateToUse);
+// (PhysicsUpdate.cpp:750-752) and then obj->setTransformMatrix(&mtx) (:817), for every object with a
+// nonzero pitch/roll/yaw rate - tumbling debris, dying units, banking aircraft, projectiles. The
+// result lands in the 48 transform bytes that Object::crc hashes with no epsilon (Object.cpp:4007).
+// Locomotor.cpp:164 and :2180 reach it too.
+//
+// Frames 0-376 of the last measured match agreed while this bug was present because nothing had a
+// nonzero rate yet: the world CRC was static until frame 324.
+#include "gamemath.h"
 #include <assert.h>
 #include "vector2.h"
 #include "vector3.h"
@@ -566,8 +590,8 @@ WWINLINE void Matrix3D::Set(		const Vector3	&x,		// x-axis unit vector
  *=============================================================================================*/
 WWINLINE void Matrix3D::Set(const Vector3 & axis,float angle)
 {
-	float c = cosf(angle);
-	float s = sinf(angle);
+	float c = GameMath::Cos(angle);
+	float s = GameMath::Sin(angle);
 
 	Set(axis,s,c);
 }
@@ -768,8 +792,8 @@ WWINLINE void Matrix3D::Rotate_X(float theta)
 	float tmp1,tmp2;
 	float s,c;
 
-	s = sinf(theta);
-	c = cosf(theta);
+	s = GameMath::Sin(theta);
+	c = GameMath::Cos(theta);
 
 	tmp1 = Row[0][1]; tmp2 = Row[0][2];
 	Row[0][1] = (float)( c*tmp1 + s*tmp2);
@@ -836,8 +860,8 @@ WWINLINE void Matrix3D::Rotate_Y(float theta)
 	float tmp1,tmp2;
 	float s,c;
 
-	s = sinf(theta);
-	c = cosf(theta);
+	s = GameMath::Sin(theta);
+	c = GameMath::Cos(theta);
 
 	tmp1 = Row[0][0]; tmp2 = Row[0][2];
 	Row[0][0] = (float)(c*tmp1 - s*tmp2);
@@ -903,8 +927,8 @@ WWINLINE void Matrix3D::Rotate_Z(float theta)
 	float tmp1,tmp2;
 	float c,s;
 
-	c = cosf(theta);
-	s = sinf(theta);
+	c = GameMath::Cos(theta);
+	s = GameMath::Sin(theta);
 
 	tmp1 = Row[0][0]; tmp2 = Row[0][1];
 	Row[0][0] = (float)( c*tmp1 + s*tmp2);
@@ -1055,8 +1079,8 @@ WWINLINE void Matrix3D::Pre_Rotate_X(float theta)
 	float tmp1,tmp2;
 	float c,s;
 
-	c = cosf(theta);
-	s = sinf(theta);
+	c = GameMath::Cos(theta);
+	s = GameMath::Sin(theta);
 
 	tmp1 = Row[1][0]; tmp2 = Row[2][0];
 	Row[1][0] = (float)(c*tmp1 - s*tmp2);
@@ -1093,8 +1117,8 @@ WWINLINE void Matrix3D::Pre_Rotate_Y(float theta)
 	float tmp1,tmp2;
 	float c,s;
 
-	c = cosf(theta);
-	s = sinf(theta);
+	c = GameMath::Cos(theta);
+	s = GameMath::Sin(theta);
 
 	tmp1 = Row[0][0]; tmp2 = Row[2][0];
 	Row[0][0] = (float)( c*tmp1 + s*tmp2);
@@ -1131,8 +1155,8 @@ WWINLINE void Matrix3D::Pre_Rotate_Z(float theta)
 	float tmp1,tmp2;
 	float c,s;
 
-	c = cosf(theta);
-	s = sinf(theta);
+	c = GameMath::Cos(theta);
+	s = GameMath::Sin(theta);
 
 	tmp1 = Row[0][0]; tmp2 = Row[1][0];
 	Row[0][0] = (float)(c*tmp1 - s*tmp2);
@@ -1274,8 +1298,8 @@ WWINLINE void Matrix3D::In_Place_Pre_Rotate_X(float theta)
 	float tmp1,tmp2;
 	float c,s;
 
-	c = cosf(theta);
-	s = sinf(theta);
+	c = GameMath::Cos(theta);
+	s = GameMath::Sin(theta);
 
 	tmp1 = Row[1][0]; tmp2 = Row[2][0];
 	Row[1][0] = (float)(c*tmp1 - s*tmp2);
@@ -1308,8 +1332,8 @@ WWINLINE void Matrix3D::In_Place_Pre_Rotate_Y(float theta)
 	float tmp1,tmp2;
 	float c,s;
 
-	c = cosf(theta);
-	s = sinf(theta);
+	c = GameMath::Cos(theta);
+	s = GameMath::Sin(theta);
 
 	tmp1 = Row[0][0]; tmp2 = Row[2][0];
 	Row[0][0] = (float)( c*tmp1 + s*tmp2);
@@ -1342,8 +1366,8 @@ WWINLINE void Matrix3D::In_Place_Pre_Rotate_Z(float theta)
 	float tmp1,tmp2;
 	float c,s;
 
-	c = cosf(theta);
-	s = sinf(theta);
+	c = GameMath::Cos(theta);
+	s = GameMath::Sin(theta);
 
 	tmp1 = Row[0][0]; tmp2 = Row[1][0];
 	Row[0][0] = (float)(c*tmp1 - s*tmp2);
