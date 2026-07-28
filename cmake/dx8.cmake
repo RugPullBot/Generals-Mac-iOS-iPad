@@ -213,7 +213,17 @@ elseif(APPLE AND SAGE_USE_MOLTENVK)
 
   if(VULKAN_SDK_ENV AND EXISTS "${VULKAN_SDK_ENV}/lib/libMoltenVK.dylib")
     message(STATUS "DXVK macOS build: Using Vulkan SDK at ${VULKAN_SDK_ENV}")
-    set(VULKAN_SDK_ENV_VAR "VULKAN_SDK=${VULKAN_SDK_ENV}")
+    # GeneralsX @build Claude 29/07/2026 Put the SDK's bin on PATH for the meson sub-build too.
+    #
+    # DXVK's meson.build requires glslangValidator to compile its shaders. The Vulkan SDK ships it
+    # in ${VULKAN_SDK}/bin, but that directory is not normally on PATH, so meson fails with
+    # "Program 'glslang glslangValidator' not found or not executable" - on a machine where the
+    # tool is present the whole time. Setting VULKAN_SDK alone is not enough; meson looks the
+    # program up on PATH.
+    #
+    # This has cost time twice, and it re-bites every fresh shell because exporting PATH by hand
+    # does not persist. Passing it here makes the failure impossible rather than documented.
+    set(VULKAN_SDK_ENV_VAR "VULKAN_SDK=${VULKAN_SDK_ENV}" "PATH=${VULKAN_SDK_ENV}/bin:$ENV{PATH}")
   else()
     message(WARNING "DXVK macOS build: Vulkan SDK / MoltenVK not found; Meson will search system paths")
     if(VULKAN_SDK_ENV)

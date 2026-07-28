@@ -63,6 +63,27 @@ const TOKEN_RE = /^[A-Za-z0-9._-]{1,31}$/;
 const ADV_TAG = 'GXADV';
 const LIST_TAG = 'GXLIST';
 const GAME_TAG = 'GXGAME';
+
+// GeneralsX @feature Matchmaking. The relay ASSIGNS each client its virtual address:
+//
+//     GXWHO <room>                 client -> relay: who am I in this room?
+//     GXYOU <room> <virtualIP>     relay -> client: you are 10.42.0.N
+//     GXYOU <room> -               relay -> client: room is full
+//
+// Before this, LocalVirtualIP was hand-written into every player's Options.ini and had to be
+// unique across the lobby by human agreement. That is workable for a handful of known machines and
+// impossible for public matchmaking: everyone installs the game and everyone is 10.42.0.1. Two
+// clients sharing an identity are, to the relay, one client whose NAT keeps rebinding - so it does
+// not even fail cleanly, it corrupts the lobby.
+//
+// Assignment is sticky per endpoint so a retransmitted request returns the SAME address rather
+// than burning a second slot, and expires on the same sweep as everything else, so a client that
+// disappears frees its number.
+const WHO_TAG = 'GXWHO';
+const YOU_TAG = 'GXYOU';
+// The virtual LAN the game believes it is on. Must stay inside 10.0.0.0/8: the join path builds
+// the address it dials with a signed shift, which is undefined behaviour for a first octet >= 128.
+const VIRTUAL_NET_PREFIX = [10, 42, 0];
 const MAX_ADVERT_LEN = 320;
 const ADVERT_TIMEOUT_MS = 15000;	// 3 missed advertisements at the client's 5 s cadence
 
@@ -189,12 +210,25 @@ function isListRequest(msg) {
 	return msg.length <= LIST_TAG.length + 2 && msg.toString('latin1').trim() === LIST_TAG;
 }
 
+/* An identity request, or null. */
+function parseWhoRequest(msg) {
+	if (msg.length > MAX_REGISTRATION_LEN || msg.length <= WHO_TAG.length) {
+		return null;
+	}
+	const parts = msg.toString('latin1').trim().split(' ');
+	if (parts.length !== 2 || parts[0] !== WHO_TAG || !TOKEN_RE.test(parts[1])) {
+		return null;
+	}
+	return { room: parts[1] };
+}
+
 function startRelay(port) {
 	const rooms = new Map();		// room name -> Map(client id -> member)
 	const byEndpoint = new Map();	// "address:port" -> member
 	const adverts = new Map();		// room name -> advertisement + lastSeen
+	const assigned = new Map();		// room name -> Map("addr:port" -> { id, lastSeen })
 	const stats = { forwarded: 0, bytes: 0, dropped: 0, refused: 0, unrouted: 0, headerless: 0,
-		listed: 0, dupeSuspect: 0 };
+		listed: 0, dupeSuspect: 0, assigned: 0, assignFull: 0 };
 	const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
 
 	function register(reg, rinfo) {
@@ -311,6 +345,54 @@ function startRelay(port) {
 		}
 	}
 
+	/*
+	 * Hand this endpoint its virtual address in a room, creating one if it has none.
+	 *
+	 * Sticky per endpoint: the request is a UDP datagram and may be retransmitted, and an
+	 * assignment that changed on every retry would burn the room's whole address space and hand
+	 * the client a different identity than the one it already told the lobby about.
+	 */
+	function assignIdentity(room, rinfo) {
+		const key = endpointKey(rinfo.address, rinfo.port);
+		const now = Date.now();
+		let table = assigned.get(room) ?? new Map();
+		assigned.set(room, table);
+
+		const existing = table.get(key);
+		if (existing) {
+			existing.lastSeen = now;
+			return existing.id;
+		}
+
+		// Avoid anything already handed out OR already registered in this room - a client that
+		// registered under a hand-configured address must not be shadowed by an assignment.
+		const taken = new Set();
+		for (const a of table.values()) {
+			taken.add(a.id);
+		}
+		const members = rooms.get(room);
+		if (members) {
+			for (const id of members.keys()) {
+				taken.add(id);
+			}
+		}
+
+		for (let n = 1; n <= MEMBERS_PER_ROOM; n++) {
+			const id = `${VIRTUAL_NET_PREFIX.join('.')}.${n}`;
+			if (taken.has(id)) {
+				continue;
+			}
+			table.set(key, { id, lastSeen: now });
+			stats.assigned++;
+			log(`[${port}] room ${room}: assigned ${id} to ${key}`);
+			return id;
+		}
+
+		stats.assignFull++;
+		log(`[${port}] room ${room}: cannot assign an identity to ${key} - all ${MEMBERS_PER_ROOM} taken`);
+		return null;
+	}
+
 	function advertise(adv) {
 		const existing = adverts.get(adv.room);
 		if (!existing) {
@@ -353,6 +435,13 @@ function startRelay(port) {
 			sendList(rinfo);
 			return;
 		}
+		const who = parseWhoRequest(msg);
+		if (who) {
+			const id = assignIdentity(who.room, rinfo);
+			const reply = `${YOU_TAG} ${who.room} ${id ?? '-'}`;
+			sock.send(Buffer.from(reply, 'latin1'), rinfo.port, rinfo.address);
+			return;
+		}
 		forward(msg, rinfo);
 	});
 
@@ -386,6 +475,20 @@ function startRelay(port) {
 				adverts.delete(room);
 			}
 		}
+
+		// Release identities from clients that went away, or the address space leaks and a room
+		// stops accepting anyone long after it emptied.
+		for (const [room, table] of [...assigned.entries()]) {
+			for (const [key, a] of [...table.entries()]) {
+				if (a.lastSeen < deadline) {
+					log(`[${port}] room ${room}: released ${a.id} from ${key}`);
+					table.delete(key);
+				}
+			}
+			if (table.size === 0) {
+				assigned.delete(room);
+			}
+		}
 	}, SWEEP_INTERVAL_MS);
 
 	const report = setInterval(() => {
@@ -398,7 +501,8 @@ function startRelay(port) {
 		log(`[${port}] ${rooms.size} room(s), ${adverts.size} listed, forwarded ${stats.forwarded} packets / ${stats.bytes} bytes, `
 			+ `dropped ${stats.dropped} from unknown senders, refused ${stats.refused}, `
 			+ `unrouted ${stats.unrouted}, headerless ${stats.headerless}, `
-			+ `browsed ${stats.listed}, dupe-suspect ${stats.dupeSuspect}`);
+			+ `browsed ${stats.listed}, dupe-suspect ${stats.dupeSuspect}, `
+			+ `assigned ${stats.assigned}, assign-full ${stats.assignFull}`);
 		stats.forwarded = 0;
 		stats.bytes = 0;
 		stats.dropped = 0;
@@ -407,6 +511,8 @@ function startRelay(port) {
 		stats.headerless = 0;
 		stats.listed = 0;
 		stats.dupeSuspect = 0;
+		stats.assigned = 0;
+		stats.assignFull = 0;
 	}, STATS_INTERVAL_MS);
 
 	sweep.unref?.();

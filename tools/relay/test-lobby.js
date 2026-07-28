@@ -42,6 +42,35 @@ function check(name, cond) {
 	check('game carries room, host, counts', !!game && game.includes('testroom') && game.includes('10.42.0.1') && game.includes(' 2 8 '));
 	check('game carries name and map with spaces intact', !!game && game.includes('Karls Game|twilight flame'));
 
+	// --- identity assignment -------------------------------------------------------------
+	// The relay hands out virtual addresses so players do not have to agree on them by hand,
+	// which is what makes public matchmaking possible at all.
+	replies.length = 0;
+	await send('GXWHO idroom');
+	await wait(300);
+	const you1 = replies.find((r) => r.startsWith('GXYOU'));
+	check('GXWHO returns an assignment', !!you1 && /^GXYOU idroom 10\.42\.0\.\d+$/.test(you1.trim()));
+
+	// Same endpoint asking again must get the SAME address - the request is a UDP datagram and
+	// may be retransmitted; a fresh address per retry would burn the room and change our identity
+	// after we had already told the lobby about it.
+	replies.length = 0;
+	await send('GXWHO idroom');
+	await wait(300);
+	const you2 = replies.find((r) => r.startsWith('GXYOU'));
+	check('assignment is sticky for the same endpoint', !!you2 && you2.trim() === you1.trim());
+
+	// A second, distinct client must get a DIFFERENT address.
+	const sock2 = dgram.createSocket('udp4');
+	const replies2 = [];
+	sock2.on('message', (m) => replies2.push(m.toString('latin1')));
+	await new Promise((r) => sock2.bind(0, r));
+	await new Promise((r) => sock2.send(Buffer.from('GXWHO idroom', 'latin1'), PORT, '127.0.0.1', r));
+	await wait(400);
+	const you3 = replies2.find((r) => r.startsWith('GXYOU'));
+	check('a second client gets a different address', !!you3 && you3.trim() !== you1.trim());
+	sock2.close();
+
 	// A private room - registered but never advertised - must not be listed.
 	await send('GXRLY secretroom 10.42.0.5');
 	await wait(200);
