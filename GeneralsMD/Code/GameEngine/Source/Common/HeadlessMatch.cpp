@@ -314,7 +314,10 @@ Int countAcceptedPeers()
 
 Bool HeadlessMatch::isRequested()
 {
-	return TheGlobalData->m_lanRole != LANROLE_NONE;
+	// -lanlist has no host/join role but still has to enter this driver rather than the shell.
+	// Without it the browse flags parse fine, the engine boots the normal UI, and the process just
+	// sits there - which reads as a hang rather than as "that flag did nothing".
+	return (TheGlobalData->m_lanRole != LANROLE_NONE) || TheGlobalData->m_lanListGames;
 }
 
 template <typename Predicate>
