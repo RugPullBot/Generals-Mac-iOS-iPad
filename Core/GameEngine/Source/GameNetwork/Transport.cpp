@@ -131,14 +131,27 @@ void Transport::initRelay( UnsignedShort port )
 		return;
 	}
 
+#ifndef _WIN32
 	// Two instances on one machine share the port and are told apart only by a per-instance
 	// 127.x bind, which the wildcard bind relay mode needs would collide with. They are on the
 	// same machine anyway, so they have nothing to gain from a relay.
+	//
+	// _WIN32 is excluded because Windows never does that narrow bind - the code that applies it in
+	// Transport::init is itself #ifndef _WIN32, so there is nothing here to collide with. On
+	// Windows RTS_MULTI_INSTANCE only changes the name of the single-instance mutex.
+	//
+	// That distinction is load-bearing, not pedantry. The Windows dev build sets
+	// RTS_DEBUG_MULTI_INSTANCE so it can run alongside retail Generals and Generals Online, which
+	// share a mutex name with it. Without this guard being platform-gated, every Windows build made
+	// that way silently loses relay mode: initRelay returns early, the bind falls back to the
+	// virtual address, and the game dies with WSAEADDRNOTAVAIL on an address that is on no
+	// interface. Which is exactly what happened on the first Windows relay attempt.
 	if (rts::ClientInstance::isMultiInstance())
 	{
 		DEBUG_LOG(("Transport::initRelay - relay disabled: multi-instance clients need the narrow per-instance bind"));
 		return;
 	}
+#endif
 
 	const UnsignedInt relayAddr = ResolveIP(relayHost);
 	if (relayAddr == 0 || relayAddr == INADDR_NONE)
