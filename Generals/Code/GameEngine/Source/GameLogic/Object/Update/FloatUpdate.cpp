@@ -29,6 +29,7 @@
 
 // INCLUDES ///////////////////////////////////////////////////////////////////////////////////////
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
+#include "Lib/trig.h"	// GeneralsX: deterministic Sin/Cos/Tan - see WWMath/gamemath.h
 
 #include "Common/Xfer.h"
 #include "GameLogic/Object.h"
@@ -119,8 +120,8 @@ UpdateSleepTime FloatUpdate::update()
 	{
 
 		Real angle = INT_TO_REAL(TheGameLogic->getFrame());
-		Real yaw = sin(angle * 0.0291f) * 0.05f;
-		Real pitch = sin(angle * 0.0515f) * 0.05f;
+		Real yaw = Sin(angle * 0.0291f) * 0.05f;
+		Real pitch = Sin(angle * 0.0515f) * 0.05f;
 
 		Matrix3D mx = *draw->getInstanceMatrix();
 

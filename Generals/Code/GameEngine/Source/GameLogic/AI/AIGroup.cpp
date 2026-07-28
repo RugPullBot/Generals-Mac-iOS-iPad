@@ -26,6 +26,7 @@
 // Encapsulation of a simple group of AI agents
 // Author: Michael S. Booth, January 2002
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
+#include "Lib/trig.h"	// GeneralsX: deterministic Sin/Cos/Tan - see WWMath/gamemath.h
 
 
 #include "Common/ActionManager.h"
@@ -1839,8 +1840,8 @@ void getHelicopterOffset( Coord3D& posOut, Int idx )
   }
 
   Coord3D tempCtr = posOut;
-  posOut.x = tempCtr.x + (sin(angle) * radius);
-  posOut.y = tempCtr.y + (cos(angle) * radius);
+  posOut.x = tempCtr.x + (Sin(angle) * radius);
+  posOut.y = tempCtr.y + (Cos(angle) * radius);
 
 }
 

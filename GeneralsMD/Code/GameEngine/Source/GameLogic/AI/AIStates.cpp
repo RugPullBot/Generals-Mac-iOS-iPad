@@ -26,6 +26,7 @@
 // Implementation of AI behavior states
 // Author: Michael S. Booth, January 2002
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
+#include "Lib/trig.h"	// GeneralsX: deterministic Sin/Cos/Tan - see WWMath/gamemath.h
 
 
 #include "Common/ActionManager.h"
@@ -3909,8 +3910,8 @@ void AIFollowWaypointPathState::computeGoal(Bool useGroupOffsets)
 		dy = dest.y - m_priorWaypoint->getLocation()->y;
 		angle = WWMath::Atan2(dy, dx);
 		Real deltaAngle = angle - m_angle;
-		Real s = sin(deltaAngle);
-		Real c = cos(deltaAngle);
+		Real s = Sin(deltaAngle);
+		Real c = Cos(deltaAngle);
 		Real x = m_groupOffset.x * c - m_groupOffset.y * s;
 		Real y = m_groupOffset.y * c + m_groupOffset.x * s;
 		m_groupOffset.x = x;
