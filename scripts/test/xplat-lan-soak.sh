@@ -47,6 +47,24 @@ if [ "$LOCAL_HEAD" != "$REMOTE_HEAD" ]; then
 	exit 1
 fi
 
+# Matching commits are NOT sufficient: sourceID is baked in at COMPILE time from HEAD plus a
+# dirty-file overlay, so a binary built before the last commit reports the older revision and a
+# different source digest even though `git rev-parse` now agrees on both machines. That cost two
+# full soak runs. Compare each binary's mtime against the commit timestamp and refuse to run if
+# either predates it.
+COMMIT_EPOCH="$(git -C "$(dirname "$0")/../.." log -1 --format=%ct)"
+MAC_BIN_EPOCH="$(stat -f %m "$MAC_GAME/GeneralsXZH" 2>/dev/null || echo 0)"
+WIN_BIN_EPOCH="$(ssh "$WIN_HOST" "[int][double]::Parse((Get-Date (Get-Item '$WIN_RUN\\generalszh.exe').LastWriteTimeUtc -UFormat %s))" 2>/dev/null | tr -d '\r' | tr -d '[:space:]')"
+echo "commit epoch=$COMMIT_EPOCH  mac binary=$MAC_BIN_EPOCH  windows binary=$WIN_BIN_EPOCH"
+if [ "${MAC_BIN_EPOCH:-0}" -lt "$COMMIT_EPOCH" ]; then
+	echo "ABORT: the Mac binary predates HEAD - rebuild AFTER committing, then deploy."
+	exit 1
+fi
+if [ -n "$WIN_BIN_EPOCH" ] && [ "$WIN_BIN_EPOCH" -lt "$COMMIT_EPOCH" ]; then
+	echo "ABORT: the Windows binary predates HEAD - rebuild AFTER committing, then stage."
+	exit 1
+fi
+
 # --- 2. No stale processes on either side -----------------------------------------------------
 # A pkill that matched nothing looks identical to one that worked, so confirm the count.
 say "clearing stale processes"
