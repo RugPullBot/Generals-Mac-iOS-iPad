@@ -35,6 +35,9 @@
 // relay recognises its own control traffic by this tag alone and never has to look at, let alone
 // decrypt, a single game packet.
 static const char RELAY_REGISTRATION_TAG[] = "GXRLY";
+// GeneralsX @feature Server list. Advertising a game is what puts it in the relay's browser, and
+// NOT advertising is what keeps a private game out of it. See tools/relay/relay.js.
+static const char RELAY_ADVERTISE_TAG[] = "GXADV";
 static const Int RELAY_MAX_ROOM_LEN = 31;
 static const UnsignedInt RELAY_REGISTRATION_INTERVAL = 5000;	// ms
 
@@ -93,6 +96,10 @@ Transport::Transport()
 	m_lastRelayRegistration = 0;
 	m_relayRegistration[0] = '\0';
 	m_relayRegistrationLen = 0;
+	m_relayRoom[0] = '\0';
+	m_advertisement[0] = '\0';
+	m_advertisementLen = 0;
+	m_gameListCount = 0;
 }
 
 // GeneralsX @feature Relay transport. Everything the relay needs is decided here, once per
@@ -106,6 +113,10 @@ void Transport::initRelay( UnsignedShort port )
 	m_lastRelayRegistration = 0;
 	m_relayRegistration[0] = '\0';
 	m_relayRegistrationLen = 0;
+	m_relayRoom[0] = '\0';
+	m_advertisement[0] = '\0';
+	m_advertisementLen = 0;
+	m_gameListCount = 0;
 
 	OptionPreferences prefs;
 	const AsciiString relayHost = prefs.getRelayAddress();
@@ -154,35 +165,17 @@ void Transport::initRelay( UnsignedShort port )
 		DEBUG_LOG(("Transport::initRelay - no RelayRoom set, using '%s'; anyone else on this relay in the default room would be paired with us", room.str()));
 	}
 
-	// The room token travels in a plaintext, space-separated line, so keep it to one word and to
-	// characters that cannot be mistaken for a field separator.
-	char roomToken[RELAY_MAX_ROOM_LEN + 1];
-	Int roomLen = 0;
-	for (const char *c = room.str(); (*c != '\0') && (roomLen < RELAY_MAX_ROOM_LEN); ++c)
-	{
-		const Bool safe = isalnum((unsigned char)*c) || (*c == '-') || (*c == '_') || (*c == '.');
-		roomToken[roomLen++] = safe ? *c : '_';
-	}
-	roomToken[roomLen] = '\0';
-
-	// Our own virtual address doubles as the client id: it is the one thing that already differs
-	// between the two machines, and it makes the relay's log read like the lobby's.
-	m_relayRegistrationLen = snprintf(m_relayRegistration, sizeof(m_relayRegistration), "%s %s %d.%d.%d.%d",
-		RELAY_REGISTRATION_TAG, roomToken, PRINTF_IP_AS_4_INTS(localVirtualIP));
-
-	if (m_relayRegistrationLen <= 0 || m_relayRegistrationLen >= (Int)sizeof(m_relayRegistration))
-	{
-		DEBUG_LOG(("Transport::initRelay - relay disabled: registration for room '%s' does not fit", roomToken));
-		m_relayRegistrationLen = 0;
+	// Set the identity before building, since the registration carries it. The room may be
+	// replaced later by setRelayRoom when a game is picked out of the browser.
+	m_localVirtualIP = localVirtualIP;
+	if (!buildRelayRegistration(room.str()))
 		return;
-	}
 
 	m_relayAddr = relayAddr;
-	m_localVirtualIP = localVirtualIP;
 	m_relayEnabled = TRUE;
 
 	DEBUG_LOG(("Transport::initRelay - relaying through %d.%d.%d.%d in room '%s'; we are %d.%d.%d.%d",
-		PRINTF_IP_AS_4_INTS(m_relayAddr), roomToken, PRINTF_IP_AS_4_INTS(m_localVirtualIP)));
+		PRINTF_IP_AS_4_INTS(m_relayAddr), m_relayRoom, PRINTF_IP_AS_4_INTS(m_localVirtualIP)));
 }
 
 // GeneralsX @feature Relay transport. The header is written and read here rather than through
@@ -229,7 +222,166 @@ void Transport::sendRelayRegistration()
 		return;
 
 	m_udpsock->Write((const unsigned char *)m_relayRegistration, m_relayRegistrationLen, m_relayAddr, m_port);
+
+	// The game advertisement rides the same keepalive. That is not laziness: the list entry and
+	// the NAT mapping have to expire together, or the browser shows games nobody can reach.
+	if (m_advertisementLen > 0)
+		m_udpsock->Write((const unsigned char *)m_advertisement, m_advertisementLen, m_relayAddr, m_port);
+
 	m_lastRelayRegistration = timeGetTime();
+}
+
+/// Build (or rebuild) the registration datagram for a room, and remember the room so an
+/// advertisement can be built against it later.
+Bool Transport::buildRelayRegistration( const char *room )
+{
+	// The room token travels in a plaintext, space-separated line, so keep it to one word and to
+	// characters that cannot be mistaken for a field separator.
+	Int roomLen = 0;
+	for (const char *c = room; (*c != '\0') && (roomLen < RELAY_MAX_ROOM_LEN); ++c)
+	{
+		const Bool safe = isalnum((unsigned char)*c) || (*c == '-') || (*c == '_') || (*c == '.');
+		m_relayRoom[roomLen++] = safe ? *c : '_';
+	}
+	m_relayRoom[roomLen] = '\0';
+
+	// Our own virtual address doubles as the client id: it is the one thing that already differs
+	// between the machines, and it makes the relay's log read like the lobby's.
+	const Int len = snprintf(m_relayRegistration, sizeof(m_relayRegistration), "%s %s %d.%d.%d.%d",
+		RELAY_REGISTRATION_TAG, m_relayRoom, PRINTF_IP_AS_4_INTS(m_localVirtualIP));
+
+	if (len <= 0 || len >= (Int)sizeof(m_relayRegistration))
+	{
+		DEBUG_LOG(("Transport::buildRelayRegistration - registration for room '%s' does not fit", m_relayRoom));
+		m_relayRegistrationLen = 0;
+		return FALSE;
+	}
+
+	m_relayRegistrationLen = len;
+	return TRUE;
+}
+
+Bool Transport::setRelayRoom( const char *room )
+{
+	if (!m_relayEnabled || room == nullptr || *room == '\0')
+		return FALSE;
+
+	if (!buildRelayRegistration(room))
+		return FALSE;
+
+	// Announce at once rather than waiting out the keepalive. The caller is about to try to reach
+	// a peer through the new room, and the relay cannot forward for a member it has not heard from
+	// - so a silent 5 s gap here would look exactly like an unreachable host.
+	sendRelayRegistration();
+
+	DEBUG_LOG(("Transport::setRelayRoom - now in room '%s'", m_relayRoom));
+	return TRUE;
+}
+
+void Transport::setGameAdvertisement( const char *name, const char *map, Int players, Int slots )
+{
+	clearGameAdvertisement();
+
+	if (!m_relayEnabled || m_relayRoom[0] == '\0')
+		return;
+
+	// "<name>|<map>" is the trailing free-form field, so spaces are fine but a '|' inside the name
+	// would move the boundary and the browser would show a truncated name against the wrong map.
+	char safeName[96];
+	char safeMap[160];
+	Int n = 0;
+	for (const char *c = (name ? name : ""); *c && n < (Int)sizeof(safeName) - 1; ++c)
+		safeName[n++] = (*c == '|' || *c == '\n' || *c == '\r') ? '/' : *c;
+	safeName[n] = '\0';
+
+	n = 0;
+	for (const char *c = (map ? map : ""); *c && n < (Int)sizeof(safeMap) - 1; ++c)
+		safeMap[n++] = (*c == '|' || *c == '\n' || *c == '\r') ? '/' : *c;
+	safeMap[n] = '\0';
+
+	const Int len = snprintf(m_advertisement, sizeof(m_advertisement), "%s %s %d.%d.%d.%d %d %d %s|%s",
+		RELAY_ADVERTISE_TAG, m_relayRoom, PRINTF_IP_AS_4_INTS(m_localVirtualIP),
+		players, slots, safeName, safeMap);
+
+	if (len > 0 && len < (Int)sizeof(m_advertisement))
+		m_advertisementLen = len;
+}
+
+void Transport::clearGameAdvertisement()
+{
+	m_advertisement[0] = '\0';
+	m_advertisementLen = 0;
+}
+
+void Transport::requestGameList()
+{
+	if (!m_relayEnabled || !m_udpsock)
+		return;
+
+	// Clear first: the reply is a burst of one datagram per game, so the list is rebuilt from
+	// scratch each time rather than merged, and a game that has gone simply does not reappear.
+	m_gameListCount = 0;
+
+	static const char query[] = "GXLIST";
+	m_udpsock->Write((const unsigned char *)query, (Int)(sizeof(query) - 1), m_relayAddr, m_port);
+}
+
+Bool Transport::captureGameListReply( const UnsignedByte *msg, Int len )
+{
+	static const char tag[] = "GXGAME ";
+	static const Int tagLen = (Int)(sizeof(tag) - 1);
+
+	if (len <= tagLen || len >= 512 || memcmp(msg, tag, tagLen) != 0)
+		return FALSE;
+
+	// Copy to a NUL-terminated scratch buffer: what is on the wire is not a C string.
+	char line[512];
+	Int copy = len - tagLen;
+	if (copy > (Int)sizeof(line) - 1)
+		copy = (Int)sizeof(line) - 1;
+	memcpy(line, msg + tagLen, copy);
+	line[copy] = '\0';
+
+	// "<room> <hostIP> <players> <slots> <name>|<map>". The relay sends a single placeholder row
+	// with room "-" when it has nothing to list, which parses and is then ignored below.
+	char room[32] = { 0 };
+	char hostIP[24] = { 0 };
+	Int players = 0, slots = 0;
+	Int consumed = 0;
+	if (sscanf(line, "%31s %23s %d %d %n", room, hostIP, &players, &slots, &consumed) < 4)
+		return TRUE;	// malformed, but it WAS ours - swallow it rather than parse it as a packet
+
+	if (room[0] == '-' && room[1] == '\0')
+		return TRUE;	// "nothing listed" placeholder
+
+	if (m_gameListCount >= MAX_RELAY_LISTINGS)
+		return TRUE;
+
+	RelayGameListing &entry = m_gameList[m_gameListCount];
+	memset(&entry, 0, sizeof(entry));
+	strlcpy(entry.room, room, sizeof(entry.room));
+	entry.hostVirtualIP = ResolveIP(AsciiString(hostIP));
+	entry.players = players;
+	entry.slots = slots;
+
+	const char *rest = (consumed > 0 && consumed <= copy) ? (line + consumed) : "";
+	const char *bar = strchr(rest, '|');
+	if (bar != nullptr)
+	{
+		Int nameLen = (Int)(bar - rest);
+		if (nameLen > (Int)sizeof(entry.name) - 1)
+			nameLen = (Int)sizeof(entry.name) - 1;
+		memcpy(entry.name, rest, nameLen);
+		entry.name[nameLen] = '\0';
+		strlcpy(entry.map, bar + 1, sizeof(entry.map));
+	}
+	else
+	{
+		strlcpy(entry.name, rest, sizeof(entry.name));
+	}
+
+	++m_gameListCount;
+	return TRUE;
 }
 
 Transport::~Transport()
@@ -576,6 +728,12 @@ Bool Transport::doRecv()
 		//
 		// This replaced a single configured peer address, which was unambiguous for two machines
 		// and wrong for any more: with eight players every packet was attributed to one peer.
+		// GeneralsX @feature Server list. The relay's replies share this socket and are not game
+		// packets, so they have to be taken off the wire before the parser sees them - otherwise
+		// they are counted as unknown packets and the browser never fills in.
+		if (m_relayEnabled && captureGameListReply(recvScratch, rawLen))
+			continue;
+
 		const UnsignedByte *packet = recvScratch;
 		len = rawLen;
 		UnsignedInt senderAddr = ntohl(from.sin_addr.s_addr);

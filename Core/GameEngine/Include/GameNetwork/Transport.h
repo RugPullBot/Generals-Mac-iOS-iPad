@@ -103,6 +103,48 @@ private:
 	// useless for eight.
 	void initRelay( UnsignedShort port );			///< Reads the relay config; relay mode is on only if all of it validates.
 	void sendRelayRegistration();					///< Unencrypted hello/keepalive that tells the relay where we are.
+	Bool buildRelayRegistration( const char *room );	///< (Re)builds the registration datagram for a room.
+
+public:
+	/// Move to a different relay room at runtime. A browsable game list means many rooms on one
+	/// relay, so the room can no longer be a startup-only setting read from Options.ini: picking a
+	/// game out of the browser has to be able to change it without a restart.
+	Bool setRelayRoom( const char *room );
+
+	/// Advertise this game to the relay's list, refreshed on the registration keepalive so it
+	/// inherits that cadence for free. Passing nothing stops the advertisement, and the relay
+	/// delists a game purely by not hearing about it - so a host that crashes drops off by itself.
+	void setGameAdvertisement( const char *name, const char *map, Int players, Int slots );
+	void clearGameAdvertisement();
+	Bool isRelayEnabled() const { return m_relayEnabled; }
+
+	/// One game as the relay described it.
+	struct RelayGameListing
+	{
+		char room[32];
+		UnsignedInt hostVirtualIP;		///< Host order. This is the address a joiner dials.
+		Int players;
+		Int slots;
+		char name[96];
+		char map[160];
+	};
+	static const Int MAX_RELAY_LISTINGS = 32;
+
+	/// Ask the relay what games exist. Replies arrive asynchronously on this same socket, so the
+	/// caller pumps for a moment and then reads the list; there is no blocking form on purpose.
+	void requestGameList();
+	Int getGameListCount() const { return m_gameListCount; }
+	const RelayGameListing *getGameListing( Int i ) const
+		{ return (i >= 0 && i < m_gameListCount) ? &m_gameList[i] : nullptr; }
+
+private:
+	/// Consume a GXGAME reply. Returns TRUE if the datagram was one, so doRecv can skip it - these
+	/// share the socket with game traffic but are not game packets and must not reach the parser.
+	Bool captureGameListReply( const UnsignedByte *msg, Int len );
+
+	RelayGameListing m_gameList[MAX_RELAY_LISTINGS];
+	Int m_gameListCount;
+
 	Int writeRelayHeader( UnsignedByte *dest, UnsignedInt dstVirtualIP ) const;	///< Returns bytes written.
 	Bool readRelayHeader( const UnsignedByte *src, Int len, UnsignedInt &srcVirtualIP ) const;
 
@@ -112,6 +154,9 @@ private:
 	UnsignedInt m_lastRelayRegistration;
 	char m_relayRegistration[64];					///< Prebuilt registration datagram. Never encrypted - see sendRelayRegistration.
 	Int m_relayRegistrationLen;
+	char m_relayRoom[32];							///< Kept so the room can be rebuilt into a new registration or advertisement.
+	char m_advertisement[320];						///< Prebuilt GXADV datagram, empty when we are not hosting a listed game.
+	Int m_advertisementLen;
 
 	// Latency insertion and packet loss
 	Bool m_useLatency;

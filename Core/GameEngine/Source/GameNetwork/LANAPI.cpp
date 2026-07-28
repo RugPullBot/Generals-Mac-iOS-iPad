@@ -776,6 +776,11 @@ void LANAPI::RequestGameLeave()
 	sendMessage(&msg);
 	m_transport->update();  // Send immediately, before OnPlayerLeave below resets everything.
 
+	// GeneralsX @feature Server list. Stop advertising the moment we leave, so a browser does not
+	// offer a game that has gone. The relay would delist it anyway once the advertisements stop,
+	// but that takes a timeout - this makes a clean exit immediate.
+	m_transport->clearGameAdvertisement();
+
 	if (m_currentGame && m_currentGame->getIP(0) == m_localIP)
 	{
 		// Exit out immediately if we're hosting
@@ -939,6 +944,30 @@ void LANAPI::RequestGameOptions( AsciiString gameOptions, Bool isPublic, Unsigne
 	sendMessage(&msg, ip);
 
 	m_lastGameopt = gameOptions;
+
+	// GeneralsX @feature Server list. Refresh the relay's listing whenever the slot list changes.
+	//
+	// This is deliberately the hook: it is the ONE place both the UI host and the headless host
+	// already pass through on every change, so the advertised player count tracks the lobby
+	// without either path having to remember to update it, and without a second timer.
+	//
+	// Policy for now is that a relay host lists itself. The mechanism supports private games - the
+	// relay lists a room only while it is being advertised - but nothing exposes that choice yet.
+	if (m_transport && m_transport->isRelayEnabled() && AmIHost())
+	{
+		Int players = 0;
+		for (Int s = 0; s < MAX_SLOTS; ++s)
+		{
+			GameSlot *slot = m_currentGame->getSlot(s);
+			if (slot && slot->isOccupied())
+				++players;
+		}
+
+		AsciiString gameName;
+		gameName.translate(m_currentGame->getName());
+		m_transport->setGameAdvertisement(gameName.str(), m_currentGame->getMap().str(),
+			players, MAX_SLOTS);
+	}
 
 	int player;
 	for (player = 0; player<MAX_SLOTS; ++player)

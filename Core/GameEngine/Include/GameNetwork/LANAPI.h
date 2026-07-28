@@ -427,6 +427,12 @@ protected:
 
 	UnsignedInt					m_localIP;
 	Transport*					m_transport;
+public:
+	/// GeneralsX @feature Server list. The relay's game browser lives in Transport, because that
+	/// is what owns the socket the relay talks on. Exposed rather than mirrored through LANAPI so
+	/// there is one copy of the listing state.
+	Transport* getTransport() { return m_transport; }
+private:
 
 	UnsignedInt					m_broadcastAddr;
 

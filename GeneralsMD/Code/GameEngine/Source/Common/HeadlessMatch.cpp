@@ -36,6 +36,7 @@
 #include "GameNetwork/LANGameInfo.h"
 #include "GameNetwork/NetworkDefs.h"
 #include "GameNetwork/NetworkInterface.h"	// TheNetwork, for the live desync flag
+#include "GameNetwork/Transport.h"			// the relay game browser
 #include "Common/UserPreferences.h"	// LANPreferences
 #include "Common/OptionPreferences.h"	// relay settings, read from Options.ini
 #include "GameNetwork/GUIUtil.h"			// EnableSlotListUpdates
@@ -680,6 +681,44 @@ int HeadlessMatch::run()
 
 	if (!setUpLan())
 		return 1;
+
+	// -lanlist: ask the relay what games exist and print them. This is a browser without a UI, and
+	// it is the only way to exercise the whole list path - query, relay reply, client parse -
+	// against the real relay on a machine with no display.
+	if (TheGlobalData->m_lanListGames)
+	{
+		Transport *transport = TheLAN->getTransport();
+		if (transport == nullptr || !transport->isRelayEnabled())
+		{
+			headlessLog("-lanlist needs a relay: set RelayAddress and LocalVirtualIP in Options.ini");
+			return 1;
+		}
+
+		transport->requestGameList();
+
+		// The replies are a burst of datagrams, one per game, so there is nothing to wait FOR -
+		// wait a fixed moment and print whatever arrived. Two seconds is far longer than a relay
+		// round trip and short enough to stay usable.
+		const UnsignedInt deadline = timeGetTime() + 2000;
+		while (timeGetTime() < deadline)
+		{
+			TheLAN->update();
+			Sleep(10);
+		}
+
+		const Int count = transport->getGameListCount();
+		headlessLog("%d game(s) listed", count);
+		for (Int i = 0; i < count; ++i)
+		{
+			const Transport::RelayGameListing *g = transport->getGameListing(i);
+			if (g == nullptr)
+				continue;
+			headlessLog("  room=%s host=%d.%d.%d.%d players=%d/%d name=\"%s\" map=\"%s\"",
+				g->room, PRINTF_IP_AS_4_INTS(g->hostVirtualIP), g->players, g->slots,
+				g->name, g->map);
+		}
+		return (count > 0) ? 0 : 1;
+	}
 
 	if (!driveLobby())
 	{

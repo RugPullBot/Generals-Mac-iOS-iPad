@@ -629,6 +629,14 @@ Int parseLanSeed(char *args[], int num)
 	exit(1);
 }
 
+Int parseLanListGames(char *args[], int num)
+{
+	// Browsing without a UI. This is also the only way to exercise the whole list path - client
+	// query, relay reply, client parse - against the real relay without a display.
+	TheWritableGlobalData->m_lanListGames = TRUE;
+	return 1;
+}
+
 Int parseLanTimeout(char *args[], int num)
 {
 	if (num > 1)
@@ -1367,6 +1375,7 @@ static CommandLineParam paramsForStartup[] =
 	{ "-lanframes", parseLanFrames },
 	{ "-lantimeout", parseLanTimeout },
 	{ "-lanseed", parseLanSeed },
+	{ "-lanlist", parseLanListGames },
 
 	// TheSuperHackers @feature helmutbuhler 23/05/2025
 	// Simulate each replay in a separate process and use 1..N processes at the same time.

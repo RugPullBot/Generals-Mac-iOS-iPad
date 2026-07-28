@@ -389,6 +389,7 @@ public:
 	Int m_lanFrameLimit;							///< -lanframes <n>: stop after n logic frames, 0 = unbounded
 	UnsignedInt m_lanTimeoutMs;				///< -lantimeout <ms>: how long any single lobby step may take
 	Int m_lanSeed;									///< -lanseed <n>: force the match seed, 0 = use the random one
+	Bool m_lanListGames;							///< -lanlist: ask the relay what games exist, print them, exit
 
 	Int m_maxParticleCount;						///< maximum number of particles that can exist
 	Int m_maxFieldParticleCount;			///< maximum number of field-type particles that can exist (roughly)
