@@ -4356,7 +4356,25 @@ UnsignedInt GameLogic::getCRC( Int mode, AsciiString deepCRCFileName )
 	// object was to blame. On a second map the FIRST traced frame already differed, and in a
 	// GenericTree: static scenery that never moves. So the divergence starts earlier than 7 and is
 	// not about movement at all, and the window has to reach frame 0 to find its real origin.
-	const Bool traceObjects = isInGameLogicUpdate() && m_frame <= 10;
+	// GeneralsX @diag Claude 28/07/2026 Window is env-controlled because the frame of interest
+	// MOVES between matches. Load-time divergence is fixed (frame 0 now hashes 0 of 323 objects
+	// differing), so what is left begins mid-match - observed at frame 255 in one run, 377 in
+	// another. Hardcoding the window meant a full rebuild of both peers per attempt; now the same
+	// binary can be aimed at whatever frame the per-frame diff reports.
+	//
+	//   GX_TRACE_LO / GX_TRACE_HI   inclusive frame window, default 0..10
+	static Int s_traceLo = -1, s_traceHi = -1;
+	if (s_traceLo < 0)
+	{
+		const char *lo = getenv("GX_TRACE_LO");
+		const char *hi = getenv("GX_TRACE_HI");
+		s_traceLo = lo ? atoi(lo) : 0;
+		s_traceHi = hi ? atoi(hi) : 10;
+		fprintf(stderr, "[GXTRACE] object trace window = frames %d..%d\n", s_traceLo, s_traceHi);
+		fflush(stderr);
+	}
+	const Bool traceObjects = isInGameLogicUpdate()
+		&& (Int)m_frame >= s_traceLo && (Int)m_frame <= s_traceHi;
 
 	marker = "MARKER:Objects";
 	xferCRC->xferAsciiString(&marker);
@@ -4381,7 +4399,9 @@ UnsignedInt GameLogic::getCRC( Int mode, AsciiString deepCRCFileName )
 			// last-hex-digit difference, anything else points at a different code path entirely.
 			//
 			// Frame 0 only, so this is 12 extra floats per object exactly once per match.
-			if (m_frame == 0)
+			// Dump transforms on the FIRST traced frame, whatever that is - not literally frame 0 -
+			// so the window can be aimed at a mid-match divergence and still get the raw bits.
+			if ((Int)m_frame == s_traceLo)
 			{
 				const Real *mtx = (const Real *)obj->getTransformMatrix();
 				fprintf(stderr, "[GXMTX] id=%u", (unsigned)obj->getID());
