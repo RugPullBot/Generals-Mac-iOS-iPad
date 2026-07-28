@@ -616,6 +616,19 @@ Int parseLanFrames(char *args[], int num)
 	exit(1);
 }
 
+Int parseLanSeed(char *args[], int num)
+{
+	if (num > 1)
+	{
+		// Forcing the seed makes two SOLO headless runs on different platforms directly
+		// comparable, which isolates simulation determinism from networking entirely.
+		TheWritableGlobalData->m_lanSeed = atoi(args[1]);
+		return 2;
+	}
+	printf("-lanseed requires a value\n");
+	exit(1);
+}
+
 Int parseLanTimeout(char *args[], int num)
 {
 	if (num > 1)
@@ -1353,6 +1366,7 @@ static CommandLineParam paramsForStartup[] =
 	{ "-lanwait", parseLanWait },
 	{ "-lanframes", parseLanFrames },
 	{ "-lantimeout", parseLanTimeout },
+	{ "-lanseed", parseLanSeed },
 
 	// TheSuperHackers @feature helmutbuhler 23/05/2025
 	// Simulate each replay in a separate process and use 1..N processes at the same time.

@@ -445,6 +445,17 @@ Bool HeadlessMatch::publishGameOptions()
 		}
 	}
 
+	// -lanseed pins the match seed. RequestGameCreate seeds from GetTickCount(), so two runs
+	// never share a starting state and cannot be compared. With a fixed seed, two SOLO headless
+	// runs on different platforms produce directly diffable [GXCRC] streams with no network
+	// involved at all - which is the only way to separate a simulation divergence from a
+	// transport problem.
+	if (TheGlobalData->m_lanSeed != 0)
+	{
+		game->setSeed(TheGlobalData->m_lanSeed);
+		headlessLog("seed forced to %d", TheGlobalData->m_lanSeed);
+	}
+
 	// Log the serialised slot list. Without this there is no way to confirm from the logs that
 	// -lanai actually placed an AI, and a soak that silently ran human-only would "prove" a fix
 	// to the AI-only desync class while never exercising it - skirmish scripts attach ONLY for AI

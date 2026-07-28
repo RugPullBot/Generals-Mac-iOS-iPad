@@ -1024,6 +1024,7 @@ GlobalData::GlobalData()
 	// Generous by default: a joiner may be waiting on a human to finish launching the host,
 	// and a spurious timeout in a soak test looks exactly like a network fault.
 	m_lanTimeoutMs = 120000;
+	m_lanSeed = 0;
 
 	for (i = LEVEL_FIRST; i <= LEVEL_LAST; ++i)
 		m_healthBonus[i] = 1.0f;
