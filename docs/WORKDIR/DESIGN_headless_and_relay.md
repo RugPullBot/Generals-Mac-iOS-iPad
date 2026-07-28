@@ -170,7 +170,27 @@ Plus two that corrupted the RESULT rather than the run:
 **Rule this produced:** `LANAPI` mixes state mutation into its `On*` callbacks. In `HeadlessLANAPI`,
 override ONLY what touches `TheShell` or `LANbuttonPushed`; delegate everything else to the base.
 
-## Environment asymmetry worth fixing properly
+## RESOLVED: the working-directory path defect (2026-07-28)
+
+The asymmetry described below has been **fixed at the source**, not worked around.
+`Win32BIGFileSystem` resolved `CNC_GENERALS_ZH_PATH` and then discarded it — it never called
+`TheLocalFileSystem->setAssetRootPath`, and `Win32LocalFileSystem` inherited the base no-op.
+Windows now has the same asset-root fallback `StdLocalFileSystem` has had since 23/03/2026.
+
+Verified: AI match, cross-platform, `Data\Scripts` and `MapsZH.big` BOTH deleted from the Windows
+run folder — **1500 frames, zero differing** (`AI=Hx1 FRAMES=1500 ./scripts/test/xplat-lan-soak.sh`).
+The slot list is committed with the CRC streams because the result means nothing without it:
+skirmish scripts attach only for AI players, so a run that silently went human-only would pass
+while never touching the bug.
+
+The fallback is strictly additive — relative paths only, consulted only after the normal lookup
+fails — and excludes writes, so a failed write is never redirected into the read-only Steam
+install. `doesFileExist` got the same fallback as `openFile`, since the map cache probes before
+opening and would otherwise disagree with it.
+
+The staging in `setup-run-win64.ps1` is kept as belt-and-braces, no longer load-bearing.
+
+## Environment asymmetry worth fixing properly (historical - see above)
 
 The Windows run folder had **no `.big` files** and leaned on `CNC_GENERALS_ZH_PATH`, so its map
 cache indexed only user maps from Documents — zero built-in `maps\` entries — while the Mac game

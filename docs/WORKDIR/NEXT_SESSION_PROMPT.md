@@ -32,10 +32,23 @@ Command Center but a different ANGLE — that signature is what identifies an RN
 float drift. Proof by intervention: 13,919 of 13,919 frames differing → **0**, same binaries.
 It was AI-only because skirmish scripts attach only for AI players.
 
-Fixed by staging the file in `setup-run-win64.ps1`. **That is a workaround.** The real defect is
-that loose data files are opened by working-directory-relative paths ignoring
-`CNC_GENERALS_ZH_PATH` — same bug as `Win32Mouse.cpp:376` (the cursor issue). Fixing path
-resolution once would cover both and anything else silently missing.
+**The ROOT CAUSE IS NOW FIXED (2026-07-28 session 4), not just worked around.**
+`Win32BIGFileSystem` resolved `CNC_GENERALS_ZH_PATH` and then discarded it: it never called
+`TheLocalFileSystem->setAssetRootPath`, and `Win32LocalFileSystem` inherited the base-class no-op,
+so every loose (non-BIG) file on Windows was cwd-relative only. `StdLocalFileSystem` has had the
+asset-root fallback since 23/03/2026 behind a comment reading *"On Windows cwd == install dir so
+this is never needed"* — false the moment the game runs from a staging folder.
+
+One defect, three symptoms, all previously carrying their own staging workaround:
+`Data\Scripts\SkirmishScripts.scb` (this desync), `Data\Cursors` (`Win32Mouse.cpp:376`), and
+`MapsZH.big` (built-in maps absent from the map cache).
+
+**Proof:** AI match, cross-platform, with `Data\Scripts` AND `MapsZH.big` both deleted from the
+Windows run folder — **1500 frames, zero differing**. Evidence in
+`docs/WORKDIR/evidence/xplat-lan-ai-1500-*`, including the slot list showing `CH` (Computer Hard)
+in slot 2, because a soak that silently ran human-only would pass without exercising the bug at
+all. The staging in `setup-run-win64.ps1` is now belt-and-braces, deliberately kept rather than
+load-bearing.
 
 **SimID cannot catch this class of bug.** `.scb` files are not INI, so they are outside `m_iniCRC`.
 Both peers reported identical `engine`/`source`/`data`/`ordinal` while simulating different games.
