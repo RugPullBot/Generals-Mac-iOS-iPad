@@ -963,8 +963,18 @@ void LANAPI::RequestGameOptions( AsciiString gameOptions, Bool isPublic, Unsigne
 				++players;
 		}
 
+		// NOT the game's name. RequestGameCreate builds that as "<hexIP><hexSeed>" and then
+		// truncates to g_lanGameNameLength, which is 16 - exactly the length of the hex prefix -
+		// so the name the host actually asked for is always cut off and every game ends up called
+		// something like "0A2A000101249D48". It is a uniqueness token, not a display name.
+		// A browser wants to show who is hosting, so advertise the host player's name.
 		AsciiString gameName;
-		gameName.translate(m_currentGame->getName());
+		GameSlot *hostSlot = m_currentGame->getSlot(0);
+		if (hostSlot != nullptr && hostSlot->getName().isNotEmpty())
+			gameName.translate(hostSlot->getName());
+		else
+			gameName.translate(m_currentGame->getName());
+
 		m_transport->setGameAdvertisement(gameName.str(), m_currentGame->getMap().str(),
 			players, MAX_SLOTS);
 	}
