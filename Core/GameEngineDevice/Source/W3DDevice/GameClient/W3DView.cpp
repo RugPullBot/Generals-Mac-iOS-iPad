@@ -3757,6 +3757,42 @@ void W3DView::updateTerrain()
 		drawHeight = static_cast<Int>(drawHeight * terrainScale);
 	}
 
+	// GeneralsX @bugfix Claude 28/07/2026 Scale the terrain draw window with camera HEIGHT.
+	//
+	// The size chosen above depends only on camera PITCH. Zooming out scales the camera position
+	// uniformly on X/Y/Z (buildCameraPosition, :298-300), so the pitch angle is INVARIANT under zoom
+	// and neither branch above ever changes as you zoom. The drawn terrain therefore stayed a fixed
+	// square - 129 cells, or 135 with the default 1.05 TerrainDrawDistanceScale, i.e. ~1350 world
+	// units - no matter how far out the camera went.
+	//
+	// Past roughly the design height that square stops covering the view, and everything outside it
+	// is simply never submitted, so it renders BLACK. Reported as "zoomed out to the max and most of
+	// the screen is black"; scrolling re-centres the same window and the missing ground appears,
+	// which is what proves the terrain exists and is merely undrawn.
+	//
+	// Objects keep drawing out there because they are bounded differently: the heightmap is
+	// Set_Force_Visible(TRUE) (BaseHeightMap.cpp) so it is never frustum-culled and its extent comes
+	// solely from this draw size, while props and trees are culled per-instance against the frustum
+	// with bounds covering the whole map. Hence buildings floating over black.
+	//
+	// EnforceMaxCameraHeight = No (SagePatch.ini) is what lets the camera get up there at all, but
+	// clamping the camera instead would only hide this - the window is already undersized at the
+	// stock 310 limit on a wide aspect.
+	//
+	// Snapped to the renderer's 1 + 32k tiling: HeightMap.cpp derives its vertex-buffer column count
+	// from (width-1) and handles a partial trailing block, but keeping to whole tiles avoids relying
+	// on that. Ratio is clamped at 1.0 so normal play is bit-for-bit unchanged - this only ever
+	// grows the window, never shrinks it below the tuned defaults.
+	const Real heightRatio = m_currentHeightAboveGround / ViewDefaultMaxHeightAboveTerrain;
+	if (heightRatio > 1.0f)
+	{
+		const Int tileLen = VERTEX_BUFFER_TILE_LENGTH;	// a #define in WorldHeightMap.h, not a member
+		const Int tilesW = static_cast<Int>(ceilf((drawWidth  - 1) * heightRatio / (Real)tileLen));
+		const Int tilesH = static_cast<Int>(ceilf((drawHeight - 1) * heightRatio / (Real)tileLen));
+		drawWidth  = 1 + tilesW * tileLen;
+		drawHeight = 1 + tilesH * tileLen;
+	}
+
 	TheTerrainRenderObject->setTerrainDrawSize(drawWidth, drawHeight);
 	TheTerrainRenderObject->updateCenter(m_3DCamera, &cameraPivot, it);
 
