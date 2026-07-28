@@ -94,6 +94,48 @@ const char *lastReplayFileName = "00000000";	// a name the user is unlikely to e
 // Note that this will overflow on January 18, 2038. @todo Upgrade to 64 bits when we break compatibility.
 typedef int32_t replay_time_t;
 
+// GeneralsX @bugfix Claude 28/07/2026 Replay strings are UTF-16 on the wire, not native wchar_t.
+//
+// A Mac-recorded .rep crashed Windows with an access violation before frame 0, and the Mac refused
+// Windows replays. Cause: the header's strings were written and read with File::writeChar(const
+// WideChar*) / File::readWideChar(), which move sizeof(WideChar) bytes - and WideChar is wchar_t,
+// which is 4 BYTES on macOS/clang and 2 BYTES on Windows/MSVC. Visible in the file itself: a Mac
+// replay contains "4c00 0000 6100 0000 7300 0000 7400 0000" = 'L','a','s','t' at four bytes each.
+// Windows reads those as 2-byte characters, desynchronises mid-header and walks off into garbage.
+//
+// Retail .rep files are UTF-16, so pinning the wire format to 16-bit both fixes cross-platform
+// playback AND makes our replays match the format the rest of the Generals ecosystem expects.
+// Everything else in the header was already portable: SYSTEMTIME here is a compat struct of eight
+// uint16_t (16 bytes, same as the Win32 one) and replay_time_t is int32_t.
+//
+// Consequence: .rep files previously written by a Mac or Linux build no longer load. They could
+// never be read by anything else anyway, which is exactly the bug.
+//
+// This is why the CI keeps separate linux_*.rep and macos_*.rep sets instead of sharing one.
+static void writeUnicodeString16(File *file, const UnicodeString &str)
+{
+	const WideChar *src = str.str();
+	for (; src && *src; ++src)
+	{
+		// Characters outside the BMP would need surrogate pairs; game text is BMP-only and retail
+		// wrote a bare 16-bit unit here too, so a truncating cast matches the format exactly.
+		uint16_t unit = (uint16_t)(*src);
+		file->write(&unit, sizeof(unit));
+	}
+	const uint16_t terminator = 0;
+	file->write(&terminator, sizeof(terminator));
+}
+
+// Returns the next UTF-16 code unit, or WEOF at end of file. Mirrors File::readWideChar's contract
+// so readUnicodeString below is unchanged apart from the call.
+static Int readWideChar16(File *file)
+{
+	uint16_t unit = 0;
+	if (file->read(&unit, sizeof(unit)) != sizeof(unit))
+		return WEOF;
+	return (Int)unit;
+}
+
 static time_t startTime;
 static const UnsignedInt startTimeOffset = 6;
 static const UnsignedInt endTimeOffset = startTimeOffset + sizeof(replay_time_t);
@@ -556,8 +598,7 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 	// Print out the name of the replay.
 	UnicodeString replayName;
 	replayName = TheGameText->fetch("GUI:LastReplay");
-	m_file->writeFormat(L"%s", replayName.str());
-	m_file->writeChar(L"\0");
+	writeUnicodeString16(m_file, replayName);
 
 	// Date and Time
 	SYSTEMTIME systemTime;
@@ -568,10 +609,8 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 	UnicodeString versionString = TheVersion->getUnicodeVersion();
 	UnicodeString versionTimeString = TheVersion->getUnicodeBuildTime();
 	UnsignedInt versionNumber = TheVersion->getVersionNumber();
-	m_file->writeFormat(L"%s", versionString.str());
-	m_file->writeChar(L"\0");
-	m_file->writeFormat(L"%s", versionTimeString.str());
-	m_file->writeChar(L"\0");
+	writeUnicodeString16(m_file, versionString);
+	writeUnicodeString16(m_file, versionTimeString);
 	m_file->write(&versionNumber, sizeof(versionNumber));
 	m_file->write(&(TheGlobalData->m_exeCRC), sizeof(TheGlobalData->m_exeCRC));
 	m_file->write(&(TheGlobalData->m_iniCRC), sizeof(TheGlobalData->m_iniCRC));
@@ -1402,7 +1441,7 @@ UnicodeString RecorderClass::readUnicodeString() {
 	const Int maxChars = (Int)(sizeof(str) / sizeof(str[0]));
 	Int index = 0;
 
-	Int c = m_file->readWideChar();
+	Int c = readWideChar16(m_file);
 	if (c == EOF) {
 		str[index] = 0;
 	}
@@ -1417,7 +1456,7 @@ UnicodeString RecorderClass::readUnicodeString() {
 	// one that is bounds-checked; the trailing terminator below then truncates as before.
 	while (index + 1 < maxChars && str[index] != 0) {
 		++index;
-		Int c = m_file->readWideChar();
+		Int c = readWideChar16(m_file);
 		if (c == EOF) {
 			str[index] = 0;
 			break;
