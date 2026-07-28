@@ -383,10 +383,17 @@ void StartPressed()
 
 }
 
+// GeneralsX @bugfix Claude 28/07/2026 Null-guard the widgets. These are only assigned by
+// LanGameOptionsMenuInit, but the caller is LANGameInfo::resetAccepted() - a STATE operation on
+// the slot list that LANAPI::OnPlayerJoin performs for every join. Any path that resets accepts
+// without the lobby screen being up therefore dereferenced a null window: a headless host
+// crashed here the moment a peer joined. Same class as OnChat's existing chatWindow guard.
 void LANEnableStartButton(Bool enabled)
 {
-	buttonStart->winEnable(enabled);
-	buttonSelectMap->winEnable(enabled);
+	if (buttonStart != nullptr)
+		buttonStart->winEnable(enabled);
+	if (buttonSelectMap != nullptr)
+		buttonSelectMap->winEnable(enabled);
 }
 
 static void handleColorSelection(int index)
