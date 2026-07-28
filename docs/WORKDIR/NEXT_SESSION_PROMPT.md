@@ -6,9 +6,14 @@ Paste everything below the line into a fresh session.
 
 Read these first, in this order:
 
-- `~/GeneralsX-src/docs/WORKDIR/STATE_2026-07-28_session3.md` — what the overnight session established
-- `~/GeneralsX-src/docs/WORKDIR/DESIGN_headless_and_relay.md` — the headless/relay design and VPS state
-- `git -C ~/GeneralsX-src log --oneline -30` — the commit messages carry the *why*
+1. `~/GeneralsX-src/docs/WORKDIR/STATE_2026-07-28_session4.md` — **START HERE.** The most recent
+   dropoff: what is proven, the one open question, and the exact experiment left half-finished.
+   Its "THE ONE OPEN QUESTION" section is the task.
+2. `~/GeneralsX-src/docs/WORKDIR/DESIGN_headless_and_relay.md` — the relay design, the table of
+   eight silent failures, and the working VPS build recipe.
+3. `~/GeneralsX-src/docs/WORKDIR/STATE_2026-07-28_session3.md` — older, for the two desyncs only.
+   Anything it says about the `.scb` workaround is superseded by session 4.
+4. `git -C ~/GeneralsX-src log --oneline -30` — the commit messages carry the *why*.
 
 **Goal:** Mac, iPad and Windows play together without desyncing — **DONE, see below** — and next,
 online play through a relay server so it is not limited to one LAN.
