@@ -171,14 +171,28 @@ public:
 	virtual void OnNameChange( UnsignedInt, UnicodeString ) override {}
 	virtual void OnGameStartTimer( Int ) override {}
 
+	// CAUTION: the three callbacks below are NOT UI. LANAPI mixes lobby state mutation into its
+	// On* callbacks, so overriding them without delegating silently breaks the host's
+	// bookkeeping. That is not a theoretical risk - log-only versions of OnAccept and OnHasMap
+	// made the host ignore a peer that had joined, had the map and had accepted, and it then
+	// waited out its full timeout. Only override what touches TheShell or LANbuttonPushed.
+
 	virtual void OnPlayerJoin( Int slot, UnicodeString playerName ) override
 	{
 		headlessLog("player joined slot %d", slot);
+		// Base calls resetAccepted() and re-broadcasts the options. Skipping it leaves peers
+		// holding a stale slot list.
+		LANAPI::OnPlayerJoin(slot, playerName);
 	}
 
-	virtual void OnPlayerLeave( UnicodeString ) override
+	virtual void OnPlayerLeave( UnicodeString player ) override
 	{
 		headlessLog("a player left");
+		// Delegate ONLY when the leaver is not us. The base's "we are leaving" branch sets
+		// LANbuttonPushed and pops the shell; its other branch forces the slot-list resend the
+		// host needs when a peer drops.
+		if (GetMyName().compare(player) != 0)
+			LANAPI::OnPlayerLeave(player);
 	}
 
 	virtual void OnHostLeave() override
@@ -191,12 +205,17 @@ public:
 	virtual void OnAccept( UnsignedInt playerIP, Bool status ) override
 	{
 		headlessLog("accept from %d.%d.%d.%d = %d", PRINTF_IP_AS_4_INTS(playerIP), (Int)status);
+		// This is where setAccept()/unAccept() actually happens - handleSetAccept only calls
+		// through to here. Without this the host never registers that anyone is ready.
+		LANAPI::OnAccept(playerIP, status);
 	}
 
 	virtual void OnHasMap( UnsignedInt playerIP, Bool status ) override
 	{
 		if (!status)
 			headlessLog("peer %d.%d.%d.%d does NOT have the map", PRINTF_IP_AS_4_INTS(playerIP));
+		// This is where setMapAvailability() happens.
+		LANAPI::OnHasMap(playerIP, status);
 	}
 
 	virtual void OnChat( UnicodeString player, UnsignedInt ip,
