@@ -98,8 +98,42 @@ void PopulateRemoteIPComboBox()
 	const UnsignedInt peerVirtualIP = prefs.getPeerVirtualIP();
 	UnicodeString peerEntry;
 
-	if (relayMode && peerVirtualIP != 0)
+	// GeneralsX @feature Server list. Live games the relay knows about go first - this is the
+	// browser. The entry has to stay dialable, because JoinDirectConnectGame reads the combo box
+	// text back and parses an address out of it; it already splits on '(' before doing so, so an
+	// annotation in parentheses is carried for free and needs no change there.
+	Int listedGames = 0;
+	if (relayMode && TheLAN != nullptr && TheLAN->getTransport() != nullptr)
 	{
+		Transport *transport = TheLAN->getTransport();
+		const Int count = transport->getGameListCount();
+		for (Int g = 0; g < count; ++g)
+		{
+			const Transport::RelayGameListing *game = transport->getGameListing(g);
+			if (game == nullptr || game->hostVirtualIP == 0)
+				continue;
+
+			// Do not offer our own game - a host browsing its own lobby would be dialling itself.
+			if (game->hostVirtualIP == prefs.getLocalVirtualIP())
+				continue;
+
+			UnicodeString wideName, wideMap;
+			wideName.translate(AsciiString(game->name));
+			wideMap.translate(AsciiString(game->map));
+
+			UnicodeString listing;
+			listing.format(L"%d.%d.%d.%d (%ls  %d/%d  %ls)",
+				PRINTF_IP_AS_4_INTS(game->hostVirtualIP),
+				wideName.str(), game->players, game->slots, wideMap.str());
+			GadgetComboBoxAddEntry(comboboxRemoteIP, listing, white);
+			++listedGames;
+		}
+	}
+
+	if (relayMode && peerVirtualIP != 0 && listedGames == 0)
+	{
+		// Only when the relay offered nothing: with a live list this is redundant, and a bare
+		// address next to described games reads like a broken entry.
 		peerEntry.format(L"%d.%d.%d.%d", PRINTF_IP_AS_4_INTS(peerVirtualIP));
 		GadgetComboBoxAddEntry(comboboxRemoteIP, peerEntry, white);
 	}
@@ -125,7 +159,7 @@ void PopulateRemoteIPComboBox()
 		GadgetComboBoxAddEntry(comboboxRemoteIP, entry, white);
 	}
 
-	if (!peerEntry.isEmpty() || numRemoteIPs > 0)
+	if (listedGames > 0 || !peerEntry.isEmpty() || numRemoteIPs > 0)
 	{
 		GadgetComboBoxSetSelectedPos(comboboxRemoteIP, 0, TRUE);
 	}
@@ -402,6 +436,14 @@ void NetworkDirectConnectInit( WindowLayout *layout, void *userData )
 		TheLAN->SetLocalIP(IP);
 	}
 
+	// GeneralsX @feature Server list. Ask the relay what games exist as soon as the transport is
+	// up. The replies arrive asynchronously on the same socket, so nothing is waited on here -
+	// NetworkDirectConnectUpdate notices them and refills the list.
+	if (TheLAN->getTransport() != nullptr && TheLAN->getTransport()->isRelayEnabled())
+	{
+		TheLAN->getTransport()->requestGameList();
+	}
+
 	UnsignedInt ip = TheLAN->GetLocalIP();
 	ipstr.format(L"%d.%d.%d.%d", PRINTF_IP_AS_4_INTS(ip));
 	GadgetStaticTextSetText(staticLocalIP, ipstr);
@@ -458,6 +500,32 @@ void NetworkDirectConnectShutdown( WindowLayout *layout, void *userData )
 //-------------------------------------------------------------------------------------------------
 void NetworkDirectConnectUpdate( WindowLayout * layout, void *userData)
 {
+	// GeneralsX @feature Server list. The relay's replies arrive asynchronously, one datagram per
+	// game, so the list fills in over a few frames rather than all at once. Refill the combo box
+	// when the count changes rather than every frame, so a player part-way through opening the
+	// dropdown does not have it rebuilt under them.
+	//
+	// The transport is pumped here too: on this screen nothing else does it, and without a pump
+	// the replies sit in the socket and the browser stays empty - the same trap that made the
+	// headless driver have to pump LANAPI itself.
+	static Int lastListedCount = -1;
+	if (TheLAN != nullptr && TheLAN->getTransport() != nullptr
+		&& TheLAN->getTransport()->isRelayEnabled())
+	{
+		TheLAN->update();
+
+		const Int count = TheLAN->getTransport()->getGameListCount();
+		if (count != lastListedCount)
+		{
+			lastListedCount = count;
+			PopulateRemoteIPComboBox();
+		}
+	}
+	else
+	{
+		lastListedCount = -1;
+	}
+
 	// We'll only be successful if we've requested to
 	if(isShuttingDown && TheShell->isAnimFinished() && TheTransitionHandler->isFinished())
 		shutdownComplete(layout);
