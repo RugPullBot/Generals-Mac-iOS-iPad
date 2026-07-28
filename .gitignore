@@ -101,4 +101,6 @@ ios/build/
 ios/GeneralsXZH.xcodeproj/
 
 # Local iOS signing identity (per-machine, never shared)
-ios/signing.local.env
+# Glob, not the bare name: a hand-made copy like signing.local.env.bak was NOT covered by the
+# exact match and showed up as untracked, one `git add -A` away from publishing the identity.
+ios/signing.local.env*

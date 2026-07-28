@@ -17,8 +17,15 @@ set -uo pipefail
 WIN_HOST="${WIN_HOST:-User@192.168.10.89}"
 MAC_GAME="${MAC_GAME:-$HOME/GeneralsX/GeneralsZH}"
 WIN_RUN='C:\dev\GeneralsX-run'
+# Where the retail data actually lives. See the joiner launch below - omitting this does not
+# error, it hangs.
+WIN_DATA="${WIN_DATA:-C:\Program Files (x86)\Steam\steamapps\common\Command & Conquer Generals - Zero Hour}"
 MAP="${MAP:-maps\\twilight flame\\twilight flame.map}"
 FRAMES="${FRAMES:-2000}"
+# Windows engine init alone takes ~45s before the joiner reaches the lobby, so both sides need
+# a lobby timeout well above that or the host gives up while the peer is still loading.
+HOST_TIMEOUT="${HOST_TIMEOUT:-300000}"
+WIN_TIMEOUT="${WIN_TIMEOUT:-300000}"
 MAC_IP="${MAC_IP:-192.168.10.51}"
 OUT="${OUT:-$(pwd)/soak-out}"
 
@@ -49,13 +56,18 @@ MAC_LEFT="$(pgrep -f GeneralsXZH | wc -l | tr -d ' ')"   # macOS pgrep has no -c
 echo "mac processes remaining: $MAC_LEFT"
 [ "$MAC_LEFT" = "0" ] || { echo "ABORT: could not clear Mac processes"; exit 1; }
 
-ssh "$WIN_HOST" 'Stop-Process -Name GeneralsXZH -Force -ErrorAction SilentlyContinue; (Get-Process GeneralsXZH -ErrorAction SilentlyContinue | Measure-Object).Count' 2>/dev/null | tr -d '\r'
+# Assert this, do not just print it. The LAN roles deliberately do NOT enable multi-instance,
+# so a single leftover process holds the single-instance mutex and the new joiner stalls during
+# init with almost no output - which looks like a network failure, not a stale process.
+WIN_LEFT="$(ssh "$WIN_HOST" 'Stop-Process -Name generalszh -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 3; (Get-Process generalszh -ErrorAction SilentlyContinue | Measure-Object).Count' 2>/dev/null | tr -d '\r' | tr -d '[:space:]')"
+echo "windows processes remaining: $WIN_LEFT"
+[ "$WIN_LEFT" = "0" ] || { echo "ABORT: could not clear Windows processes"; exit 1; }
 
 # --- 3. Host on the Mac, join from Windows ----------------------------------------------------
 say "starting Mac host"
 (
 	cd "$MAC_GAME" && ./run.sh -headless -lanhost soak \
-		-lanmap "$MAP" -lanwait 1 -lanframes "$FRAMES"
+		-lanmap "$MAP" -lanwait 1 -lanframes "$FRAMES" -lantimeout "$HOST_TIMEOUT"
 ) > "$OUT/mac.out" 2> "$OUT/mac.err" &
 MAC_PID=$!
 
@@ -63,16 +75,34 @@ MAC_PID=$!
 sleep 10
 
 say "starting Windows joiner"
-ssh "$WIN_HOST" "cd $WIN_RUN; .\\GeneralsXZH.exe -headless -lanjoin $MAC_IP -lanframes $FRAMES 2> win.err" \
-	> "$OUT/win.out" 2>&1
-WIN_RC=$?
+# generalszh.exe is a WINDOWS-subsystem binary, so PowerShell does NOT wait for it: invoking it
+# directly returns instantly with exit 0 and no output, which looks exactly like a run that
+# produced nothing. Start-Process -Wait is what actually blocks, and the redirects have to be
+# absolute paths because -WorkingDirectory does not apply to them.
+#
+# The working directory matters beyond convenience: loose data files are opened relative to it
+# (SidesList.cpp:520), which is how SkirmishScripts.scb went missing and caused a silent desync.
+#
+# CNC_GENERALS_ZH_PATH is MANDATORY and its absence is silent: without it the engine finds no
+# game data, stops dead at "[INI] ERROR: No files read from directory 'Data\INI\Default\GameData'"
+# and hangs there forever with 1239 bytes of stderr. That looks exactly like a network failure
+# from the host's side - the host just waits out its timeout with no peer. It is not session 0:
+# a headless replay fails the same way without it and succeeds from session 0 with it.
+ssh "$WIN_HOST" "\$env:CNC_GENERALS_ZH_PATH = '$WIN_DATA'; \
+	\$p = Start-Process cmd -ArgumentList '/c','generalszh.exe -headless -lanjoin $MAC_IP -lanframes $FRAMES -lantimeout $WIN_TIMEOUT 2> $WIN_RUN\\win.err' \
+	-WorkingDirectory '$WIN_RUN' -NoNewWindow -Wait -PassThru; \
+	Write-Output \"EXIT=\$(\$p.ExitCode)\"" > "$OUT/win.status" 2>&1
+WIN_RC=$(tr -d '\r' < "$OUT/win.status" | sed -n 's/^EXIT=//p')
+cat "$OUT/win.status"
 
 wait $MAC_PID
 MAC_RC=$?
 
 echo "mac exit=$MAC_RC  windows exit=$WIN_RC"
 
-scp -q "$WIN_HOST:$WIN_RUN\\win.err" "$OUT/win.err" || echo "WARN: could not fetch win.err"
+# Forward slashes: the remote path is re-parsed by a shell on the Windows side, which eats the
+# backslashes and then reports the file as missing even though it is there.
+scp -q "$WIN_HOST:C:/dev/GeneralsX-run/win.err" "$OUT/win.err" || echo "WARN: could not fetch win.err"
 
 # --- 4. Diff the CRC streams ------------------------------------------------------------------
 say "comparing CRC streams"
