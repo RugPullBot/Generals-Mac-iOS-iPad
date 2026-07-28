@@ -88,6 +88,17 @@ public:
 
 	// --- Callbacks that stock LANAPI implements by driving the shell ------------------------
 
+	/// LANAPI hardcodes m_actionTimeout to 5000 ms, which is a LAN figure. A direct-connect join
+	/// across the internet needs several exchanges - Request GameInfo, Game Announce, Request
+	/// Join, Join Accept - each gated by LANAPI::update()'s own 200 ms throttle, so on a WAN link
+	/// the Join Accept routinely arrives AFTER the pending action has already expired into
+	/// RET_TIMEOUT. The packets are fine; the deadline is not.
+	///
+	/// The failure is deeply misleading: the host logs "player joined slot 1" and the joiner logs
+	/// receiving Join Accept, yet the joiner still reports "join failed". Nothing looks dropped
+	/// because nothing was dropped.
+	void setActionTimeout(UnsignedInt ms) { m_actionTimeout = ms; }
+
 	virtual void OnGameCreate( ReturnType ret ) override
 	{
 		if (ret == RET_OK)
@@ -312,6 +323,18 @@ Bool HeadlessMatch::setUpLan()
 			return FALSE;
 		}
 		ip = list->getIP();
+	}
+
+	// Raise the pending-action deadline before init so a WAN join is not abandoned mid-handshake.
+	// LAN play is unaffected: a local join completes in well under the stock 5 s, so a larger
+	// ceiling only changes how long a genuinely unreachable peer takes to give up - and -lanjoin
+	// is bounded by -lantimeout anyway.
+	{
+		UnsignedInt actionMs = TheGlobalData->m_lanTimeoutMs;
+		if (actionMs > 60000) actionMs = 60000;	// no point waiting longer than a minute
+		if (actionMs < 5000)  actionMs = 5000;	// never tighter than the stock LAN value
+		static_cast<HeadlessLANAPI*>(TheLAN)->setActionTimeout(actionMs);
+		headlessLog("join action timeout %u ms", actionMs);
 	}
 
 	TheLAN->init();
