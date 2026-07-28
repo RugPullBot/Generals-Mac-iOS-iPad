@@ -88,6 +88,64 @@ on cellular and the failure would look like random desyncs on iPhone only.
       Windows needs `C:\dev\GeneralsX` synced (it is ~10 commits behind) and rebuilt; iPad and
       iPhone need reinstalling, since `sourceID` has moved and a stale build cannot join.
 
+---
+
+# Phase 2: a server list, served by the relay
+
+**Why this exists:** the Online tab dials `peerchat.gamespy.com` and `gamestats.gamespy.com`.
+GameSpy shut down in 2014, so "CANNOT CONNECT" is the correct result and always will be. There is
+no hostname override in the tree. A server list therefore needs a backend we control, and the relay
+is already most of one — it tracks rooms and knows who is in them. This makes it the third role the
+design doc predicted: NAT relay, desync arbiter, **and** matchmaker.
+
+## The thing that shapes the design
+
+Today a room *is* a game: one room token, hardcoded in `Options.ini`, one match. A browsable list
+means **many rooms on one relay**, and a client that can pick one at runtime. So:
+
+* The relay has to distinguish an **advertised** (listed) room from a private one, or every private
+  game leaks into the browser.
+* The client has to be able to **change room after startup**. `initRelay` prebuilds the registration
+  datagram once, so this needs a real (small) change rather than a config edit.
+
+## Protocol — plaintext, same shape as `GXRLY`
+
+The relay stays payload-blind; these are control datagrams on 8086, recognised by their tag alone.
+
+```
+GXADV <room> <hostVirtualIP> <players>/<slots> <name>|<map>   host -> relay, every 5s
+GXLIST                                                        client -> relay
+GXGAME <room> <hostVirtualIP> <players>/<slots> <name>|<map>  relay -> client, one per game
+```
+
+A room with no `GXADV` in the last interval is simply not listed — no separate teardown, and a host
+that crashes drops off the list on its own.
+
+## Tasks
+
+- [x] 11. Relay: track advertisements per room, expire them on the existing sweep, answer `GXLIST`.
+- [x] 12. Relay: refuse a **duplicate** virtual IP within a room, the same way a full room is
+      refused. Today two players sharing a `LocalVirtualIP` look to the relay like one member that
+      keeps moving, which is the single most likely way to break a lobby and is currently invisible.
+- [ ] 13. Client: `Transport::setRelayRoom()` — rebuild the registration at runtime so a browser
+      selection can switch rooms without an `Options.ini` edit and a restart.
+- [ ] 14. Client: send `GXADV` while hosting, from the same place the registration keepalive is
+      sent, so it inherits the NAT-keepalive cadence for free.
+- [ ] 15. Client: query `GXLIST` and populate the **Direct Connect** screen's remote list with live
+      games. Direct Connect, not the Online tab: the Online screens are wired through the GameSpy
+      peer/staging-room objects, and re-pointing them is a far larger job than the browser itself.
+- [ ] 16. Verify: two concurrent games on one relay, each listed, each joinable, neither seeing the
+      other's traffic. Then the 8-man matrix.
+
+## Known limit of this phase, stated up front
+
+`LocalVirtualIP` is still configured per machine. That is fine for a known group of devices and
+**not** fine for public matchmaking between strangers, where two players will eventually both be
+`10.42.0.1`. Task 12 turns that from a silent lobby corruption into a refusal, which is the honest
+interim. Properly fixing it means the relay **assigns** the virtual address on join, and that is a
+deeper change: identity is currently decided before registration and is threaded through
+`LANAPI::m_localIP`, `GameInfo`'s local IP and slot matching. Deliberately not in this phase.
+
 ## Risks
 
 * **Protocol break.** The 12-byte header is incompatible with the current 2-player relay. Nothing is

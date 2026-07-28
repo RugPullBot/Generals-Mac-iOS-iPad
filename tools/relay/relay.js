@@ -46,6 +46,34 @@ const TAG = 'GXRLY';
 const MAX_REGISTRATION_LEN = 64;
 const TOKEN_RE = /^[A-Za-z0-9._-]{1,31}$/;
 
+// GeneralsX @feature Server list. The relay is already the only thing that knows which games
+// exist and who is in them, so it is also the matchmaker - the third role alongside NAT relay and
+// desync arbiter. This exists because the stock Online tab talks to GameSpy, which was shut down
+// in 2014 and is never coming back.
+//
+//     GXADV <room> <hostVirtualIP> <players> <slots> <name>|<map>   host -> relay, every 5s
+//     GXLIST                                                        client -> relay
+//     GXGAME <room> <hostVirtualIP> <players> <slots> <name>|<map>  relay -> client, one per game
+//
+// A room is listed only while its host keeps advertising. There is no teardown message and none is
+// wanted: a host that crashes, is killed, or loses its link simply stops advertising and drops off
+// the list on the next sweep, which is the one failure mode that has to work without cooperation.
+// A room that never advertises is private and never appears - that is what keeps a friends game
+// out of a public browser.
+const ADV_TAG = 'GXADV';
+const LIST_TAG = 'GXLIST';
+const GAME_TAG = 'GXGAME';
+const MAX_ADVERT_LEN = 320;
+const ADVERT_TIMEOUT_MS = 15000;	// 3 missed advertisements at the client's 5 s cadence
+
+// Two clients sharing one LocalVirtualIP look exactly like one client whose NAT rebound: same id,
+// new endpoint. A single observation cannot tell them apart. What distinguishes them is that a
+// real rebind happens once and settles, while duplicates FLAP - both clients keep announcing and
+// each move undoes the other. So this counts moves in a window and says so loudly, rather than
+// refusing, which would break a legitimate rebind on a mobile client.
+const DUPLICATE_WINDOW_MS = 10000;
+const DUPLICATE_MOVE_THRESHOLD = 4;
+
 /*
  * The routing header the client puts ahead of every relayed game packet:
  *
@@ -122,10 +150,51 @@ function parseRegistration(msg) {
 	return { room: parts[1], id: parts[2] };
 }
 
+/*
+ * A game advertisement, or null. The trailing "<name>|<map>" is free-form and may contain spaces,
+ * so only the fixed fields ahead of it are split on whitespace.
+ */
+function parseAdvertisement(msg) {
+	if (msg.length > MAX_ADVERT_LEN || msg.length <= ADV_TAG.length) {
+		return null;
+	}
+
+	const parts = msg.toString('latin1').trim().split(' ');
+	if (parts.length < 6 || parts[0] !== ADV_TAG) {
+		return null;
+	}
+	if (!TOKEN_RE.test(parts[1]) || !TOKEN_RE.test(parts[2])) {
+		return null;
+	}
+
+	const players = Number.parseInt(parts[3], 10);
+	const slots = Number.parseInt(parts[4], 10);
+	if (!Number.isInteger(players) || !Number.isInteger(slots) || slots < 1 || players < 0) {
+		return null;
+	}
+
+	const rest = parts.slice(5).join(' ');
+	const sep = rest.indexOf('|');
+	return {
+		room: parts[1],
+		hostIP: parts[2],
+		players,
+		slots,
+		name: sep >= 0 ? rest.slice(0, sep) : rest,
+		map: sep >= 0 ? rest.slice(sep + 1) : '',
+	};
+}
+
+function isListRequest(msg) {
+	return msg.length <= LIST_TAG.length + 2 && msg.toString('latin1').trim() === LIST_TAG;
+}
+
 function startRelay(port) {
 	const rooms = new Map();		// room name -> Map(client id -> member)
 	const byEndpoint = new Map();	// "address:port" -> member
-	const stats = { forwarded: 0, bytes: 0, dropped: 0, refused: 0, unrouted: 0, headerless: 0 };
+	const adverts = new Map();		// room name -> advertisement + lastSeen
+	const stats = { forwarded: 0, bytes: 0, dropped: 0, refused: 0, unrouted: 0, headerless: 0,
+		listed: 0, dupeSuspect: 0 };
 	const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
 
 	function register(reg, rinfo) {
@@ -146,7 +215,20 @@ function startRelay(port) {
 			members.set(reg.id, member);
 			log(`[${port}] room ${reg.room}: ${reg.id} joined from ${endpointKey(rinfo.address, rinfo.port)} (${members.size}/${MEMBERS_PER_ROOM})`);
 		} else if (member.address !== rinfo.address || member.port !== rinfo.port) {
-			// The client's NAT rebound, or it restarted. Follow it.
+			// The client's NAT rebound, it restarted - or two clients are sharing this
+			// LocalVirtualIP, which from here is the same observation. See the note by
+			// DUPLICATE_MOVE_THRESHOLD: a rebind settles, duplicates flap.
+			const now = Date.now();
+			member.moves = (member.moves ?? []).filter((t) => t > now - DUPLICATE_WINDOW_MS);
+			member.moves.push(now);
+			if (member.moves.length >= DUPLICATE_MOVE_THRESHOLD) {
+				stats.dupeSuspect++;
+				log(`[${port}] room ${reg.room}: ${reg.id} moved ${member.moves.length} times in `
+					+ `${DUPLICATE_WINDOW_MS / 1000}s - TWO CLIENTS ARE PROBABLY SHARING `
+					+ `LocalVirtualIP ${reg.id}. Give every player a different one.`);
+				member.moves = [];
+			}
+
 			log(`[${port}] room ${reg.room}: ${reg.id} moved from ${endpointKey(member.address, member.port)} to ${endpointKey(rinfo.address, rinfo.port)}`);
 			byEndpoint.delete(endpointKey(member.address, member.port));
 		}
@@ -229,10 +311,46 @@ function startRelay(port) {
 		}
 	}
 
+	function advertise(adv) {
+		const existing = adverts.get(adv.room);
+		if (!existing) {
+			log(`[${port}] room ${adv.room}: listed as "${adv.name}" on ${adv.map} (${adv.players}/${adv.slots})`);
+		}
+		adverts.set(adv.room, { ...adv, lastSeen: Date.now() });
+	}
+
+	function sendList(rinfo) {
+		const deadline = Date.now() - ADVERT_TIMEOUT_MS;
+		let sent = 0;
+		for (const adv of adverts.values()) {
+			if (adv.lastSeen < deadline) {
+				continue;	// the sweep will reap it; do not advertise a dead game meanwhile
+			}
+			const line = `${GAME_TAG} ${adv.room} ${adv.hostIP} ${adv.players} ${adv.slots} ${adv.name}|${adv.map}`;
+			sock.send(Buffer.from(line, 'latin1'), rinfo.port, rinfo.address);
+			sent++;
+		}
+		stats.listed++;
+		// One datagram per game rather than one packed reply: a lobby list is small, and this way
+		// a browser that misses a packet is missing one game rather than the whole list.
+		if (sent === 0) {
+			sock.send(Buffer.from(`${GAME_TAG} - - 0 0 |`, 'latin1'), rinfo.port, rinfo.address);
+		}
+	}
+
 	sock.on('message', (msg, rinfo) => {
 		const reg = parseRegistration(msg);
 		if (reg) {
 			register(reg, rinfo);
+			return;
+		}
+		const adv = parseAdvertisement(msg);
+		if (adv) {
+			advertise(adv);
+			return;
+		}
+		if (isListRequest(msg)) {
+			sendList(rinfo);
 			return;
 		}
 		forward(msg, rinfo);
@@ -248,13 +366,24 @@ function startRelay(port) {
 	});
 
 	const sweep = setInterval(() => {
-		const deadline = Date.now() - MEMBER_TIMEOUT_MS;
+		const now = Date.now();
+		const deadline = now - MEMBER_TIMEOUT_MS;
 		for (const members of [...rooms.values()]) {
 			for (const member of [...members.values()]) {
 				if (member.lastSeen < deadline) {
 					log(`[${port}] room ${member.room}: ${member.id} timed out`);
 					drop(member);
 				}
+			}
+		}
+
+		// A game stays listed only while its host keeps saying it exists. This is the whole
+		// teardown path: a host that crashes or loses its link never sends anything else.
+		const advDeadline = now - ADVERT_TIMEOUT_MS;
+		for (const [room, adv] of [...adverts.entries()]) {
+			if (adv.lastSeen < advDeadline) {
+				log(`[${port}] room ${room}: delisted "${adv.name}" - host stopped advertising`);
+				adverts.delete(room);
 			}
 		}
 	}, SWEEP_INTERVAL_MS);
@@ -266,15 +395,18 @@ function startRelay(port) {
 		// The last three are the ones worth watching at eight players: refused means somebody
 		// could not get in, unrouted means a packet was addressed to a peer this relay does not
 		// have, and headerless means a client older than this relay is connected.
-		log(`[${port}] ${rooms.size} room(s), forwarded ${stats.forwarded} packets / ${stats.bytes} bytes, `
+		log(`[${port}] ${rooms.size} room(s), ${adverts.size} listed, forwarded ${stats.forwarded} packets / ${stats.bytes} bytes, `
 			+ `dropped ${stats.dropped} from unknown senders, refused ${stats.refused}, `
-			+ `unrouted ${stats.unrouted}, headerless ${stats.headerless}`);
+			+ `unrouted ${stats.unrouted}, headerless ${stats.headerless}, `
+			+ `browsed ${stats.listed}, dupe-suspect ${stats.dupeSuspect}`);
 		stats.forwarded = 0;
 		stats.bytes = 0;
 		stats.dropped = 0;
 		stats.refused = 0;
 		stats.unrouted = 0;
 		stats.headerless = 0;
+		stats.listed = 0;
+		stats.dupeSuspect = 0;
 	}, STATS_INTERVAL_MS);
 
 	sweep.unref?.();
