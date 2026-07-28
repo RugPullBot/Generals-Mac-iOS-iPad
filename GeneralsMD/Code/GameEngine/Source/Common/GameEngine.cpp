@@ -630,7 +630,21 @@ void GameEngine::init()
 	DEBUG_LOG(("%s", Buf));////////////////////////////////////////////////////////////////////////////
 	#endif/////////////////////////////////////////////////////////////////////////////////////////////
 		initSubsystem(TheAudio,"TheAudio", createAudioManager(TheGlobalData->m_headless), nullptr);
-		if (!TheAudio->isMusicAlreadyLoaded())
+		// GeneralsX @bugfix Claude 28/07/2026 Missing music must not abort a HEADLESS run.
+		//
+		// A headless process has no audio by definition, and on a machine with no sound device at
+		// all - which is every server - the audio manager cannot load music, so this set the
+		// engine to quitting during INIT. Nothing reported an error: the process started, built
+		// its lobby, hosted a match, printed "game starting", and then the match loop exited
+		// before its first iteration because it (correctly) respects getQuitting().
+		//
+		// It hid because the only other headless entry point does not consult the flag:
+		// ReplaySimulation loops on TheRecorder->isPlaybackInProgress(), so replays ran fine on
+		// the same box. It also cannot reproduce on a developer machine, which has a sound device
+		// and therefore loads music successfully.
+		//
+		// Audio is not simulation state, so this is safe: no music simply means no music.
+		if (!TheAudio->isMusicAlreadyLoaded() && !TheGlobalData->m_headless)
 			setQuitting(TRUE);
 
 #if RTS_ZEROHOUR && RETAIL_COMPATIBLE_CRC
