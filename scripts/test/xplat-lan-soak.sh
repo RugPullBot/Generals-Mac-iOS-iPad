@@ -52,7 +52,11 @@ fi
 # different source digest even though `git rev-parse` now agrees on both machines. That cost two
 # full soak runs. Compare each binary's mtime against the commit timestamp and refuse to run if
 # either predates it.
-COMMIT_EPOCH="$(git -C "$(dirname "$0")/../.." log -1 --format=%ct)"
+# Date the last commit that touched the DIGESTED directories, not HEAD. sourceID is computed
+# only from these (see resources/gitinfo/simsourcedigest_watcher.cmake), so a docs- or
+# script-only commit does not invalidate a binary and must not abort the run.
+COMMIT_EPOCH="$(git -C "$(dirname "$0")/../.." log -1 --format=%ct -- \
+	Core/GameEngine GeneralsMD/Code/GameEngine)"
 MAC_BIN_EPOCH="$(stat -f %m "$MAC_GAME/GeneralsXZH" 2>/dev/null || echo 0)"
 WIN_BIN_EPOCH="$(ssh "$WIN_HOST" "[int][double]::Parse((Get-Date (Get-Item '$WIN_RUN\\generalszh.exe').LastWriteTimeUtc -UFormat %s))" 2>/dev/null | tr -d '\r' | tr -d '[:space:]')"
 echo "commit epoch=$COMMIT_EPOCH  mac binary=$MAC_BIN_EPOCH  windows binary=$WIN_BIN_EPOCH"
