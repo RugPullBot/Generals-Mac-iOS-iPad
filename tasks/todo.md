@@ -132,3 +132,45 @@ measured yet.** Full detail in `docs/WORKDIR/STATE_2026-07-29_session6.md`.
   it behaviourally by re-simulating replays, not by trying to prevent it.
 * **Never use burstable CPU for the relay.** A throttled sim does not degrade gracefully, it stalls the
   match for everyone. Budget 30-40% of one *dedicated* core per heavy match.
+
+---
+
+# Phase 4: a real lobby UI — reuse the stock WOL screens, do not build one
+
+**The finding that shapes this:** the multi-column lobby everyone recognises from Generals Online
+is not something they built. It is Zero Hour's own `WOLCustomLobby.wnd`, and it ships in our
+archives already, unused. Confirmed present alongside `WOLWelcomeMenu.wnd`,
+`WOLQuickMatchMenu.wnd`, `WOLMapSelectMenu.wnd` and `WOLBuddyOverlay.wnd`.
+
+So the work is **not** designing a UI. It is feeding the existing one from our relay instead of
+from GameSpy. `WOLLobbyMenu.cpp` already drives that screen; it populates the game list from
+`TheGameSpyInfo->getStagingRoomList()` / `hasStagingRoomListChanged()` -> `RefreshGameListBoxes()`,
+and the player list into `listboxLobbyPlayers`.
+
+That is a far better deal than the current combo box, which cannot be made good: it is one line of
+text in a box narrower than a row, so every improvement is a fight over which part gets truncated.
+The row reorder in `67672581f` is a stopgap, and should be deleted the day this lands.
+
+## Tasks
+
+- [ ] 17. Point the Online button at `WOLCustomLobby.wnd` instead of the Direct Connect layout.
+- [ ] 18. Populate the staging-room list from our relay's `GXGAME` replies rather than GameSpy peer
+      callbacks. `GameSpyInfo` already exposes `addStagingRoom` / `updateStagingRoom` /
+      `removeStagingRoom` (`PeerDefsImplementation.h`), so this is a data-source swap, not a
+      rewrite. Map a `Transport::RelayGameListing` onto a staging room: host virtual IP, room,
+      players/slots, name, map.
+- [ ] 19. Wire Join to the room-switch flow that already exists in `JoinDirectConnectGame` — take
+      the room from the selected listing, `enterRelayRoom`, rebuild `TheLAN`, `SetLocalIP`, dial.
+      The ordering is not negotiable and is documented there.
+- [ ] 20. Decide what the player list shows. GameSpy filled it from chat-room presence, which we do
+      not have. Slot occupants of the selected game is the honest equivalent; a global player list
+      needs the relay to track identities across rooms, which it deliberately does not.
+- [ ] 21. Chat is a genuine gap. The relay carries no chat channel today. It is a small protocol
+      addition (a plaintext line like the others) but it is new surface, and unauthenticated chat
+      on a public relay is a moderation problem before it is a feature.
+
+## What NOT to do
+
+Do not reimplement the GameSpy peer/staging-room protocol to drive these screens "properly". The
+screens do not care where their rows come from. Reimplementing GameSpy is the large, faithful,
+pointless version of this task.
