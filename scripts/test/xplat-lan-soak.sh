@@ -119,7 +119,7 @@ say "starting Windows joiner"
 # from the host's side - the host just waits out its timeout with no peer. It is not session 0:
 # a headless replay fails the same way without it and succeeds from session 0 with it.
 ssh "$WIN_HOST" "\$env:CNC_GENERALS_ZH_PATH = '$WIN_DATA'; \
-	\$p = Start-Process cmd -ArgumentList '/c','generalszh.exe -headless -lanjoin $MAC_IP -lanframes $FRAMES -lantimeout $WIN_TIMEOUT 2> $WIN_RUN\\win.err' \
+	\$p = Start-Process cmd -ArgumentList '/c','$WIN_RUN\\generalszh.exe -headless -lanjoin $MAC_IP -lanframes $FRAMES -lantimeout $WIN_TIMEOUT 2> $WIN_RUN\\win.err' \
 	-WorkingDirectory '$WIN_RUN' -NoNewWindow -Wait -PassThru; \
 	Write-Output \"EXIT=\$(\$p.ExitCode)\"" > "$OUT/win.status" 2>&1
 WIN_RC=$(tr -d '\r' < "$OUT/win.status" | sed -n 's/^EXIT=//p')

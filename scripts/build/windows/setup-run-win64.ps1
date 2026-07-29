@@ -126,7 +126,7 @@ set "DXVK_LOG_PATH=$run\logs"
 set "DXVK_STATE_CACHE_PATH=$run\shadercache"
 set "DXVK_CONFIG_FILE=$run\dxvk.conf"
 cd /d $run
-generalszh.exe %* 2> logs\err.txt
+$run\generalszh.exe %* 2> logs\err.txt
 echo GAME EXIT: %errorlevel% >> logs\err.txt
 "@ | Set-Content "$run\go.bat" -Encoding ASCII
 

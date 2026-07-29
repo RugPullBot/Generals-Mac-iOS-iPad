@@ -182,7 +182,7 @@ LIN_SIM="$(ssh -o ConnectTimeout=15 "$VPS" "cd $VPS_GAME && ip netns exec $VPS_N
 WIN_SIM="$(winps <<EOF
 \$env:CNC_GENERALS_ZH_PATH = "$WIN_DATA"
 \$env:DXVK_LOG_LEVEL = "none"
-Start-Process cmd -ArgumentList "/c", "generalszh.exe -headless -lanhost simidprobe -lanframes 5 2> C:\\dev\\simidprobe.err" -WorkingDirectory "$WIN_RUN" -WindowStyle Hidden
+Start-Process cmd -ArgumentList "/c", "$WIN_RUN\\generalszh.exe -headless -lanhost simidprobe -lanframes 5 2> C:\\dev\\simidprobe.err" -WorkingDirectory "$WIN_RUN" -WindowStyle Hidden
 for (\$i = 0; \$i -lt 24; \$i++) {
   Start-Sleep -Seconds 5
   \$l = Select-String -Path C:\\dev\\simidprobe.err -Pattern "\\[SIMID\\] local" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -259,7 +259,7 @@ sleep 2
 \$env:DXVK_LOG_LEVEL       = "none"
 Remove-Item C:\\dev\\xplat-win.err -ErrorAction SilentlyContinue
 Set-Location "$WIN_RUN"
-& cmd /c "generalszh.exe -headless -lanjoin 10.42.0.1 -lanname gxwin -lanframes $FRAMES -lantimeout 1800000 2> C:\\dev\\xplat-win.err"
+& cmd /c "$WIN_RUN\\generalszh.exe -headless -lanjoin 10.42.0.1 -lanname gxwin -lanframes $FRAMES -lantimeout 1800000 2> C:\\dev\\xplat-win.err"
 Write-Output "WIN_GAME_RC=\$LASTEXITCODE"
 EOF
 ) > "$OUT/win.launch.log" 2>&1 &

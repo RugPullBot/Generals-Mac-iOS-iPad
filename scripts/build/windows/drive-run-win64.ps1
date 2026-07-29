@@ -223,8 +223,8 @@ $env:DXVK_CONFIG_FILE      = "$run\dxvk.conf"
 # Set DXVK_LOG_LEVEL=warn by hand when debugging DXVK itself.
 $env:DXVK_LOG_LEVEL        = "none"
 
-Note "launching: generalszh.exe $GameArgs (stderr -> $errFile)"
-Start-Process cmd -ArgumentList "/c", "generalszh.exe $GameArgs 2> `"$errFile`"" `
+Note "launching: $run\generalszh.exe $GameArgs (stderr -> $errFile)"
+Start-Process cmd -ArgumentList "/c", "$run\generalszh.exe $GameArgs 2> `"$errFile`"" `
     -WorkingDirectory $run -WindowStyle Hidden
 
 Start-Sleep -Seconds $Settle
