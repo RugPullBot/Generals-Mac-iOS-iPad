@@ -1,0 +1,22 @@
+[GXLAN] relay assigned us 10.42.0.1 in room g1lu4j8q7oamoh
+[GXLAN] relay mode: local identity is the virtual address 10.42.0.1 (relay 163.5.210.131, room g1lu4j8q7oamoh)
+[GXLAN] join action timeout 30000 ms
+[GXLAN] local IP 10.42.0.1
+[GXLAN] hosted game created
+[GXLAN] map set to maps\alpine assault\alpine assault.map (crc=DEA9E8E4 size=275491)
+[GXLAN] WARNING: -lanoverfill: "maps\alpine assault\alpine assault.map" holds 2 player(s) but this lobby has 3 occupied slot(s) (intended lobby).
+[GXLAN] WARNING: 1 player(s) will get startPos=-1, no Command Center, and will own nothing all match.
+[GXLAN] WARNING: any AI count this run reports is a LIE. Do not use it as simulation evidence.
+[GXLAN] game options: US=1;M=03maps/alpine%20assault;MC=DEA9E8E4;MS=275491;SD=1012500472;C=100;SR=0;SC=10000;O=N;S=HMegumis-Mac-,A2A0001,8088,TT,-1,-1,-1,-1,1:CH,-1,-1,-1,-1:CH,-1,-1,-1,-1:X:X:X:X:X:;
+[GXLAN] WARNING: -lanoverfill: "maps\alpine assault\alpine assault.map" holds 2 player(s) but this lobby has 3 occupied slot(s) (final slot list).
+[GXLAN] WARNING: 1 player(s) will get startPos=-1, no Command Center, and will own nothing all match.
+[GXLAN] WARNING: any AI count this run reports is a LIE. Do not use it as simulation evidence.
+[GXLAN] starting match
+[GXLAN] game starting
+[GXPOS] slot=0 numPlayers=2 seedCRC=2656031608 (before random pick)
+[GXPOS] slot=0 RANDOM picked posIdx=0 seedCRC=3449508896 (after)
+[GXPOS] OVER-CAPACITY: slot=2 got startPos=-1 - the map has only 2 start position(s) and they are all taken. This player gets no Command Center and its AI will own nothing all match.
+[GXAI] afterScriptNewMap seed=3820363684 aiPlayers=2 computers=4 sides=6 sidesWithScripts=4 skirmishSides=14
+[GXLAN] frame limit 60 reached
+[GXLAN] simulated 60 frames
+[GXLAN] a player left

@@ -1,0 +1,15 @@
+[GXLAN] relay assigned us 10.42.0.1 in room g2luw6syi4s901
+[GXLAN] relay mode: local identity is the virtual address 10.42.0.1 (relay 163.5.210.131, room g2luw6syi4s901)
+[GXLAN] join action timeout 30000 ms
+[GXLAN] local IP 10.42.0.1
+[GXLAN] hosted game created
+[GXLAN] map set to maps\alpine assault\alpine assault.map (crc=DEA9E8E4 size=275491)
+[GXLAN] game options: US=1;M=03maps/alpine%20assault;MC=DEA9E8E4;MS=275491;SD=1012487987;C=100;SR=0;SC=10000;O=N;S=HMegumis-Mac-,A2A0001,8088,TT,-1,-1,-1,-1,1:CH,-1,-1,-1,-1:X:X:X:X:X:X:;
+[GXLAN] starting match
+[GXLAN] game starting
+[GXPOS] slot=0 numPlayers=2 seedCRC=1527471916 (before random pick)
+[GXPOS] slot=0 RANDOM picked posIdx=1 seedCRC=1028922644 (after)
+[GXAI] afterScriptNewMap seed=602300988 aiPlayers=1 computers=3 sides=5 sidesWithScripts=3 skirmishSides=14
+[GXLAN] frame limit 60 reached
+[GXLAN] simulated 60 frames
+[GXLAN] a player left

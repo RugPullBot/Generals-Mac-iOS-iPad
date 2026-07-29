@@ -1,0 +1,12 @@
+[GXLAN] relay assigned us 10.42.0.1 in room gl6l1cty2mdn5
+[GXLAN] relay mode: local identity is the virtual address 10.42.0.1 (relay 163.5.210.131, room gl6l1cty2mdn5)
+[GXLAN] join action timeout 30000 ms
+[GXLAN] local IP 10.42.0.1
+[GXLAN] hosted game created
+[GXLAN] map set to maps\alpine assault\alpine assault.map (crc=DEA9E8E4 size=275491)
+[GXLAN] REFUSING over-capacity lobby (intended lobby): "maps\alpine assault\alpine assault.map" holds 2 player(s), this lobby has 3 occupied slot(s).
+[GXLAN]   The 1 surplus player(s) would get startPos=-1, no Command Center, and their AI would own
+[GXLAN]   nothing for the whole match while this run still reported the full AI count and passed.
+[GXLAN]   Use a higher-capacity map (death valley, destruction station and twilight flame hold 8),
+[GXLAN]   or lower -lanai/-lanwait, or pass -lanoverfill to reproduce the old behaviour deliberately.
+[GXLAN] aborting: lobby did not reach a started game

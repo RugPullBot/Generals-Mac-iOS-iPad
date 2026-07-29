@@ -1,0 +1,98 @@
+task59-capacity-guard - the over-capacity lobby refusal, verified red-green and proven a no-op
+==============================================================================================
+
+Date        2026-07-29
+Commit      300f43652 "fix(lobby): refuse an over-capacity lobby instead of silently starving it"
+Parent      465075c00 (used as the unguarded control)
+Platform    macOS, build/macos-vulkan, deployed to ~/GeneralsX/GeneralsZH
+Shape       SOLO headless (-lanwait 0), so occupancy = 1 host + the -lanai count. No network.
+Harness     scratchpad redgreen.sh; every case run with -lanframes 60 -lantimeout 30000
+
+WHAT IS BEING TESTED
+--------------------
+Part 1  HeadlessMatch::lobbyFitsTheMap refuses a lobby with more players than the map has
+        start positions, mirroring the GUI's LanGameOptionsMenu.cpp:249-258. Two call sites:
+        an intent pre-check at the end of publishGameOptions, and the authoritative check on
+        the real slot list just before RequestGameStart.
+Part 2  GameLogic::populateRandomStartPosition guards farthestIndex < 0 and skips the
+        taken[farthestIndex] = TRUE out-of-bounds stack write.
+
+1. RED / GREEN
+--------------
+Map capacities are measured (md->m_numPlayers): alpine assault = 2, twilight flame = 8.
+
+  case                      occupancy   exit  refused  CRC frames  transcript
+  ------------------------  ----------  ----  -------  ----------  ----------------------------
+  RED    alpine   + Hx2      3 > 2        1    YES         0       task59-redgreen-RED-alpine-Hx2.txt
+  GREEN  alpine   + Hx1      2 <= 2       0    no         60       task59-redgreen-GREEN-alpine-Hx1.txt
+  GREEN  twilight + Hx5      6 <= 8       0    no         60       task59-redgreen-GREEN-twilight-Hx5.txt
+  ESCAPE alpine   + Hx2      3 > 2        0    no         60       task59-redgreen-ESCAPE-alpine-Hx2-of.txt
+         with -lanoverfill
+
+The RED case produced ZERO CRC frames: it refused before the match started, at the intent
+check, before waiting for peers. GREEN alpine+Hx1 sits exactly AT capacity and runs, so the
+comparison is <= and not <.
+
+No leaked processes: `ps -eo comm | grep -cx GeneralsXZH` returned 0 after every case.
+
+2. THE ESCAPE HATCH IS LOUD, AND IT CONFIRMS THE WHOLE DIAGNOSIS
+----------------------------------------------------------------
+-lanoverfill restores the old behaviour. Both call sites warned, and then the Part 2 guard
+fired in the engine, naming the starved slot:
+
+  [GXLAN] WARNING: -lanoverfill: "...alpine assault.map" holds 2 player(s) but this lobby has
+          3 occupied slot(s) (intended lobby).
+  [GXLAN] WARNING: 1 player(s) will get startPos=-1, no Command Center, and will own nothing.
+  [GXLAN] WARNING: any AI count this run reports is a LIE. Do not use it as simulation evidence.
+  ... same three lines again at (final slot list) ...
+  [GXPOS] slot=0 numPlayers=2 seedCRC=2656031608 (before random pick)
+  [GXPOS] slot=0 RANDOM picked posIdx=0 seedCRC=3449508896 (after)
+  [GXPOS] OVER-CAPACITY: slot=2 got startPos=-1 - the map has only 2 start position(s) and they
+          are all taken. This player gets no Command Center and its AI will own nothing all match.
+
+The guard fired exactly ONCE, for slot=2 - the third occupied slot on a 2-start map, i.e.
+precisely the predicted surplus player. That is prediction P2 of
+networked-sim-freeze-diagnosis.md satisfied directly: spawned players == min(occupied, numPlayers).
+
+The same run reported `aiPlayers=2 computers=4 sides=6`. TWO AI reported, ONE of them owning
+nothing. That is the exact lie this whole investigation was about, now printed next to the truth.
+
+Note also: alpine + Hx2 (one AI inert) scored 60 distinct of 60 frames, and so did alpine + Hx1.
+The distinct count still cannot tell those two apart - it never could. That is task 61.
+
+3. PART 2 IS A NO-OP ON A LEGAL MATCH - MEASURED, NOT ARGUED
+-------------------------------------------------------------
+The concern with Part 2 is that it touches simulation-adjacent code, so it must not move the
+frame-0 world CRC. The parent commit was rebuilt as an unguarded control and run against the
+identical match:
+
+  map          maps\twilight flame\twilight flame.map (capacity 8)
+  lobby        host + Hx5 = 6 occupied, LEGAL
+  seed         424242, pinned with -lanseed
+  frames       300
+
+  build                       file                                          md5
+  --------------------------  --------------------------------------------  --------------------------------
+  465075c00 (parent, no guard) task59-noop-twilight-Hx5-300-parent.crc      af5fdd3ed66fecfb6a1e7dfce2691ae2
+  300f43652 (guarded)          task59-noop-twilight-Hx5-300-guarded.crc     af5fdd3ed66fecfb6a1e7dfce2691ae2
+
+  cmp: BYTE-IDENTICAL. 300 frames, 300 distinct, both.
+
+Independently, the legal run's transcript contains ZERO "OVER-CAPACITY" lines, confirming the
+guarded branch is not merely harmless but unreachable once Part 1 is in place.
+
+Reproduce:
+  md5 -q docs/WORKDIR/evidence/task59-noop-twilight-Hx5-300-*.crc
+  cmp docs/WORKDIR/evidence/task59-noop-twilight-Hx5-300-parent.crc \
+      docs/WORKDIR/evidence/task59-noop-twilight-Hx5-300-guarded.crc
+
+4. WHAT THIS DOES NOT SHOW
+--------------------------
+* Only macOS, only solo, only 300 frames for the no-op proof. The no-op argument does not
+  depend on platform - the guarded branch is unreachable in a legal lobby on any build - but it
+  has not been re-measured on Linux or Windows.
+* Nothing here tests the guard on a NETWORKED lobby, where the authoritative check counts peers
+  that actually joined rather than reserved slots. The intent check and the final check agree by
+  construction (see the comments at both call sites), but that agreement is reasoned, not
+  measured. A three-platform run is task 60.
+* This says nothing about whether the activity metric is fixed. It is not; see section 2.
