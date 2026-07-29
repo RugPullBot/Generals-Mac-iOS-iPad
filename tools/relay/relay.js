@@ -42,6 +42,16 @@ const STATS_INTERVAL_MS = parseNumber(process.env.RELAY_STATS_MS, 300000);
 // a condition an operator can see rather than a game that quietly falls apart.
 const MEMBERS_PER_ROOM = 8;
 
+// Every table in here is keyed by a room name a client chose, and a client is free to choose a new
+// one for every datagram it sends. Without a ceiling, `GXRLY <random> <random>` in a loop allocates
+// a room per packet and the process is killed by MemoryMax long before the entries time out - which
+// takes down every game in progress, not just the attacker's.
+//
+// The ceiling is per listening port and far above what one relay should ever host, so reaching it
+// is an incident rather than a tuning problem. Reaching it does NOT refuse the newcomer: see
+// evictWeakestRoom for why a ceiling that turns a memory problem into a lockout has fixed nothing.
+const MAX_ROOMS = parseNumber(process.env.RELAY_MAX_ROOMS, 512);
+
 const TAG = 'GXRLY';
 const MAX_REGISTRATION_LEN = 64;
 const TOKEN_RE = /^[A-Za-z0-9._-]{1,31}$/;
@@ -60,9 +70,31 @@ const TOKEN_RE = /^[A-Za-z0-9._-]{1,31}$/;
 // the list on the next sweep, which is the one failure mode that has to work without cooperation.
 // A room that never advertises is private and never appears - that is what keeps a friends game
 // out of a public browser.
+//
+// An advertisement is accepted only from an endpoint that is REGISTERED IN THE ROOM it advertises,
+// and it may not overwrite one owned by a different, still-live endpoint. Without that, GXADV is an
+// unauthenticated write to a global table: a stranger who guesses a room name can republish it with
+// a wrong hostVirtualIP, and everyone who joins from the browser dials a peer that does not exist -
+// a game that just looks broken, with nothing in any log to say why. The client always writes GXRLY
+// and GXADV back to back on the same socket (Transport::sendRelayRegistration), so the honest path
+// is unaffected; the ordering is re-established every 5 s if a datagram is ever reordered or lost.
+// It also makes `adverts` a subset of `rooms`, so it inherits that table's ceiling for free.
 const ADV_TAG = 'GXADV';
 const LIST_TAG = 'GXLIST';
 const GAME_TAG = 'GXGAME';
+// The reply to GXLIST is one datagram per game, so an unbounded list turns a 6-byte request into an
+// arbitrarily large burst aimed at whatever source address the request carried - and a UDP source
+// address is free to forge. This caps how many games one reply may carry, which is the relay's
+// amplification factor. It matches the client's own MAX_RELAY_LISTINGS, so nothing that would have
+// been displayed is lost by it.
+const MAX_GAMES_PER_LIST = parseNumber(process.env.RELAY_MAX_LIST, 32);
+
+// And this caps how many lobby replies the port may emit per second, across all of them, so that a
+// forged source address cannot be pointed at a victim indefinitely no matter which lobby message is
+// used to do it. GXWHO on its own is only a 1:1 reflector and close to useless to an attacker; this
+// is what stops the total, GXLIST included, from being worth aiming. A real relay answers a handful
+// of lobby messages a minute, so the ceiling is three orders of magnitude above anything legitimate.
+const REPLY_BUDGET_PER_SEC = parseNumber(process.env.RELAY_REPLY_BUDGET, 1000);
 
 // GeneralsX @feature Matchmaking. The relay ASSIGNS each client its virtual address:
 //
@@ -110,13 +142,20 @@ const DUPLICATE_MOVE_THRESHOLD = 4;
  * wasteful and wrong.
  */
 const HEADER_MAGIC = 'GXR1';
+// The same four bytes as one big-endian word, so a datagram can be recognised as game traffic by
+// comparing an integer instead of building a string for every packet that arrives.
+const HEADER_MAGIC_BE = 0x47585231;
 const HEADER_SIZE = 12;
 // The game's own broadcast address, and the limited broadcast. Either means "everyone in the room",
 // which is what LAN discovery expects to happen when it shouts at the subnet.
 const BROADCAST_IPS = new Set([0xFFFFFFFF, 0x00000000]);
 
+function isRelayedGamePacket(msg) {
+	return msg.length >= HEADER_SIZE && msg.readUInt32BE(0) === HEADER_MAGIC_BE;
+}
+
 function parseHeader(msg) {
-	if (msg.length < HEADER_SIZE || msg.toString('latin1', 0, 4) !== HEADER_MAGIC) {
+	if (!isRelayedGamePacket(msg)) {
 		return null;
 	}
 	return { src: msg.readUInt32BE(4), dst: msg.readUInt32BE(8) };
@@ -146,6 +185,51 @@ function log(...args) {
 	console.log(new Date().toISOString(), ...args);
 }
 
+/*
+ * Almost every line this relay writes is triggered by one arriving datagram, which makes the log
+ * itself the cheapest unbounded resource in the process. console.log to a pipe or to journald is
+ * asynchronous: when the reader cannot keep up, Node queues the writes IN MEMORY. Six seconds of
+ * junk aimed at the lobby port took a measured 48 MB relay to 470 MB purely in queued log output -
+ * MemoryMax kills it, systemd restarts it, and every game in progress drops. Discarding stdout
+ * entirely kept the same soak flat at 48 MB, which is what pinned it down.
+ *
+ * So each line has a token bucket. A burst of LOG_BURST prints immediately - a real eight-player
+ * lobby produces far fewer than that of any one line, so the log an operator reads while
+ * troubleshooting is unchanged - and a sustained stream is cut to one line per LOG_REFILL_MS with a
+ * count of what was held back. The true volume is in the periodic summary, which is a fixed number
+ * of lines however hard anyone pushes.
+ *
+ * Keys are fixed strings chosen here, never anything from a datagram: a table keyed by attacker
+ * input would be the bug this is meant to prevent.
+ */
+const LOG_BURST = 20;
+const LOG_REFILL_MS = 5000;
+const logGates = new Map();
+
+function logLimited(site, ...args) {
+	const now = Date.now();
+	let gate = logGates.get(site);
+	if (!gate) {
+		gate = { tokens: LOG_BURST, last: now, suppressed: 0 };
+		logGates.set(site, gate);
+	}
+	gate.tokens = Math.min(LOG_BURST, gate.tokens + ((now - gate.last) / LOG_REFILL_MS));
+	gate.last = now;
+
+	if (gate.tokens < 1) {
+		gate.suppressed++;
+		return;
+	}
+	gate.tokens -= 1;
+	if (gate.suppressed > 0) {
+		const held = gate.suppressed;
+		gate.suppressed = 0;
+		log(...args, `(+${held} more like this were suppressed)`);
+		return;
+	}
+	log(...args);
+}
+
 function endpointKey(address, port) {
 	return `${address}:${port}`;
 }
@@ -169,6 +253,19 @@ function parseRegistration(msg) {
 	}
 
 	return { room: parts[1], id: parts[2] };
+}
+
+/*
+ * The free-form tail of an advertisement is the only client-controlled text the relay ever echoes
+ * or writes to its log, so it is scrubbed here rather than trusted. The stock client already
+ * replaces these (Transport::setGameAdvertisement) - which is exactly why the relay must do it too:
+ * the guarantee has to hold for a datagram that did not come from the stock client. A newline would
+ * forge a whole line in journalctl, and a '|' would move the name/map boundary so the browser shows
+ * a truncated name against somebody else's map.
+ */
+function sanitizeText(s) {
+	// eslint-disable-next-line no-control-regex
+	return s.replace(/[\x00-\x1F\x7F|]/g, '/');
 }
 
 /*
@@ -201,8 +298,8 @@ function parseAdvertisement(msg) {
 		hostIP: parts[2],
 		players,
 		slots,
-		name: sep >= 0 ? rest.slice(0, sep) : rest,
-		map: sep >= 0 ? rest.slice(sep + 1) : '',
+		name: sanitizeText(sep >= 0 ? rest.slice(0, sep) : rest),
+		map: sanitizeText(sep >= 0 ? rest.slice(sep + 1) : ''),
 	};
 }
 
@@ -228,11 +325,122 @@ function startRelay(port) {
 	const adverts = new Map();		// room name -> advertisement + lastSeen
 	const assigned = new Map();		// room name -> Map("addr:port" -> { id, lastSeen })
 	const stats = { forwarded: 0, bytes: 0, dropped: 0, refused: 0, unrouted: 0, headerless: 0,
-		listed: 0, dupeSuspect: 0, assigned: 0, assignFull: 0 };
+		listed: 0, dupeSuspect: 0, assigned: 0, assignFull: 0, roomsFull: 0, advRefused: 0,
+		listClipped: 0, roomsEvicted: 0, assignEvicted: 0, replyDropped: 0 };
 	const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
 
+	// Refilling allowance for lobby replies, in datagrams per second. O(1) and global on purpose: a
+	// per-source counter would itself be an unbounded table keyed by an address the sender chose,
+	// which is the bug it exists to prevent. Game traffic is deliberately NOT metered here - a
+	// forwarded packet goes to a peer that registered itself, not to an address someone claimed.
+	let replyBudget = REPLY_BUDGET_PER_SEC;
+	let replyBudgetAt = Date.now();
+
+	function replyAllowance() {
+		const now = Date.now();
+		replyBudget = Math.min(REPLY_BUDGET_PER_SEC,
+			replyBudget + ((now - replyBudgetAt) / 1000) * REPLY_BUDGET_PER_SEC);
+		replyBudgetAt = now;
+		return Math.floor(replyBudget);
+	}
+
+	// Every reply the relay sends goes through here. A bare sock.send() with no callback hands the
+	// failure to the socket's 'error' event, and that handler exits the process - so one ENETUNREACH
+	// or EPERM while answering a stray datagram would kill BOTH ports and every game on them. A send
+	// that fails is worth a line, never worth the relay.
+	function reply(buf, rinfo, what) {
+		if (replyAllowance() < 1) {
+			stats.replyDropped++;
+			logLimited(`${port}/reply-budget`,
+				`[${port}] dropping ${what} to ${endpointKey(rinfo.address, rinfo.port)} - `
+				+ `over ${REPLY_BUDGET_PER_SEC} lobby replies/s`);
+			return false;
+		}
+		replyBudget -= 1;
+
+		sock.send(buf, rinfo.port, rinfo.address, (err) => {
+			if (err) {
+				logLimited(`${port}/reply-failed`,
+					`[${port}] ${what} to ${endpointKey(rinfo.address, rinfo.port)} failed: ${err.message}`);
+			}
+		});
+		return true;
+	}
+
+	// byEndpoint is a single flat table because a game datagram carries no room - forward() has
+	// nothing but the sender's address to work out which room a packet belongs to. So an entry must
+	// only ever be removed by the member that currently owns it: an endpoint that moved from room A
+	// to room B is still in byEndpoint, pointing at B, and letting A's stale member delete it on
+	// timeout silently blackholes a player who is mid-game somewhere else.
+	function forgetEndpoint(member) {
+		const key = endpointKey(member.address, member.port);
+		if (byEndpoint.get(key) === member) {
+			byEndpoint.delete(key);
+		}
+	}
+
+	/*
+	 * Make space in a full room table by giving up the LEAST established room.
+	 *
+	 * Refusing instead was the obvious thing and it was wrong: filling the table costs one datagram
+	 * per room and holds for the whole member timeout, so about nine packets a second permanently
+	 * locks every real player out of a relay that is otherwise idle. A ceiling that turns a memory
+	 * problem into a lockout has not fixed anything.
+	 *
+	 * Weakest means fewest members first, then quietest. Both halves matter. Member count is what
+	 * separates a game from a name somebody typed once - a room invented by a flood never gets a
+	 * second member, so an eight-player lobby is never the candidate while any one-member room
+	 * exists. lastSeen then separates a host sitting in an empty lobby, which re-registers every
+	 * five seconds and is therefore always among the freshest, from a room nobody has touched since
+	 * it appeared. This is the same judgement the timeout already makes, applied early because the
+	 * table is under pressure rather than because a clock ran out.
+	 */
+	function evictWeakestRoom() {
+		let worstName = null;
+		let worstSize = Infinity;
+		let worstSeen = Infinity;
+
+		for (const [name, members] of rooms) {
+			let newest = 0;
+			for (const m of members.values()) {
+				if (m.lastSeen > newest) {
+					newest = m.lastSeen;
+				}
+			}
+			if (members.size < worstSize || (members.size === worstSize && newest < worstSeen)) {
+				worstName = name;
+				worstSize = members.size;
+				worstSeen = newest;
+			}
+		}
+		if (worstName === null) {
+			return false;
+		}
+
+		stats.roomsEvicted++;
+		logLimited(`${port}/evict-room`,
+			`[${port}] room ${worstName}: evicted - room table is full (${rooms.size}/${MAX_ROOMS}), `
+			+ `it had ${worstSize} member(s) and was the quietest`);
+		for (const m of [...rooms.get(worstName).values()]) {
+			drop(m);
+		}
+		rooms.delete(worstName);
+		adverts.delete(worstName);
+		return true;
+	}
+
 	function register(reg, rinfo) {
-		let members = rooms.get(reg.room) ?? new Map();
+		const key = endpointKey(rinfo.address, rinfo.port);
+		let members = rooms.get(reg.room);
+		if (!members) {
+			if (rooms.size >= MAX_ROOMS && !evictWeakestRoom()) {
+				stats.roomsFull++;
+				logLimited(`${port}/rooms-full`,
+					`[${port}] REFUSED room ${reg.room} from ${key} - room table is full (${rooms.size}/${MAX_ROOMS}) and nothing could be given up`);
+				return;
+			}
+			members = new Map();
+		}
 
 		let member = members.get(reg.id);
 		if (!member) {
@@ -242,12 +450,17 @@ function startRelay(port) {
 				// someone already in it, and nothing said so. A timed-out member is reaped by the
 				// sweep below, which is the only legitimate way a slot frees up.
 				stats.refused++;
-				log(`[${port}] room ${reg.room}: REFUSED ${reg.id} from ${endpointKey(rinfo.address, rinfo.port)} - room is full (${members.size}/${MEMBERS_PER_ROOM})`);
+				logLimited(`${port}/room-full`,
+					`[${port}] room ${reg.room}: REFUSED ${reg.id} from ${key} - room is full (${members.size}/${MEMBERS_PER_ROOM})`);
 				return;
 			}
 			member = { room: reg.room, id: reg.id, address: null, port: 0, lastSeen: 0 };
 			members.set(reg.id, member);
-			log(`[${port}] room ${reg.room}: ${reg.id} joined from ${endpointKey(rinfo.address, rinfo.port)} (${members.size}/${MEMBERS_PER_ROOM})`);
+			// Set here rather than only at the end: from this point the room is non-empty and drop()
+			// below must be able to find it.
+			rooms.set(reg.room, members);
+			logLimited(`${port}/join`,
+				`[${port}] room ${reg.room}: ${reg.id} joined from ${key} (${members.size}/${MEMBERS_PER_ROOM})`);
 		} else if (member.address !== rinfo.address || member.port !== rinfo.port) {
 			// The client's NAT rebound, it restarted - or two clients are sharing this
 			// LocalVirtualIP, which from here is the same observation. See the note by
@@ -257,32 +470,52 @@ function startRelay(port) {
 			member.moves.push(now);
 			if (member.moves.length >= DUPLICATE_MOVE_THRESHOLD) {
 				stats.dupeSuspect++;
-				log(`[${port}] room ${reg.room}: ${reg.id} moved ${member.moves.length} times in `
+				logLimited(`${port}/dupe`,
+					`[${port}] room ${reg.room}: ${reg.id} moved ${member.moves.length} times in `
 					+ `${DUPLICATE_WINDOW_MS / 1000}s - TWO CLIENTS ARE PROBABLY SHARING `
 					+ `LocalVirtualIP ${reg.id}. Give every player a different one.`);
 				member.moves = [];
 			}
 
-			log(`[${port}] room ${reg.room}: ${reg.id} moved from ${endpointKey(member.address, member.port)} to ${endpointKey(rinfo.address, rinfo.port)}`);
-			byEndpoint.delete(endpointKey(member.address, member.port));
+			logLimited(`${port}/move`,
+				`[${port}] room ${reg.room}: ${reg.id} moved from ${endpointKey(member.address, member.port)} to ${key}`);
+			forgetEndpoint(member);
+		}
+
+		// One endpoint, one room. This is forced by the wire format rather than chosen: a relayed
+		// game packet has a source and destination virtual address but no room, so forward() can
+		// only resolve the room from the sender's endpoint - an endpoint in two rooms at once has no
+		// defined meaning. Registering into a different room is therefore how a client says it LEFT
+		// the previous one, which is exactly what happens now that a browser lists many rooms and
+		// picks one. Left implicit, the old membership lingers for the full timeout and then takes
+		// this endpoint's live entry with it.
+		const prior = byEndpoint.get(key);
+		if (prior && prior !== member) {
+			logLimited(`${port}/leave`,
+				`[${port}] room ${prior.room}: ${prior.id} left for room ${reg.room} (same endpoint ${key})`);
+			drop(prior);
 		}
 
 		member.address = rinfo.address;
 		member.port = rinfo.port;
 		member.lastSeen = Date.now();
-		byEndpoint.set(endpointKey(rinfo.address, rinfo.port), member);
-		// Re-asserted rather than set on creation: an eviction above can empty the room, and drop()
-		// removes an empty room from the table.
+		byEndpoint.set(key, member);
 		rooms.set(reg.room, members);
 	}
 
 	function drop(member) {
-		byEndpoint.delete(endpointKey(member.address, member.port));
+		forgetEndpoint(member);
 		const members = rooms.get(member.room);
 		if (members) {
 			members.delete(member.id);
 			if (members.size === 0) {
 				rooms.delete(member.room);
+				// A room that has emptied cannot be advertised by anyone, and leaving the listing up
+				// would show a game with nobody in it until the advert's own timer ran out.
+				if (adverts.delete(member.room)) {
+					logLimited(`${port}/delist-empty`,
+						`[${port}] room ${member.room}: delisted - last member left`);
+				}
 			}
 		}
 	}
@@ -329,7 +562,8 @@ function startRelay(port) {
 			}
 			sock.send(msg, peer.port, peer.address, (err) => {
 				if (err) {
-					log(`[${port}] send to ${endpointKey(peer.address, peer.port)} failed: ${err.message}`);
+					logLimited(`${port}/forward-failed`,
+						`[${port}] send to ${endpointKey(peer.address, peer.port)} failed: ${err.message}`);
 				}
 			});
 			delivered++;
@@ -352,22 +586,72 @@ function startRelay(port) {
 	 * assignment that changed on every retry would burn the room's whole address space and hand
 	 * the client a different identity than the one it already told the lobby about.
 	 */
+	/*
+	 * The same argument as evictWeakestRoom, for the address book. A room here that has no members
+	 * is one somebody asked about and never joined - a browser that looked and left, or a flood -
+	 * and it is always given up before a room where people are actually playing. Without this, the
+	 * ceiling meant a few hundred GXWHO datagrams could stop the relay handing out identities at
+	 * all, which drops every later joiner back onto the hand-configured address that this whole
+	 * mechanism exists to make unnecessary.
+	 */
+	function evictWeakestAssignment() {
+		let worstName = null;
+		let worstJoined = true;
+		let worstSeen = Infinity;
+
+		for (const [name, table] of assigned) {
+			const joined = rooms.has(name);
+			let newest = 0;
+			for (const a of table.values()) {
+				if (a.lastSeen > newest) {
+					newest = a.lastSeen;
+				}
+			}
+			if ((worstJoined && !joined) || (joined === worstJoined && newest < worstSeen)) {
+				worstName = name;
+				worstJoined = joined;
+				worstSeen = newest;
+			}
+		}
+		if (worstName === null) {
+			return false;
+		}
+
+		stats.assignEvicted++;
+		logLimited(`${port}/evict-assign`,
+			`[${port}] room ${worstName}: gave up its assignments - table is full (${assigned.size}/${MAX_ROOMS})`);
+		assigned.delete(worstName);
+		return true;
+	}
+
 	function assignIdentity(room, rinfo) {
 		const key = endpointKey(rinfo.address, rinfo.port);
 		const now = Date.now();
-		let table = assigned.get(room) ?? new Map();
-		assigned.set(room, table);
+		let table = assigned.get(room);
 
-		const existing = table.get(key);
+		const existing = table?.get(key);
 		if (existing) {
 			existing.lastSeen = now;
 			return existing.id;
 		}
 
+		// Nothing is written to `assigned` until an address is actually handed out. The table used
+		// to be inserted on sight, so `GXWHO <random>` in a loop allocated a Map per datagram and
+		// only the sweep - up to ten seconds later - took them back; a few seconds of that is enough
+		// to walk into MemoryMax and restart the relay under everyone playing.
+		if (!table && assigned.size >= MAX_ROOMS && !evictWeakestAssignment()) {
+			stats.assignFull++;
+			logLimited(`${port}/assign-full`,
+				`[${port}] room ${room}: cannot assign an identity to ${key} - assignment table is full (${assigned.size}/${MAX_ROOMS})`);
+			return null;
+		}
+
 		// Avoid anything already handed out OR already registered in this room - a client that
-		// registered under a hand-configured address must not be shadowed by an assignment.
+		// registered under a hand-configured address must not be shadowed by an assignment. Both
+		// lookups are scoped to this room: two rooms are separate address spaces, and the same
+		// browser may legitimately hold 10.42.0.2 in one and 10.42.0.2 in another.
 		const taken = new Set();
-		for (const a of table.values()) {
+		for (const a of table?.values() ?? []) {
 			taken.add(a.id);
 		}
 		const members = rooms.get(room);
@@ -382,45 +666,99 @@ function startRelay(port) {
 			if (taken.has(id)) {
 				continue;
 			}
+			if (!table) {
+				table = new Map();
+				assigned.set(room, table);
+			}
 			table.set(key, { id, lastSeen: now });
 			stats.assigned++;
-			log(`[${port}] room ${room}: assigned ${id} to ${key}`);
+			logLimited(`${port}/assign`, `[${port}] room ${room}: assigned ${id} to ${key}`);
 			return id;
 		}
 
 		stats.assignFull++;
-		log(`[${port}] room ${room}: cannot assign an identity to ${key} - all ${MEMBERS_PER_ROOM} taken`);
+		logLimited(`${port}/assign-taken`,
+			`[${port}] room ${room}: cannot assign an identity to ${key} - all ${MEMBERS_PER_ROOM} taken`);
 		return null;
 	}
 
-	function advertise(adv) {
-		const existing = adverts.get(adv.room);
-		if (!existing) {
-			log(`[${port}] room ${adv.room}: listed as "${adv.name}" on ${adv.map} (${adv.players}/${adv.slots})`);
+	/* See the note by ADV_TAG: an advertisement is a claim about a room, so it has to come from
+	 * inside that room, and it may not take a listing away from a live owner. */
+	function advertise(adv, rinfo) {
+		const key = endpointKey(rinfo.address, rinfo.port);
+		const sender = byEndpoint.get(key);
+		if (!sender || sender.room !== adv.room) {
+			stats.advRefused++;
+			logLimited(`${port}/advert-outsider`,
+				`[${port}] room ${adv.room}: REFUSED advert from ${key} - not registered in that room`);
+			return;
 		}
-		adverts.set(adv.room, { ...adv, lastSeen: Date.now() });
+
+		const now = Date.now();
+		const existing = adverts.get(adv.room);
+		if (existing && existing.endpoint !== key) {
+			// Someone else already owns this listing. Only take it over once they are gone - either
+			// their advert went stale or their registration did, which is what a host that restarted
+			// or whose NAT rebound looks like. Both are checked so a rebind re-lists at once rather
+			// than leaving the game invisible for the advert timeout.
+			const owner = byEndpoint.get(existing.endpoint);
+			const ownerAlive = owner !== undefined && owner.room === adv.room;
+			if (ownerAlive && existing.lastSeen >= now - ADVERT_TIMEOUT_MS) {
+				stats.advRefused++;
+				logLimited(`${port}/advert-held`,
+					`[${port}] room ${adv.room}: REFUSED advert from ${key} - listing is held by ${existing.endpoint}`);
+				return;
+			}
+		}
+
+		if (!existing) {
+			logLimited(`${port}/list`,
+				`[${port}] room ${adv.room}: listed as "${adv.name}" on ${adv.map} (${adv.players}/${adv.slots})`);
+		}
+		adverts.set(adv.room, { ...adv, endpoint: key, lastSeen: now });
 	}
 
 	function sendList(rinfo) {
 		const deadline = Date.now() - ADVERT_TIMEOUT_MS;
+		let allowed = Math.min(MAX_GAMES_PER_LIST, replyAllowance());
 		let sent = 0;
+		let skipped = 0;
 		for (const adv of adverts.values()) {
 			if (adv.lastSeen < deadline) {
 				continue;	// the sweep will reap it; do not advertise a dead game meanwhile
 			}
+			if (allowed <= 0) {
+				skipped++;
+				continue;
+			}
 			const line = `${GAME_TAG} ${adv.room} ${adv.hostIP} ${adv.players} ${adv.slots} ${adv.name}|${adv.map}`;
-			sock.send(Buffer.from(line, 'latin1'), rinfo.port, rinfo.address);
+			reply(Buffer.from(line, 'latin1'), rinfo, 'game listing');
+			allowed--;
 			sent++;
 		}
 		stats.listed++;
+		if (skipped > 0) {
+			stats.listClipped += skipped;
+		}
 		// One datagram per game rather than one packed reply: a lobby list is small, and this way
 		// a browser that misses a packet is missing one game rather than the whole list.
 		if (sent === 0) {
-			sock.send(Buffer.from(`${GAME_TAG} - - 0 0 |`, 'latin1'), rinfo.port, rinfo.address);
+			reply(Buffer.from(`${GAME_TAG} - - 0 0 |`, 'latin1'), rinfo, 'empty listing');
 		}
 	}
 
 	sock.on('message', (msg, rinfo) => {
+		// The hot path, first and without allocating. A relayed game packet is identified exactly by
+		// its routing header, so recognising it here costs an integer compare. Every datagram used to
+		// be offered to all four line parsers before reaching this, and the first two accept anything
+		// up to 64 and 320 bytes - so each forwarded game packet built two throwaway strings and two
+		// throwaway arrays before being forwarded, on the one path that carries lockstep traffic for
+		// eight players at once.
+		if (isRelayedGamePacket(msg)) {
+			forward(msg, rinfo);
+			return;
+		}
+
 		const reg = parseRegistration(msg);
 		if (reg) {
 			register(reg, rinfo);
@@ -428,7 +766,7 @@ function startRelay(port) {
 		}
 		const adv = parseAdvertisement(msg);
 		if (adv) {
-			advertise(adv);
+			advertise(adv, rinfo);
 			return;
 		}
 		if (isListRequest(msg)) {
@@ -438,8 +776,9 @@ function startRelay(port) {
 		const who = parseWhoRequest(msg);
 		if (who) {
 			const id = assignIdentity(who.room, rinfo);
-			const reply = `${YOU_TAG} ${who.room} ${id ?? '-'}`;
-			sock.send(Buffer.from(reply, 'latin1'), rinfo.port, rinfo.address);
+			// One small datagram out for one small datagram in, so this needs no allowance of its
+			// own the way the list burst does.
+			reply(Buffer.from(`${YOU_TAG} ${who.room} ${id ?? '-'}`, 'latin1'), rinfo, 'identity');
 			return;
 		}
 		forward(msg, rinfo);
@@ -457,12 +796,18 @@ function startRelay(port) {
 	const sweep = setInterval(() => {
 		const now = Date.now();
 		const deadline = now - MEMBER_TIMEOUT_MS;
-		for (const members of [...rooms.values()]) {
+		for (const [room, members] of [...rooms.entries()]) {
 			for (const member of [...members.values()]) {
 				if (member.lastSeen < deadline) {
-					log(`[${port}] room ${member.room}: ${member.id} timed out`);
+					logLimited(`${port}/timeout`, `[${port}] room ${room}: ${member.id} timed out`);
 					drop(member);
 				}
+			}
+			// drop() already removes a room it empties. Belt and braces: an empty Map left behind by
+			// any future path would be a room name that can never be reclaimed, and MAX_ROOMS turns
+			// that from a slow leak into a relay that stops accepting new games.
+			if (members.size === 0) {
+				rooms.delete(room);
 			}
 		}
 
@@ -471,7 +816,8 @@ function startRelay(port) {
 		const advDeadline = now - ADVERT_TIMEOUT_MS;
 		for (const [room, adv] of [...adverts.entries()]) {
 			if (adv.lastSeen < advDeadline) {
-				log(`[${port}] room ${room}: delisted "${adv.name}" - host stopped advertising`);
+				logLimited(`${port}/delist`,
+					`[${port}] room ${room}: delisted "${adv.name}" - host stopped advertising`);
 				adverts.delete(room);
 			}
 		}
@@ -481,7 +827,7 @@ function startRelay(port) {
 		for (const [room, table] of [...assigned.entries()]) {
 			for (const [key, a] of [...table.entries()]) {
 				if (a.lastSeen < deadline) {
-					log(`[${port}] room ${room}: released ${a.id} from ${key}`);
+					logLimited(`${port}/release`, `[${port}] room ${room}: released ${a.id} from ${key}`);
 					table.delete(key);
 				}
 			}
@@ -492,27 +838,28 @@ function startRelay(port) {
 	}, SWEEP_INTERVAL_MS);
 
 	const report = setInterval(() => {
-		if (stats.forwarded === 0 && stats.dropped === 0 && stats.refused === 0) {
+		// Every counter has to be in this guard, not just the traffic ones. With only the first
+		// three tested, a relay busy purely with browsing and matchmaking printed nothing and never
+		// reset, so the next summary that did print carried a number covering an unknown span.
+		if (!Object.values(stats).some((v) => v !== 0)) {
 			return;
 		}
-		// The last three are the ones worth watching at eight players: refused means somebody
-		// could not get in, unrouted means a packet was addressed to a peer this relay does not
-		// have, and headerless means a client older than this relay is connected.
+		// This is the only place the real volumes appear, because every per-datagram line is rate
+		// limited. Worth watching: refused means somebody could not get in, unrouted means a packet
+		// was addressed to a peer this relay does not have, headerless means a client older than this
+		// relay is connected, and anything evicted, clipped or reply-dropped means a table or a
+		// ceiling was reached - which on a relay this size means a flood rather than a busy evening.
 		log(`[${port}] ${rooms.size} room(s), ${adverts.size} listed, forwarded ${stats.forwarded} packets / ${stats.bytes} bytes, `
 			+ `dropped ${stats.dropped} from unknown senders, refused ${stats.refused}, `
 			+ `unrouted ${stats.unrouted}, headerless ${stats.headerless}, `
 			+ `browsed ${stats.listed}, dupe-suspect ${stats.dupeSuspect}, `
-			+ `assigned ${stats.assigned}, assign-full ${stats.assignFull}`);
-		stats.forwarded = 0;
-		stats.bytes = 0;
-		stats.dropped = 0;
-		stats.refused = 0;
-		stats.unrouted = 0;
-		stats.headerless = 0;
-		stats.listed = 0;
-		stats.dupeSuspect = 0;
-		stats.assigned = 0;
-		stats.assignFull = 0;
+			+ `assigned ${stats.assigned}, assign-full ${stats.assignFull}, `
+			+ `rooms-full ${stats.roomsFull}, advert-refused ${stats.advRefused}, `
+			+ `list-clipped ${stats.listClipped}, rooms-evicted ${stats.roomsEvicted}, `
+			+ `assign-evicted ${stats.assignEvicted}, reply-dropped ${stats.replyDropped}`);
+		for (const k of Object.keys(stats)) {
+			stats[k] = 0;
+		}
 	}, STATS_INTERVAL_MS);
 
 	sweep.unref?.();

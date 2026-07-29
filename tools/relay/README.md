@@ -14,7 +14,7 @@ Everything above the transport layer — the lobby, the slot list, the join hand
 connections — therefore sees the LAN it was written for, and needed no changes at all.
 
 The relay is deliberately dumb and **payload-blind**. It never parses, decrypts or rewrites game
-traffic. It understands exactly two things.
+traffic. It understands a handful of short plaintext lines, and one binary header.
 
 First, a plaintext line the client repeats every 5 seconds,
 
@@ -24,6 +24,12 @@ GXRLY <room> <client-id>
 
 which is how it learns each player's public address (and keeps the NAT mapping open). The
 client-id is that machine's virtual address.
+
+An endpoint is in **one room at a time**. This is not a policy, it is forced by the wire format: a
+relayed game packet carries a source and a destination virtual address but no room, so the sender's
+address is the only thing that says which room the packet belongs to. Registering into a different
+room is therefore how a client says it has left the previous one, which is exactly what a browser
+does when it lists many games and joins one.
 
 Second, a 12-byte routing header the client puts in front of every game packet:
 
@@ -48,9 +54,64 @@ never larger than a LAN one. That matters because the payload cap is set for mob
 and iPadOS are target clients: an oversized packet would fragment, and a fragmented lockstep packet
 would look like a desync that only ever happens on cellular.
 
-Security model: whoever knows the room token gets paired with whoever else is in that room, so
-pick a random one. There is no authentication and the relay adds no encryption — it is the same
-traffic the game would have put on a LAN.
+### The lobby side
+
+The relay is also the only thing that knows which games exist and who is in them, so it is the
+matchmaker too. Three more plaintext lines carry that, on the lobby port:
+
+```
+GXADV <room> <hostVirtualIP> <players> <slots> <name>|<map>   host  -> relay, every 5s
+GXLIST                                                        client-> relay
+GXGAME <room> <hostVirtualIP> <players> <slots> <name>|<map>  relay -> client, one per game
+
+GXWHO <room>                                                  client-> relay: who am I here?
+GXYOU <room> <virtualIP>                                      relay -> client: you are 10.42.0.N
+GXYOU <room> -                                                relay -> client: no address free
+```
+
+A game is listed **only while its host keeps advertising**. There is no teardown message and none
+is wanted: a host that crashes or loses its link simply stops, and drops off the list. A room that
+never advertises is private and never appears — that is what keeps a friends' game out of a public
+browser.
+
+`GXWHO` is what makes public matchmaking possible: the relay hands out the virtual addresses, so
+players no longer have to agree on them by hand. Assignment is per room — two rooms are separate
+address spaces, and the same client may hold an address in each — sticky per endpoint so a
+retransmitted request does not burn a second slot, and released when the client goes quiet.
+
+An advertisement is accepted **only from an endpoint registered in the room it advertises**, and it
+cannot overwrite a listing held by a different, still-live endpoint. Without that rule, `GXADV` is
+an unauthenticated write to a global table: anyone who guesses a room name could republish it with
+a wrong host address, and everyone joining from the browser would dial a peer that is not there.
+
+### Security model
+
+Whoever knows the room token gets paired with whoever else is in that room, so pick a random one.
+There is no authentication and the relay adds no encryption — it is the same traffic the game would
+have put on a LAN.
+
+What the relay does defend, because it is reachable by anyone who can send it a UDP datagram:
+
+- **Every table has a ceiling.** Room names come from clients, and a client may invent a new one per
+  packet. Reaching a ceiling does not refuse the newcomer — that would turn a memory bound into a
+  lockout costing an attacker a few packets a second. The **least established** entry is given up
+  instead: fewest members first, then quietest. A room with players in it is never the candidate
+  while a room somebody named once and never returned to exists.
+- **A reply burst is bounded.** `GXLIST` answers with one datagram per game, and a UDP source
+  address is free to forge, so the reply is capped at `RELAY_MAX_LIST` games (the client only
+  displays 32 anyway) and all lobby replies share a per-second ceiling.
+- **The log is rate-limited.** This is the one that bites hardest: `console.log` to journald is
+  asynchronous, so lines the reader cannot keep up with are queued *in memory*. A line per hostile
+  packet is a memory-exhaustion primitive that needs no table at all — measured, six seconds of junk
+  took the relay from 48 MB to 470 MB. Each kind of line now gets a burst of 20 and then one per
+  five seconds, with the held-back count appended to the next one. Real volumes are in the periodic
+  summary, which is a fixed number of lines however hard anyone pushes.
+- **A failed send never takes the relay down.** Every reply carries an error callback, so an
+  `ENETUNREACH` while answering a stray datagram is a log line rather than an exit that would drop
+  both ports and every game on them.
+
+None of this makes an unauthenticated UDP service safe to expose carelessly; it makes the relay
+survive being found, and keeps a flood aimed at it from becoming a flood aimed at someone else.
 
 ## Deploy on an Ubuntu VPS
 
@@ -92,7 +153,7 @@ ProtectHome=true
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-MemoryMax=128M
+MemoryMax=256M
 
 [Install]
 WantedBy=multi-user.target
@@ -120,11 +181,26 @@ firewall, etc.), open UDP 8086 and 8088 there too — `ufw` alone is not enough.
 
 Environment variables, all optional:
 
-| Variable            | Default     | Meaning                                              |
-| ------------------- | ----------- | ---------------------------------------------------- |
-| `RELAY_PORTS`       | `8086,8088` | Ports to listen on. Must match the game's ports.      |
-| `RELAY_TIMEOUT_MS`  | `60000`     | Drop a player who has been silent this long.          |
-| `RELAY_STATS_MS`    | `300000`    | How often to log a traffic summary.                   |
+| Variable              | Default     | Meaning                                                        |
+| --------------------- | ----------- | -------------------------------------------------------------- |
+| `RELAY_PORTS`         | `8086,8088` | Ports to listen on. Must match the game's ports.                |
+| `RELAY_TIMEOUT_MS`    | `60000`     | Drop a player who has been silent this long.                    |
+| `RELAY_STATS_MS`      | `300000`    | How often to log a traffic summary.                             |
+| `RELAY_MAX_ROOMS`     | `512`       | Ceiling on rooms, and on rooms tracked for identity assignment. |
+| `RELAY_MAX_LIST`      | `32`        | Most games one `GXLIST` reply may carry.                        |
+| `RELAY_REPLY_BUDGET`  | `1000`      | Lobby reply datagrams per second, across all of them.           |
+
+The last three are ceilings, not tuning. `512` rooms is far more than one relay should ever host,
+and `32` is what the client displays; if you are hitting either, something is wrong rather than
+under-configured. Game traffic is never metered by `RELAY_REPLY_BUDGET` — a forwarded packet goes to
+a peer that registered itself, not to an address someone claimed.
+
+The unit above sets `MemoryMax=256M`, not the `128M` it used to. `128M` is plenty for ordinary
+service — an idle relay is about 48 MB and a busy one barely moves — but a sustained flood pushes
+V8's heap to roughly 120–180 MB of garbage-collector headroom, depending on the packet rate. That is
+bounded and it comes back down, but under `128M` systemd would kill and restart the relay, dropping
+every game in progress, exactly when it is being attacked. If you deployed the old unit file, raise
+this and `systemctl daemon-reload`.
 
 ## Client setup
 
@@ -161,8 +237,10 @@ Rules for these values:
   path builds the address it dials with a signed shift, which is undefined behaviour for a first
   octet of 128 or more. `192.168.x.x` will not work correctly; `10.42.0.x` will.
 - Every machine in a room needs a **different** `LocalVirtualIP`. Two machines sharing one is the
-  single most likely way to break a lobby, and the relay cannot detect it — to the relay they are
-  one member that keeps changing address.
+  single most likely way to break a lobby: to the relay they are one member whose address keeps
+  changing. It cannot tell that apart from a NAT rebind on sight, but it does notice the pattern —
+  a rebind settles, duplicates flap — and says so loudly in the log once the moves keep undoing each
+  other. Letting the relay assign addresses (`GXWHO`) avoids the problem entirely.
 - `RelayRoom` may only contain letters, digits, `.`, `-` and `_`, and is cut to 31 characters.
   Anything else is replaced with `_`. Everyone who shares a room plays together, so pick a random
   one.
@@ -219,3 +297,9 @@ four `joined` lines within about five seconds — each machine registers separat
 | `dropped N from unknown senders`                 | Normal in small numbers (traffic that arrives just before a registration, or internet background noise).           |
 | `unrouted N` climbing steadily                   | Packets addressed to a peer this relay does not have — the players disagree about who is in the game.              |
 | `headerless N` above zero                        | A client older than this relay is connected; it cannot be routed to a specific peer, only broadcast.               |
+| `left for room X (same endpoint ...)`            | Normal. That player backed out of one lobby and joined another; one endpoint is in one room at a time.            |
+| `REFUSED advert ... not registered in that room` | Someone advertised a room they are not in. Either a stale client that has not re-registered yet, or a griefer.     |
+| `REFUSED advert ... listing is held by ...`      | Two hosts are claiming one room name. The one that got there first keeps it until it goes quiet.                  |
+| `room X: evicted`                                | The room table hit `RELAY_MAX_ROOMS` and gave up its quietest, emptiest room. Almost always a flood of junk names. |
+| `+N more like this were suppressed`              | Log rate limiting. Normal while something is flooding; the real counts are in the periodic summary.                |
+| `dropping ... over N lobby replies/s`            | The lobby reply ceiling. Legitimate browsing never reaches it — assume a forged source address is being reflected. |
