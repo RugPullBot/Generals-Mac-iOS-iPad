@@ -176,7 +176,8 @@ void gxRubbleSweep()
 				}
 				if (!baseIsRubbleState && (!base->m_animations.empty() || !base->m_particleSysBones.empty()))
 				{
-					fprintf(stderr, "[RUBBLESWEEP-NOART] tmpl=%s tag=%s rubbleGets=[%s] anims=%d psBones=%d\n",
+					fprintf(stderr, "[RUBBLESWEEP-NOART] structure=%d tmpl=%s tag=%s rubbleGets=[%s] anims=%d psBones=%d\n",
+						t->isKindOf(KINDOF_STRUCTURE) ? 1 : 0,
 						t->getName().str(),
 						KEYNAME(md->getModuleTagNameKey()).str(),
 						gxStateDesc(base).str(),
@@ -2273,7 +2274,7 @@ void W3DModelDraw::doDrawModule(const Matrix3D* transformMtx)
 	{
 		const Drawable *d = getDrawable();
 		const Object *o = d ? d->getObject() : nullptr;
-		if (o != nullptr && o->isKindOf(KINDOF_STRUCTURE) && o->isEffectivelyDead())
+		if (o != nullptr && o->isKindOf(KINDOF_STRUCTURE))
 		{
 			Bool curIsRubbleState = FALSE;
 			if (m_curState != nullptr)
@@ -2299,10 +2300,10 @@ void W3DModelDraw::doDrawModule(const Matrix3D* transformMtx)
 			const Bool animating = (m_renderObject != nullptr && m_curState != nullptr &&
 				m_whichAnimInCurState >= 0 && !m_pauseAnimation);
 
-			if (animating || liveParticles > 0 || !curIsRubbleState)
 			{
-				fprintf(stderr, "[DRAWDBG] f=%d POSTMORTEM id=%d tmpl=%s tag=%s cond=%s cur=[%s] rubbleState=%d animating=%d clientPS=%d robj=%s\n",
-					(Int)TheGameLogic->getFrame(), (Int)o->getID(), o->getTemplate()->getName().str(),
+				const Bool problem = (animating || liveParticles > 0 || !curIsRubbleState);
+				fprintf(stderr, "[DRAWDBG] f=%d POSTMORTEM dead=%d problem=%d id=%d tmpl=%s tag=%s cond=%s cur=[%s] rubbleState=%d animating=%d clientPS=%d robj=%s\n",
+					(Int)TheGameLogic->getFrame(), o->isEffectivelyDead() ? 1 : 0, problem ? 1 : 0, (Int)o->getID(), o->getTemplate()->getName().str(),
 					KEYNAME(getModuleTagNameKey()).str(),
 					gxFlatDesc(d->getModelConditionFlags()).str(),
 					gxStateDesc(m_curState).str(),

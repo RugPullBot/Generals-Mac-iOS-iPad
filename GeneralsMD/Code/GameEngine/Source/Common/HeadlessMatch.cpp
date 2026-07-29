@@ -32,6 +32,7 @@
 #include "GameLogic/Object.h"
 #include "GameClient/GameClient.h"
 #include "GameClient/MapUtil.h"	// TheMapCache
+#include "GameClient/View.h"	// TheTacticalView, for the GX_KILLTMPL camera
 #include "GameLogic/GameLogic.h"
 #include "GameNetwork/GameInfo.h"
 #include "GameNetwork/IPEnumeration.h"
@@ -883,6 +884,7 @@ Bool HeadlessMatch::runMatch()
 	const Bool wantCapture = (getenv("GX_CAPTURE") != nullptr);
 	Bool didCapture = FALSE;
 	Bool didKill = FALSE;
+	Bool cameraSet = FALSE;
 
 	while (!TheGameEngine->getQuitting())
 	{
@@ -912,6 +914,16 @@ Bool HeadlessMatch::runMatch()
 					{
 						o->setTeam(owner->getDefaultTeam());
 						headlessLog("GX_KILLTMPL: captured %s id=%d for player %d", killTmpl, (Int)o->getID(), (Int)owner->getPlayerIndex());
+
+						// Point the camera at the first victim so the result can actually be looked at.
+						if (!cameraSet && TheTacticalView != nullptr)
+						{
+							Coord3D pos = *o->getPosition();
+							TheTacticalView->lookAt(&pos);
+							TheTacticalView->setZoom(0.35f);
+							headlessLog("GX_KILLTMPL: camera on id=%d at %.0f,%.0f", (Int)o->getID(), pos.x, pos.y);
+							cameraSet = TRUE;   // only the first
+						}
 					}
 				}
 				didCapture = TRUE;
