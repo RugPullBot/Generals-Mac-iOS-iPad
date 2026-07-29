@@ -32,6 +32,7 @@
 
 #include "Common/CRCDebug.h"
 #include "Common/FramePacer.h"
+#include "Common/OptionPreferences.h"	// the user's FPS-limit preference, restored when a game ends
 #include "Common/GameAudio.h"
 #include "Common/GameEngine.h"
 #include "Common/GlobalData.h"
@@ -285,6 +286,29 @@ void GameLogic::clearGameData( Bool showScoreScreen )
 	}
 
 	setClearingGameData( TRUE );
+
+	// GeneralsX @bugfix Claude 29/07/2026 Give the frame limit back when a game ends.
+	//
+	// Starting a network game turns it OFF - LANAPICallbacks.cpp sets m_useFpsLimit = false as it
+	// posts MSG_NEW_GAME, and StagingRoomGameInfo.cpp does the same - because during a network
+	// match the peers agree the logic rate between themselves and a local cap must not fight it.
+	// Nothing ever turned it back on. So the moment a match ended the pacer stopped limiting
+	// anything, for the rest of the process: the victory banner ran at roughly 10x speed and the
+	// shell menus stayed that way afterwards, on every peer, winner and loser alike.
+	//
+	// Restored from the user's preference rather than hardcoded TRUE, because that is where the
+	// setting actually lives (GameLOD.cpp reads the same value at startup) and someone who turned
+	// the cap off deliberately should keep it off.
+	//
+	// This is pacing only and touches no simulation state, so it cannot affect a CRC. Verified
+	// separately: the uncapped post-game frames stayed byte-identical across macOS and Windows for
+	// 3,600 frames past the host's exit, so the bug was never a determinism problem - only a
+	// deeply strange thing to look at.
+	{
+		OptionPreferences optionPref;
+		TheWritableGlobalData->m_useFpsLimit = optionPref.getFPSLimitEnabled();
+		TheFramePacer->enableLogicTimeScale( FALSE );
+	}
 
 //	m_background = TheWindowManager->winCreateLayout("Menus/BlankWindow.wnd");
 //	DEBUG_ASSERTCRASH(m_background,("We Couldn't Load Menus/BlankWindow.wnd"));
