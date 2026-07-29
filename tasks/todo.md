@@ -153,21 +153,56 @@ The row reorder in `67672581f` is a stopgap, and should be deleted the day this 
 
 ## Tasks
 
-- [ ] 17. Point the Online button at `WOLCustomLobby.wnd` instead of the Direct Connect layout.
-- [ ] 18. Populate the staging-room list from our relay's `GXGAME` replies rather than GameSpy peer
+- [x] 17. Point the Online button at `WOLCustomLobby.wnd` instead of the Direct Connect layout.
+      Done in `MainMenu.cpp`. `NetworkDirectConnect.wnd` is NOT retired — it is still reachable
+      from the LAN lobby and it is the browser that has actually carried real matches.
+- [x] 18. Populate the staging-room list from our relay's `GXGAME` replies rather than GameSpy peer
       callbacks. `GameSpyInfo` already exposes `addStagingRoom` / `updateStagingRoom` /
       `removeStagingRoom` (`PeerDefsImplementation.h`), so this is a data-source swap, not a
       rewrite. Map a `Transport::RelayGameListing` onto a staging room: host virtual IP, room,
       players/slots, name, map.
-- [ ] 19. Wire Join to the room-switch flow that already exists in `JoinDirectConnectGame` — take
+      Done in the "relay lobby" block of `WOLLobbyMenu.cpp`.
+- [x] 19. Wire Join to the room-switch flow that already exists in `JoinDirectConnectGame` — take
       the room from the selected listing, `enterRelayRoom`, rebuild `TheLAN`, `SetLocalIP`, dial.
       The ordering is not negotiable and is documented there.
-- [ ] 20. Decide what the player list shows. GameSpy filled it from chat-room presence, which we do
+      Done as `relayJoinSelectedGame()`. The listing's room travels with the row in a side table
+      keyed by the listbox's item-data ID, because the host address alone cannot identify a game
+      (addresses are per room, so every host in the browser is `10.42.0.1`).
+- [x] 20. Decide what the player list shows. GameSpy filled it from chat-room presence, which we do
       not have. Slot occupants of the selected game is the honest equivalent; a global player list
       needs the relay to track identities across rooms, which it deliberately does not.
+      Decided: occupants of the SELECTED game. The relay advertises a player COUNT and the host's
+      name and nothing else, so slot 0 shows the host by name and the remaining occupied slots are
+      numbered placeholders. Those rows are real (the count comes from the host's own slot list);
+      the names are not known and are not invented.
 - [ ] 21. Chat is a genuine gap. The relay carries no chat channel today. It is a small protocol
       addition (a plaintext line like the others) but it is new surface, and unauthenticated chat
       on a public relay is a moderation problem before it is a feature.
+      **Still open.** The chat entry and Emote button are disabled and the chat box carries one
+      line saying chat is unavailable. Nothing is faked locally.
+
+## Landed but NEVER OBSERVED
+
+Everything in 17-20 is compile-verified only. **No one has clicked the Online button in a build
+containing this.** There is no evidence that the layout renders, that a row appears, or that Join
+reaches a host. The specific things a first run has to check:
+
+- the screen draws at all — `WOLCustomLobby.wnd` has never been loaded by this engine;
+- the game list fills, and a row's map/player-count/host-name columns are the right way round;
+- Join actually switches rooms and dials (the log lines to look for are
+  `relayJoinSelectedGame - moving from room ... to ...` and the host's join accept);
+- Host reaches `Menus/LanGameOptionsMenu.wnd`;
+- Back returns to the main menu rather than the GameSpy login screen.
+
+Two known limits that are properties of the relay protocol, not bugs to fix here:
+
+- **No version check on a listed game.** `GXGAME` carries no exe/ini CRC, so the mismatch colouring
+  and the refuse-to-join that this screen normally performs cannot run. Rooms are reported with our
+  own CRCs — the honest encoding of "unknown", since zero would claim a conflict we have not
+  detected. A genuine mismatch still fails, just later, in the lobby's slot-list exchange.
+- **No ping.** `insertGame` now leaves the ping column blank when a room has no ping string, rather
+  than rendering the absence of a measurement as a bad one (`getPingValue` answers the full timeout
+  when it has nothing to compare, which drew a red one-bar icon on every relay row).
 
 ## What NOT to do
 

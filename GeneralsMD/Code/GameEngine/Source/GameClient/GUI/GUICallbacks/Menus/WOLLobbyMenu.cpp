@@ -70,6 +70,14 @@
 #include "GameNetwork/GameSpy/LobbyUtils.h"
 #include "GameNetwork/RankPointValue.h"
 
+// GeneralsX @feature Matchmaking. This screen is now also driven by our own relay - see the
+// "relay lobby" block below.
+#include "Common/OptionPreferences.h"
+#include "GameClient/GUICallbacks.h"
+#include "GameNetwork/LANAPI.h"
+#include "GameNetwork/LANAPICallbacks.h"
+#include "GameNetwork/Transport.h"
+
 void refreshGameList( Bool forceRefresh = FALSE );
 void refreshPlayerList( Bool forceRefresh = FALSE );
 
@@ -127,6 +135,469 @@ static GameWindow *parent = nullptr;
 static Int groupRoomToJoin = 0;
 static Int	initialGadgetDelay = 2;
 static Bool justEntered = FALSE;
+
+// ==============================================================================================
+// GeneralsX @feature Matchmaking - the relay lobby.
+//
+// This screen (WOLCustomLobby.wnd) is the multi-column game browser people recognise from Online.
+// It ships in our archives and was unreachable, because the Online button used to start the
+// GameSpy chain and GameSpy has been dead since 2014.
+//
+// Nothing below re-implements GameSpy. The screen and LobbyUtils are pure presentation: they read
+// staging rooms out of TheGameSpyInfo, colour and sort them, and draw them. They do not care where
+// the rows came from. So this is a DATA SOURCE SWAP - our relay's GXGAME replies are mapped onto
+// GameSpyStagingRoom objects and handed to addStagingRoom, and the existing RefreshGameListBoxes
+// draws them.
+//
+// The signal for "there is no GameSpy backend" is TheGameSpyPeerMessageQueue being null, which is
+// what SetUpGameSpyForRelayLobby deliberately leaves alone: WOLLobbyMenuUpdate already gates its
+// entire GameSpy message pump on that pointer, so a null queue disables the GameSpy half of this
+// file without a single edit to it.
+//
+// Two things are honestly missing rather than approximated, and are called out where they bite:
+//   * there is no chat channel in the relay at all, so the chat box is inert;
+//   * the relay does not track player identities across rooms, so the player list can only show
+//     the occupants of the SELECTED game - and of those, only the host is actually named.
+// ==============================================================================================
+
+/// TRUE when this screen is being driven by our relay rather than by GameSpy. Decided once, in
+/// WOLLobbyMenuInit, off the absence of a GameSpy backend.
+static Bool s_relayLobby = FALSE;
+
+/// TRUE when WE created the GameSpy presentation singletons and must therefore tear them down
+/// again on the way out. Never true if a real GameSpy session was already up.
+static Bool s_relayOwnsGameSpy = FALSE;
+
+// The reply to a GXLIST is a burst of one datagram per game with no terminator, and
+// Transport::requestGameList zeroes the count the moment it asks. So the count walks 0, 1, 2, 3
+// across successive pumps and there is nothing that says "that was all of them". Rebuilding on
+// every step would empty and refill the listbox under the player's cursor every ten seconds.
+// Rebuild when the count has stopped moving instead: one frame of latency, no flicker, and a sweep
+// that legitimately returns nothing still empties the list (0 twice in a row is settled too).
+static Int s_relayCountLastFrame = -1;
+static Int s_relayCountLastBuilt = -1;
+static time_t s_relayLastQueryTime = 0;
+static Int s_relaySelectedID = -1;
+
+/// The listbox item data is a plain Int game ID, so a row the player clicked has to be resolvable
+/// back to the room it lives in. The room is not optional and is not derivable from the address:
+/// the relay allocates identities PER ROOM, so the first player in every room is 10.42.0.1 and the
+/// host address does not identify a game.
+struct RelayListedGame
+{
+	Int id;
+	char room[32];
+	UnsignedInt hostVirtualIP;
+	Int players;
+	Int slots;
+};
+static RelayListedGame s_relayGames[Transport::MAX_RELAY_LISTINGS];
+static Int s_relayGameCount = 0;
+static Int s_relayNextGameID = 1;
+
+static void relayResetGameTable()
+{
+	s_relayGameCount = 0;
+	s_relayNextGameID = 1;
+	s_relayCountLastFrame = -1;
+	s_relayCountLastBuilt = -1;
+	s_relayLastQueryTime = 0;
+	s_relaySelectedID = -1;
+}
+
+static const RelayListedGame *relayFindGameByID( Int id )
+{
+	for (Int i = 0; i < s_relayGameCount; ++i)
+	{
+		if (s_relayGames[i].id == id)
+			return &s_relayGames[i];
+	}
+	return nullptr;
+}
+
+/// The transport, but only when it is actually relaying. Everything that reads a game list has to
+/// ask the TRANSPORT rather than the preferences file: since the relay assigns identities,
+/// LocalVirtualIP is usually absent, and keying off it hides the list on exactly the setups
+/// assignment was built for.
+static Transport *relayTransport()
+{
+	Transport *t = (TheLAN != nullptr) ? TheLAN->getTransport() : nullptr;
+	return (t != nullptr && t->isRelayEnabled()) ? t : nullptr;
+}
+
+/// Turn the relay's current game list into staging rooms.
+///
+/// Rebuilt wholesale rather than diffed, because the relay has no teardown message ON PURPOSE - a
+/// host that crashes or loses its link cannot send one, so a room drops off by simply not being in
+/// the next sweep. The list IS the truth; diffing it would only invent ways to disagree with it.
+static void relayRebuildStagingRooms()
+{
+	Transport *transport = relayTransport();
+	if (transport == nullptr || TheGameSpyInfo == nullptr || TheLAN == nullptr)
+		return;
+
+	// IDs must survive a rebuild or the selection moves under the player's cursor:
+	// RefreshGameListBox restores the selection by ID, and LobbyUtils re-sorts every time.
+	RelayListedGame previous[Transport::MAX_RELAY_LISTINGS];
+	const Int previousCount = s_relayGameCount;
+	for (Int i = 0; i < previousCount; ++i)
+		previous[i] = s_relayGames[i];
+	s_relayGameCount = 0;
+
+	TheGameSpyInfo->clearStagingRoomList();
+
+	// addStagingRoom only marks the list dirty once the caller has said the list is complete, and
+	// hasStagingRoomListChanged() is what refreshGameList() gates the redraw on. One GXLIST sweep
+	// IS the complete list, so say so before adding anything.
+	TheGameSpyInfo->sawFullGameList();
+
+	const Int count = transport->getGameListCount();
+	for (Int g = 0; g < count; ++g)
+	{
+		const Transport::RelayGameListing *listing = transport->getGameListing(g);
+		if (listing == nullptr || listing->hostVirtualIP == 0)
+			continue;
+
+		// Do not offer our own game - browsing it would be dialling ourselves. The ROOM is half of
+		// that test and not an optimisation: addresses are allocated per room, so every host in the
+		// browser is 10.42.0.1 and so are we. Matching on the address alone hides every game.
+		if (listing->hostVirtualIP == TheLAN->GetLocalIP()
+			&& strcmp(listing->room, transport->getRelayRoom()) == 0)
+			continue;
+
+		if (s_relayGameCount >= Transport::MAX_RELAY_LISTINGS)
+			break;
+
+		RelayListedGame &entry = s_relayGames[s_relayGameCount];
+		entry.id = 0;
+		for (Int p = 0; p < previousCount; ++p)
+		{
+			if (previous[p].hostVirtualIP == listing->hostVirtualIP
+				&& strcmp(previous[p].room, listing->room) == 0)
+			{
+				entry.id = previous[p].id;
+				break;
+			}
+		}
+		if (entry.id == 0)
+			entry.id = s_relayNextGameID++;
+		strlcpy(entry.room, listing->room, sizeof(entry.room));
+		entry.hostVirtualIP = listing->hostVirtualIP;
+		entry.players = listing->players;
+		entry.slots = listing->slots;
+		++s_relayGameCount;
+
+		UnicodeString hostName;
+		hostName.translate(AsciiString(listing->name));
+
+		GameSpyStagingRoom room;
+		room.init();					// resets every slot; must run before the slots are filled in
+		room.setID(entry.id);
+		room.setGameName(hostName);
+		room.setMap(AsciiString(listing->map));
+
+		// The relay's reply carries no exe/ini CRC, so the version check this screen would normally
+		// do CANNOT be performed here. Reporting our own CRCs is the honest encoding of "unknown":
+		// the alternative, zero, paints every row with the mismatch colour and refuses every join,
+		// which claims a version conflict we have not detected. A genuine mismatch still fails, it
+		// just fails later - the lobby's own slot-list exchange is where it surfaces.
+		room.setExeCRC(TheGlobalData->m_exeCRC);
+		room.setIniCRC(TheGlobalData->m_iniCRC);
+
+		room.setHasPassword(FALSE);
+		room.setAllowObservers(FALSE);
+		room.setLadderIP(AsciiString::TheEmptyString);
+		room.setLadderPort(0);
+
+		// No ping measurement exists for a relayed game. An EMPTY ping string is what insertGame
+		// reads as "no data" and leaves the column blank, rather than rendering the absence of a
+		// measurement as a bad one.
+		room.setPingString(AsciiString::TheEmptyString);
+
+		room.setReportedNumPlayers(listing->players);
+		room.setReportedMaxPlayers(listing->slots);
+		room.setReportedNumObservers(0);
+
+		// Slot occupancy. The relay advertises a COUNT and the host's name, and nothing else - it
+		// deliberately does not track who is in a room. So slot 0 is the host, named, and the rest
+		// of the occupied slots are real (the count comes from the host's own slot list) but
+		// anonymous. Numbering them rather than inventing names keeps that visible.
+		for (Int s = 0; s < MAX_SLOTS; ++s)
+		{
+			GameSpyGameSlot *slot = room.getGameSpySlot(s);
+			if (slot == nullptr)
+				continue;
+
+			if (s < listing->players)
+			{
+				UnicodeString slotName;
+				if (s == 0)
+					slotName = hostName;
+				else
+					slotName = TheGameText->FETCH_OR_SUBSTITUTE_FORMAT(
+						"GUI:RelayLobbyOccupiedSlot", L"Player %d", s + 1);
+				slot->setState(SLOT_PLAYER, slotName, (s == 0) ? listing->hostVirtualIP : 0);
+			}
+			else if (s < listing->slots)
+			{
+				slot->setState(SLOT_OPEN);
+			}
+			else
+			{
+				slot->setState(SLOT_CLOSED);
+			}
+			slot->setPingString(AsciiString::TheEmptyString);
+		}
+
+		TheGameSpyInfo->addStagingRoom(room);
+	}
+}
+
+/// The ID of the row the player has selected, or 0.
+static Int relaySelectedGameID()
+{
+	GameWindow *listbox = GetGameListBox();
+	if (listbox == nullptr)
+		return 0;
+
+	Int selected = -1;
+	GadgetListBoxGetSelected(listbox, &selected);
+	if (selected < 0)
+		return 0;
+
+	// GeneralsX @build 64-bit safe pointer cast, as elsewhere in this file
+	return static_cast<Int>(reinterpret_cast<intptr_t>(GadgetListBoxGetItemData(listbox, selected)));
+}
+
+/// The player list, filled from the SELECTED game's slots.
+///
+/// GameSpy filled this from chat-room presence: everyone in the lobby, whether or not they were in
+/// a game. We have no presence and the relay will not give us one - it does not track identities
+/// across rooms, by design. The occupants of the game you are looking at is the honest equivalent,
+/// and it is the only player data that actually exists.
+static void relayRefreshPlayerList()
+{
+	if (TheGameSpyInfo == nullptr)
+		return;
+
+	PlayerInfoMap *players = TheGameSpyInfo->getPlayerInfoMap();
+	players->clear();
+
+	GameSpyStagingRoom *room = TheGameSpyInfo->findStagingRoomByID(relaySelectedGameID());
+	if (room != nullptr)
+	{
+		room->cleanUpSlotPointers();
+		for (Int s = 0; s < MAX_SLOTS; ++s)
+		{
+			const GameSpyGameSlot *slot = room->getGameSpySlot(s);
+			if (slot == nullptr || !slot->isHuman())
+				continue;
+
+			PlayerInfo info;
+			info.m_name.translate(slot->getName());
+			if (info.m_name.isEmpty())
+				continue;
+
+			// The map is keyed by the displayed name and playerTooltip looks a clicked row straight
+			// back up in it without checking for a miss, so every row drawn must be a key here.
+			// Everything else stays at its PlayerInfo default: profile 0, no rank, no locale, which
+			// is exactly what we know about these people.
+			(*players)[info.m_name] = info;
+		}
+	}
+
+	PopulateLobbyPlayerListbox();
+}
+
+/// Ask the relay what games exist. The replies arrive asynchronously on the transport's own socket,
+/// so nothing is waited on - relayLobbyUpdate notices the count moving and rebuilds.
+static void relayRequestGameList()
+{
+	Transport *transport = relayTransport();
+	if (transport == nullptr)
+		return;
+
+	transport->requestGameList();
+	s_relayLastQueryTime = timeGetTime();
+
+	// A re-query that returns the same NUMBER of games can still be a different set of games -
+	// one host leaves as another arrives - and the count alone would call that "no change" and
+	// never redraw. Clearing what we last built from forces the settled count, whatever it turns
+	// out to be, to rebuild.
+	s_relayCountLastFrame = -1;
+	s_relayCountLastBuilt = -1;
+}
+
+/// Host a game on the relay. Same two calls the Direct Connect screen makes; the LAN callbacks push
+/// the game options screen from OnGameCreate.
+static void relayHostGame()
+{
+	if (TheLAN == nullptr)
+		return;
+
+	UnsignedInt localIP = TheLAN->GetLocalIP();
+	UnicodeString localIPString;
+	localIPString.format(L"%d.%d.%d.%d", PRINTF_IP_AS_4_INTS(localIP));
+
+	// This layout has no name entry - GameSpy took the name from the login, which we do not have.
+	// The LAN preferences hold the same name the Direct Connect and LAN screens use, so a player
+	// keeps one identity across all three rather than being renamed by which screen they came in
+	// through.
+	LANPreferences userprefs;
+	UnicodeString name = userprefs.getUserName();
+	if (name.isEmpty())
+		name = TheGameText->fetch("GUI:Player");
+	name.truncateTo(g_lanPlayerNameLength);
+
+	TheLAN->RequestSetName(name);
+	TheLAN->RequestGameCreate(localIPString, TRUE);
+}
+
+/// Join the selected game.
+///
+/// The sequence below is lifted from JoinDirectConnectGame and none of it is interchangeable:
+///
+///   1. take the room from the LISTING, never from Options.ini - the game we picked decides where
+///      it lives, and our own configuration says nothing about it;
+///   2. ask the relay for an identity IN THAT ROOM, because addresses are allocated per room and
+///      the one we hold was allocated somewhere else. Carrying it over would not be a private
+///      address in a new place, it would be somebody else's address;
+///   3. throw TheLAN away and build a new one, so no LANGameInfo is alive across the change.
+///      LANGameInfo snapshots the local IP in its constructor and AmIHost and getLocalSlotNum read
+///      that snapshot rather than TheLAN - an identity that lands after one exists reaches nothing
+///      that decides anything;
+///   4. only then SetLocalIP, which rebinds the transport and re-runs initRelay against the new
+///      room and identity;
+///   5. and only then dial the host.
+static void relayJoinSelectedGame()
+{
+	if (TheLAN == nullptr)
+		return;
+
+	const Int selectedID = relaySelectedGameID();
+	const RelayListedGame *game = (selectedID > 0) ? relayFindGameByID(selectedID) : nullptr;
+	if (game == nullptr)
+	{
+		GSMessageBoxOk(TheGameText->fetch("GUI:Error"), TheGameText->fetch("GUI:NoGameSelected"), nullptr);
+		return;
+	}
+
+	if (game->slots > 0 && game->players >= game->slots)
+	{
+		GSMessageBoxOk(TheGameText->fetch("GUI:JoinFailedDefault"), TheGameText->fetch("GUI:JoinFailedRoomFull"));
+		return;
+	}
+
+	const UnsignedInt hostIP = game->hostVirtualIP;
+	AsciiString targetRoom(game->room);
+
+	// Deliberately NOT SetLobbyAttemptHostJoin(TRUE). On the GameSpy path that flag is cleared by a
+	// response from the peer thread, and there is no peer thread here: a join that times out would
+	// leave it set forever, and Back is gated on it too - so a single unreachable host would lock
+	// the player on this screen with every button dead. LANAPI already refuses a second attempt
+	// (RequestGameJoinDirectConnect answers RET_BUSY while m_pendingAction is set), which is the
+	// same protection the Direct Connect screen relies on.
+
+	Transport *transport = TheLAN->getTransport();
+	if (transport != nullptr && transport->isRelayEnabled() && !targetRoom.isEmpty()
+		&& strcmp(targetRoom.str(), transport->getRelayRoom()) != 0)
+	{
+		OptionPreferences optprefs;
+		const AsciiString relayHost = optprefs.getRelayAddress();
+
+		UnsignedInt joinIP = 0;
+		if (Transport::enterRelayRoom(relayHost.str(), targetRoom.str(), joinIP))
+		{
+			DEBUG_LOG(("relayJoinSelectedGame - moving from room '%s' to '%s'; we are %d.%d.%d.%d there",
+				transport->getRelayRoom(), targetRoom.str(), PRINTF_IP_AS_4_INTS(joinIP)));
+
+			delete TheLAN;
+			TheLAN = NEW LANAPI();
+			DEBUG_ASSERTCRASH(TheLAN->GetMyGame() == nullptr,
+				("relayJoinSelectedGame - a LANGameInfo already exists and has snapshotted the old local IP; SetLocalIP below will not reach it"));
+			TheLAN->init();
+			TheLAN->SetLocalIP(joinIP);
+
+			// The browser was built from the old transport's replies and the new one has heard
+			// nothing yet. Re-ask, so a failed join leaves a screen that refills itself instead of
+			// an empty list.
+			relayRequestGameList();
+		}
+		else
+		{
+			// Dialling anyway would reach the relay but never the host: we are not a member of the
+			// room the packet has to be forwarded in. Say so rather than letting it time out as a
+			// generic unreachable peer.
+			DEBUG_LOG(("relayJoinSelectedGame - the relay would not give us an identity in room '%s'; the join will not reach the host",
+				targetRoom.str()));
+		}
+	}
+
+	LANPreferences userprefs;
+	UnicodeString name = userprefs.getUserName();
+	if (name.isEmpty())
+		name = TheGameText->fetch("GUI:Player");
+	name.truncateTo(g_lanPlayerNameLength);
+
+	TheLAN->RequestSetName(name);
+	TheLAN->RequestGameJoinDirectConnect(hostIP);
+}
+
+/// Per-frame work for the relay lobby. Nothing else pumps the transport on this screen, and without
+/// a pump the relay's replies sit in the socket and the browser stays empty - the same trap that
+/// made the headless driver have to pump LANAPI itself.
+static void relayLobbyUpdate()
+{
+	if (TheLAN == nullptr)
+		return;
+
+	Transport *transport = relayTransport();
+	if (transport == nullptr)
+		return;
+
+	TheLAN->update();
+
+	// Re-ask on the same cadence the screen already refreshes on, so a game that appears or dies
+	// after we arrived shows up without the player pressing anything. Hosts re-advertise every 5 s
+	// and the relay delists purely by not hearing from them, so this is also how a dead host leaves
+	// the list.
+	if (s_relayLastQueryTime == 0
+		|| (time_t)(s_relayLastQueryTime + gameListRefreshInterval) <= (time_t)timeGetTime())
+	{
+		relayRequestGameList();
+	}
+
+	const Int count = transport->getGameListCount();
+	if (count == s_relayCountLastFrame && count != s_relayCountLastBuilt)
+	{
+		s_relayCountLastBuilt = count;
+		relayRebuildStagingRooms();
+
+		// Redraw directly rather than through refreshGameList(), which only redraws when
+		// hasStagingRoomListChanged() says so - and that flag is only ever raised by addStagingRoom.
+		// A sweep that returns NO games adds nothing, so it never raises it, and the screen would go
+		// on showing rows for games that have all gone away. That is the one case where a redraw
+		// matters most: every row on screen is now unjoinable.
+		RefreshGameListBoxes();
+
+		// A game we had selected may be gone. Nothing else notices, because the selection ID stays
+		// whatever it was and the player list would keep showing a room that no longer exists.
+		s_relaySelectedID = -1;
+	}
+	s_relayCountLastFrame = count;
+
+	const Int selectedID = relaySelectedGameID();
+	if (selectedID != s_relaySelectedID)
+	{
+		s_relaySelectedID = selectedID;
+		relayRefreshPlayerList();
+
+		// Join follows the selection here too, not just on a click: a rebuild can drop the game the
+		// player had highlighted, and Join would otherwise stay lit over nothing.
+		if (buttonJoin)
+			buttonJoin->winEnable(selectedID > 0);
+	}
+}
 
 #if defined(RTS_DEBUG)
 Bool g_fakeCRC = FALSE;
@@ -622,6 +1093,28 @@ void WOLLobbyMenuInit( WindowLayout *layout, void *userData )
 	gameListRefreshTime = 0;
 	playerListRefreshTime = 0;
 
+	// GeneralsX @feature Matchmaking. Decide, once, who is driving this screen.
+	//
+	// A null peer message queue means no GameSpy backend was ever started - which is now the only
+	// way anyone reaches this layout, since the Online button pushes it directly instead of running
+	// the patch-check -> login -> peerchat chain. Everything GameSpy-shaped below is skipped in that
+	// case, and every one of those calls would otherwise dereference a null queue.
+	//
+	// This runs BEFORE the singletons are touched, because SetUpOnlineLobbyLAN destroys and rebuilds
+	// TheLAN and the relay identity has to be pinned before any LANGameInfo exists.
+	s_relayLobby = (TheGameSpyPeerMessageQueue == nullptr);
+	if (s_relayLobby)
+	{
+		relayResetGameTable();
+		SetUpOnlineLobbyLAN();
+
+		if (TheGameSpyInfo == nullptr)
+		{
+			SetUpGameSpyForRelayLobby();
+			s_relayOwnsGameSpy = TRUE;
+		}
+	}
+
 	parentWOLLobbyID = TheNameKeyGenerator->nameToKey( "WOLCustomLobby.wnd:WOLLobbyMenuParent" );
 	parent = TheWindowManager->winGetWindowFromId(nullptr, parentWOLLobbyID);
 
@@ -660,13 +1153,61 @@ void WOLLobbyMenuInit( WindowLayout *layout, void *userData )
 
 	GadgetTextEntrySetText(textEntryChat, UnicodeString::TheEmptyString);
 
-	populateGroupRoomListbox(comboLobbyGroupRooms);
+	if (s_relayLobby)
+	{
+		// GeneralsX @feature Matchmaking. Turn off the controls that have nothing behind them.
+		//
+		// Chat is a real gap, not an oversight: the relay carries no chat channel at all. It would
+		// be a small protocol addition - one more plaintext line alongside GXRLY and GXADV - but
+		// unauthenticated chat on a public relay is a moderation problem before it is a feature, and
+		// nothing here is going to fake it locally. The box stays, inert, with one line saying so;
+		// an enabled entry that swallows every message would be worse than an obviously dead one.
+		//
+		// Buddies are GameSpy profiles. There are no accounts on the relay, so there is nothing a
+		// buddy list could be a list OF, and GameSpyOpenOverlay(GSOVERLAY_BUDDY) dereferences the
+		// buddy message queue we deliberately never created.
+		if (textEntryChat)
+			textEntryChat->winEnable(FALSE);
+		if (buttonEmote)
+			buttonEmote->winEnable(FALSE);
+		if (buttonBuddy)
+			buttonBuddy->winEnable(FALSE);
+
+		// The group-room dropdown listed GameSpy chat lobbies. Ours is one relay, so show which one
+		// and disable it, rather than leaving an empty dropdown that reads as broken.
+		if (comboLobbyGroupRooms)
+		{
+			GadgetComboBoxReset(comboLobbyGroupRooms);
+			OptionPreferences prefs;
+			AsciiString relayHost = prefs.getRelayAddress();
+			UnicodeString label;
+			if (relayHost.isEmpty())
+				label = TheGameText->FETCH_OR_SUBSTITUTE("GUI:RelayLobbyNoRelay", L"No server configured");
+			else
+				label.translate(relayHost);
+			GadgetComboBoxAddEntry(comboLobbyGroupRooms, label, GameSpyColor[GSCOLOR_CURRENTROOM]);
+			GadgetComboBoxSetSelectedPos(comboLobbyGroupRooms, 0, FALSE);
+			comboLobbyGroupRooms->winEnable(FALSE);
+		}
+	}
+	else
+	{
+		populateGroupRoomListbox(comboLobbyGroupRooms);
+	}
 
 	// Show Menu
 	layout->hide( FALSE );
 
 	// if we're not in a room, this will join the best available one
-	if (!TheGameSpyInfo->getCurrentGroupRoom())
+	if (s_relayLobby)
+	{
+		// No group rooms: they are GameSpy chat channels, and joining one is a peerchat round trip.
+		// Our rooms are relay rooms and we are already in ours - SetUpOnlineLobbyLAN put us there.
+		TheGameSpyInfo->addText(
+			TheGameText->FETCH_OR_SUBSTITUTE("GUI:RelayLobbyNoChat", L"Chat is not available on this server."),
+			GameSpyColor[GSCOLOR_MOTD], listboxLobbyChat);
+	}
+	else if (!TheGameSpyInfo->getCurrentGroupRoom())
 	{
 		if (groupRoomToJoin)
 		{
@@ -688,10 +1229,20 @@ void WOLLobbyMenuInit( WindowLayout *layout, void *userData )
 	GrabWindowInfo();
 
 	TheGameSpyInfo->clearStagingRoomList();
-	PeerRequest req;
-	req.peerRequestType = PeerRequest::PEERREQUEST_STARTGAMELIST;
-	req.gameList.restrictGameList = TheGameSpyConfig->restrictGamesToLobby();
-	TheGameSpyPeerMessageQueue->addRequest(req);
+	if (s_relayLobby)
+	{
+		// GeneralsX @feature Matchmaking. The relay's answer to PEERREQUEST_STARTGAMELIST. One
+		// GXLIST out, one GXGAME datagram per game back, asynchronously on the transport's own
+		// socket - relayLobbyUpdate notices them arriving.
+		relayRequestGameList();
+	}
+	else
+	{
+		PeerRequest req;
+		req.peerRequestType = PeerRequest::PEERREQUEST_STARTGAMELIST;
+		req.gameList.restrictGameList = TheGameSpyConfig->restrictGamesToLobby();
+		TheGameSpyPeerMessageQueue->addRequest(req);
+	}
 
 	// animate controls
 //	TheShell->registerWithAnimateManager(parent, WIN_ANIMATION_SLIDE_TOP, TRUE);
@@ -712,7 +1263,8 @@ void WOLLobbyMenuInit( WindowLayout *layout, void *userData )
 	}
 
 	// Set Keyboard to chat window
-	TheWindowManager->winSetFocus( textEntryChat );
+	if (!s_relayLobby)
+		TheWindowManager->winSetFocus( textEntryChat );
 	raiseMessageBoxes = true;
 
 	TheLobbyQueuedUTMs.clear();
@@ -771,15 +1323,38 @@ void WOLLobbyMenuShutdown( WindowLayout *layout, void *userData )
 
 	ReleaseWindowInfo();
 
-	TheGameSpyInfo->unregisterTextWindow(listboxLobbyChat);
+	if (TheGameSpyInfo)
+		TheGameSpyInfo->unregisterTextWindow(listboxLobbyChat);
 
 	//TheGameSpyChat->stopListingGames();
-	PeerRequest req;
-	req.peerRequestType = PeerRequest::PEERREQUEST_STOPGAMELIST;
-	TheGameSpyPeerMessageQueue->addRequest(req);
+	if (TheGameSpyPeerMessageQueue)
+	{
+		PeerRequest req;
+		req.peerRequestType = PeerRequest::PEERREQUEST_STOPGAMELIST;
+		TheGameSpyPeerMessageQueue->addRequest(req);
+	}
 
 	listboxLobbyChat = nullptr;
 	listboxLobbyPlayers = nullptr;
+
+	// GeneralsX @feature Matchmaking. Give the presentation singletons back.
+	//
+	// They exist only for the duration of this screen. Leaving them alive would change what every
+	// other part of the game sees: Shell::push and Shell::pop close all GameSpy overlays whenever
+	// TheGameSpyInfo is non-null, and the score screen, the recorder and GameLogic all branch on it
+	// to decide whether a match was an internet game. None of that should change because somebody
+	// looked at the lobby once, and MainMenuInit's own teardown will not fire for us - it is gated
+	// on the peer message queue, which we never create.
+	//
+	// This runs on the push into the game options screen too (Shell::push shuts the current screen
+	// down first), which is exactly what we want: the match itself then runs with the same globals
+	// the Direct Connect path has always used. Coming back re-creates them in Init.
+	if (s_relayOwnsGameSpy)
+	{
+		TearDownGameSpy();
+		s_relayOwnsGameSpy = FALSE;
+	}
+	s_relayLobby = FALSE;
 
 	isShuttingDown = true;
 
@@ -930,6 +1505,13 @@ void WOLLobbyMenuUpdate( WindowLayout * layout, void *userData)
 	{
 		RaiseGSMessageBox();
 		raiseMessageBoxes = false;
+	}
+
+	// GeneralsX @feature Matchmaking. The relay's half of the update. The GameSpy block below is
+	// already gated on TheGameSpyPeerMessageQueue, which is null here, so these are exclusive.
+	if (s_relayLobby && !isShuttingDown && !buttonPushed)
+	{
+		relayLobbyUpdate();
 	}
 
 	if (TheShell->isAnimFinished() && TheTransitionHandler->isFinished() && !buttonPushed && TheGameSpyPeerMessageQueue)
@@ -1474,6 +2056,16 @@ WindowMsgHandledType WOLLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 				if ( controlID == GetGameListBoxID() )
 				{
 					int rowSelected = mData2;
+					if (s_relayLobby)
+					{
+						// GeneralsX @feature Matchmaking. There is no extended-info round trip to make:
+						// the GXGAME reply is everything the relay knows about a game. Following the
+						// selection with the player list is the whole of it.
+						buttonJoin->winEnable(rowSelected >= 0);
+						s_relaySelectedID = relaySelectedGameID();
+						relayRefreshPlayerList();
+						break;
+					}
 					if( rowSelected >= 0 )
 					{
 						buttonJoin->winEnable(TRUE);
@@ -1520,6 +2112,20 @@ WindowMsgHandledType WOLLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 					if (s_tryingToHostOrJoin)
 						break;
 
+					if (s_relayLobby)
+					{
+						// GeneralsX @feature Matchmaking. Nothing to leave - a relay room is not a
+						// chat channel and leaveGroupRoom() is a peerchat request. And no next
+						// screen: WOLWelcomeMenu is the GameSpy login screen, so pushing it would
+						// send a player who pressed Back straight back into the dead service the
+						// Online button was changed to avoid. Pop to wherever we came from.
+						SetLobbyAttemptHostJoin( TRUE ); // pretend, so nothing else queues up
+						buttonPushed = true;
+						nextScreen = nullptr;
+						TheShell->pop();
+						break;
+					}
+
 					// Leave any group room, then pop off the screen
 					TheGameSpyInfo->leaveGroupRoom();
 
@@ -1532,6 +2138,12 @@ WindowMsgHandledType WOLLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 				else if ( controlID == buttonRefreshID )
 				{
 					// Added 2/17/03 added the game refresh button
+					if (s_relayLobby)
+					{
+						// GeneralsX @feature Matchmaking. Redrawing what we already have is not a
+						// refresh - the relay only answers when asked, so ask again first.
+						relayRequestGameList();
+					}
 					refreshGameList(TRUE);
 					refreshPlayerList(TRUE);
 				}
@@ -1539,6 +2151,19 @@ WindowMsgHandledType WOLLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 				{
 					if (s_tryingToHostOrJoin)
 						break;
+
+					if (s_relayLobby)
+					{
+						// GeneralsX @feature Matchmaking. GSOVERLAY_GAMEOPTIONS is the GameSpy
+						// staging-room overlay and is driven end to end by the peer thread. Our
+						// lobby IS a LAN game on a virtual network, so hosting is the same two
+						// calls the Direct Connect screen makes, and LANAPI::OnGameCreate pushes
+						// the LAN game options screen from there.
+						//
+						// No SetLobbyAttemptHostJoin here either - see relayJoinSelectedGame.
+						relayHostGame();
+						break;
+					}
 
 					SetLobbyAttemptHostJoin( TRUE );
 					TheLobbyQueuedUTMs.clear();
@@ -1549,6 +2174,12 @@ WindowMsgHandledType WOLLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 				{
 					if (s_tryingToHostOrJoin)
 						break;
+
+					if (s_relayLobby)
+					{
+						relayJoinSelectedGame();
+						break;
+					}
 
 					TheLobbyQueuedUTMs.clear();
 					// Look for a game to join
@@ -1630,6 +2261,12 @@ WindowMsgHandledType WOLLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 				}
 				else if ( controlID == buttonBuddyID )
 				{
+					// GeneralsX @feature Matchmaking. The buddy list is a GameSpy profile feature and
+					// GameSpyOpenOverlay dereferences the buddy message queue we never created. The
+					// button is disabled in Init; this is the belt to that pair of braces.
+					if (s_relayLobby)
+						break;
+
 					GameSpyToggleOverlay( GSOVERLAY_BUDDY );
 				}
 				else if ( controlID == buttonGameListTypeToggleID )
@@ -1638,6 +2275,11 @@ WindowMsgHandledType WOLLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 				}
 				else if ( controlID == buttonEmoteID )
 				{
+					// GeneralsX @feature Matchmaking. No chat channel exists on the relay, and
+					// sendChat posts to the peer message queue. See the note in Init.
+					if (s_relayLobby)
+						break;
+
 				// read the user's input and clear the entry box
 					UnicodeString txtInput;
 					txtInput.set(GadgetTextEntryGetText( textEntryChat ));
@@ -1657,6 +2299,11 @@ WindowMsgHandledType WOLLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 		case GCM_SELECTED:
 			{
 				if (s_tryingToHostOrJoin)
+					break;
+				// GeneralsX @feature Matchmaking. The group-room dropdown is inert here: it names the
+				// relay we are on, and there is nothing to switch to. joinGroupRoom/leaveGroupRoom
+				// are both peerchat requests.
+				if (s_relayLobby)
 					break;
 				GameWindow *control = (GameWindow *)mData1;
 				Int controlID = control->winGetWindowId();
@@ -1719,6 +2366,13 @@ WindowMsgHandledType WOLLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 		//---------------------------------------------------------------------------------------------
 		case GLM_RIGHT_CLICKED:
 			{
+				// GeneralsX @feature Matchmaking. Every right-click menu on this screen acts on a
+				// GameSpy profile - ignore, page, add buddy, view stats. There are no accounts on the
+				// relay and no profile IDs, so all of them would open a menu whose every entry is a
+				// no-op or a null queue write.
+				if (s_relayLobby)
+					break;
+
 				GameWindow *control = (GameWindow *)mData1;
 				Int controlID = control->winGetWindowId();
 
@@ -1850,6 +2504,12 @@ WindowMsgHandledType WOLLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 		case GEM_EDIT_DONE:
 			{
 				if (buttonPushed)
+					break;
+
+				// GeneralsX @feature Matchmaking. The chat entry is disabled in relay mode, so this
+				// should not arrive - but sendChat writes to the peer message queue and the slash
+				// commands query the GameSpy QR2 hosting state, so neither may run without one.
+				if (s_relayLobby)
 					break;
 
 				// read the user's input and clear the entry box

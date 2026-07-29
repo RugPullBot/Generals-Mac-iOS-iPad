@@ -1571,7 +1571,18 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				// The relay lobby does what Online used to: it reaches a server on startup, lists
 				// every game being advertised, and joining one puts the match on the relay. Same
 				// three steps, a backend we run.
-				TheShell->push( "Menus/NetworkDirectConnect.wnd" );
+				//
+				// WOLCustomLobby.wnd is Zero Hour's OWN Online lobby - the multi-column browser
+				// with a player list and sort buttons - and it has been sitting unused in our
+				// archives the whole time. It is driven from our relay rather than from GameSpy;
+				// see the "relay lobby" block in WOLLobbyMenu.cpp. This replaces the stopgap that
+				// pointed Online at Menus/NetworkDirectConnect.wnd, which is a text field and a
+				// combo box narrower than one of its own rows.
+				//
+				// NetworkDirectConnect.wnd is NOT retired: it is still reachable from the LAN
+				// lobby, and it is the browser that has actually carried real matches. It stays
+				// until this one has too.
+				TheShell->push( "Menus/WOLCustomLobby.wnd" );
 //				localAnimateWindowManager->reverseAnimateWindow();
 				dropDown = DROPDOWN_NONE;
 
