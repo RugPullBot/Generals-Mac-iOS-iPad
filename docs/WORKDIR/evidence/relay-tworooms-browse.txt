@@ -1,0 +1,6 @@
+[GXLAN] 2 game(s) listed
+[GXLAN]   room=g3athw1ptgr2u9 host=10.42.0.1 players=2/8 name="Ubuntu-2404" map="twilight flame"
+[GXLAN]   room=g35spj53fe4ow9 host=10.42.0.1 players=2/8 name="Ubuntu-2404" map="alpine assault"
+--- after hostA exited ---
+[GXLAN] 1 game(s) listed
+[GXLAN]   room=g35spj53fe4ow9 host=10.42.0.1 players=2/8 name="Ubuntu-2404" map="alpine assault"

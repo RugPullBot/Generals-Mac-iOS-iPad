@@ -1,0 +1,3 @@
+[GXLAN] 2 listed games have host 10.42.0.1 - set GENERALSX_LANROOM to pick one:
+[GXLAN]   room=g3athw1ptgr2u9 name="Ubuntu-2404" map="twilight flame"
+[GXLAN]   room=g35spj53fe4ow9 name="Ubuntu-2404" map="alpine assault"

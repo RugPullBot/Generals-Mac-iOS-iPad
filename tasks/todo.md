@@ -57,8 +57,9 @@ measured yet.** Full detail in `docs/WORKDIR/STATE_2026-07-29_session6.md`.
 - [ ] 20. **Prove the UI browser.** `evidence/relay-gamelist-browse.txt` is the *headless* path. No
       committed evidence that the dropdown renders a live list, that picking a row joins, or that a
       host is correctly absent from its own list.
-- [ ] 21. **Two concurrent games on one relay** — each listed, each joinable, neither seeing the
-      other's traffic. Blocked on task 23; today they would land in the same room.
+- [x] 21. **Two concurrent games on one relay** — each listed, each joinable, neither seeing the
+      other's traffic. Done at 2 rooms / 3000 frames each, byte-identical per room and differing
+      between rooms, with the idle host at 0 frames and no announces (`evidence/relay-tworooms-*`).
 
 # Phase 3: identities and rooms — half built, ZERO real-match proof
 
@@ -66,15 +67,17 @@ measured yet.** Full detail in `docs/WORKDIR/STATE_2026-07-29_session6.md`.
       addresses, released on the sweep. Wired into the headless driver, the Direct Connect screen and
       the relay-mode gate. Covered by `test-lobby.js` 11/11.
       (`973aed2d4`, `d87460c65`, `6a2b7482e`)
-- [ ] 23. **Wire `Transport::setRelayRoom`. It has zero call sites.** It is implemented, commented as
-      "replaced later by `setRelayRoom` when a game is picked out of the browser", and nothing calls
-      it. `RelayGameListing` parses a `room` field and discards it. Consequence: every client is in
-      `prefs.getRelayRoom()` or the literal `"default"`, so **one relay is one game at a time** and
-      two groups today corrupt each other's lobby. Needs (a) a host generating a unique room token,
-      (b) `GXLIST` returning games across rooms, (c) the browser calling `setRelayRoom` before dialling.
-- [ ] 24. **Play one match with no `LocalVirtualIP` configured on any machine.** The 14,756-frame
-      match ran rev 2157 with addresses allocated *by hand*; assignment landed four commits later and
-      has never been through a lobby. This is the single highest-value next run.
+- [x] 23. **Wire `Transport::setRelayRoom`.** Implemented in `43bcadd8b` and exercised end to end in
+      session 7: (a) two hosts generated two different tokens with no coordination, (b) one `GXLIST`
+      returned both rooms, (c) a joiner with nothing pinned browsed, took the room off the LISTING and
+      entered it. Note the consequence, which is now real behaviour: addresses are per room, so every
+      host is `10.42.0.1` and `-lanjoin <ip>` alone is ambiguous once two rooms exist. It exits 1 and
+      names the candidates; a headless join in a multi-room world needs `GENERALSX_LANROOM`. The UI
+      does not hit this because a picked row carries its room.
+- [x] 24. **Play one match with no `LocalVirtualIP` configured on any machine.** Done twice in session
+      7 — both machines' `Options.ini` cut to `RelayAddress` alone, every address relay-assigned
+      (`10.42.0.1` to each host in its own room, `10.42.0.2` to each joiner). 3000 frames per match,
+      byte-identical.
 - [ ] 25. **Click the Online button in a built binary.** `508d6c563` has never been run.
 
 # Phase 4: the client matrix

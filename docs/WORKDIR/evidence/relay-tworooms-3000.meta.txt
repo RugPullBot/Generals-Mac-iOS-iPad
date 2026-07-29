@@ -1,0 +1,83 @@
+Two hosts, two rooms, one relay - session 7, 2026-07-29
+=======================================================
+
+The test the session 6 addendum named as highest value: two hosts in DIFFERENT rooms, both
+listed in the browser, each joinable, neither seeing the other's traffic. It covers per-host
+rooms, setRelayRoom, per-room identity assignment and the browser in one pass.
+
+BUILD
+  tree      12237fd60 (docs-only on top of the deployed 2e226bf3a)
+  macOS     rev=2171 source=6A9BFF78 platform=BF013216
+  Linux     rev=2171 source=6A9BFF78 platform=97FE082D
+  SimID read out of the RUNNING artifacts, not from the git tree.
+
+SETUP
+  Both hosts on the VPS, one per network namespace (gx 10.200.0.2, gx2 10.200.1.2), because
+  relay mode forces a wildcard bind and multi-instance disables relay mode on Linux.
+  Options.ini on both machines reduced to `RelayAddress` alone - no RelayRoom, no
+  LocalVirtualIP. Every room token and every virtual address below was therefore generated
+  or assigned, not configured by hand.
+
+  hostA   netns gx    room g3athw1ptgr2u9   maps\twilight flame\twilight flame.map
+  hostB   netns gx2   room g35spj53fe4ow9   maps\alpine assault\alpine assault.map
+
+  Two hosts generated two different room tokens with no coordination. Each was assigned
+  10.42.0.1 IN ITS OWN ROOM - the same address in two rooms at once, which is what makes
+  rooms separate address spaces rather than a naming convention.
+
+BROWSE (docs/WORKDIR/evidence/relay-tworooms-browse.txt)
+  Two consecutive browses from macOS both returned 2 games, in 2 rooms, both host=10.42.0.1,
+  distinguished by room and map. Each browsing process generated its own throwaway room.
+  After hostA exited, a third browse returned 1 game - hostA dropped off the list purely by
+  going quiet, with no teardown message, which is the failure mode that has to work.
+
+AMBIGUOUS JOIN (docs/WORKDIR/evidence/relay-tworooms-ambiguous-join-refusal.txt)
+  `-lanjoin 10.42.0.1` with no room pin exits 1 and names both candidate rooms. This is
+  correct and is itself evidence: addresses are allocated per room, so a host address alone
+  cannot identify a game once more than one room exists. chooseRelayRoom says so; this
+  confirms it against a live relay rather than a comment.
+
+JOINS - both rooms, independently
+  roomA  macOS joined with GENERALSX_LANROOM pinned; relay assigned it 10.42.0.2, correctly
+         excluding the 10.42.0.1 already held by the host.
+  roomB  macOS joined with NO pin - it browsed, matched the listing, took the room off the
+         LISTING and entered it. That is the full "a browser pick moves you into one" path,
+         which had zero call sites before 43bcadd8b.
+
+RESULT
+                          lines      md5                                differing  distinct
+  roomA linux host        3000       f2e114827d62fc8bebfd7c35e4c099f6   -          -
+  roomA macOS             3000       f2e114827d62fc8bebfd7c35e4c099f6   0          3000/3000
+  roomB linux host        3000       ec56a60b098d23956959d09ec597935a   -          -
+  roomB macOS             3000       ec56a60b098d23956959d09ec597935a   0          2999/3000
+
+  Compared on the CRC VALUE column ($3 vs $6) and with cmp, never `paste | awk '$2!=$4'`.
+  roomA and roomB streams DIFFER from each other, so the two rooms ran two different games
+  rather than one game observed twice.
+  Both slot lists carry a CH slot - S=HUbuntu-2404,...,1:O:CH,... - so the AI path was
+  exercised. A run with a high distinct count and no AI would still miss the code that has
+  historically broken.
+
+ISOLATION
+  While roomA played its full 3000 frames, hostB stayed at 0 frames and its log contains
+  zero occurrences of `recv Lobby Announce` and zero of 10.42.0.2. Neither host ever saw
+  the other's traffic.
+
+RELAY COUNTERS over the window
+  refused 0, headerless 0, dupe-suspect 0, rooms-full 0, advert-refused 0, list-clipped 0,
+  rooms-evicted 0, assign-evicted 0, reply-dropped 0, assign-full 0.
+  NOT clean: unrouted 1 on 8086 and unrouted 2 on 8088, out of ~6900 forwarded packets.
+  Three packets addressed to a peer the relay no longer had. Both matches end with one side
+  finishing its frame budget and exiting while the other is still sending, which produces
+  exactly this, so the leading explanation is match teardown - but that is inferred from the
+  timing, not proven, and previous runs recorded unrouted 0. Worth pinning down before this
+  number is treated as normal.
+
+HARNESS BUG FOUND AND FIXED (mine, not the game's)
+  The first attempt started both hosts as background jobs of an ssh session with no nohup,
+  so they took SIGHUP when it closed. A browse during the window then showed 1 of 2 games
+  and looked like a game-list bug. It was not: ADVERT_TIMEOUT_MS is 15s, the browse landed
+  15-20s after both hosts died, and the staleness cutoff fell between their last two
+  advertisements. Re-run with `setsid nohup ... < /dev/null`, both browses returned 2 of 2.
+  Rule: a host started over ssh must be detached, or it dies with the session and the
+  symptom presents as a matchmaking fault.
