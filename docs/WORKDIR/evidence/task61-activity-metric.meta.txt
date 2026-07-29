@@ -1,0 +1,88 @@
+task61-activity-metric - replacing "distinct CRC values" as an activity verdict
+===============================================================================
+
+Date        2026-07-29
+Platform    macOS, solo headless, no network
+Engine      [GXACT] per-player trace added to GameLogic.cpp beside [GXCRC], off unless
+            GX_ACTIVITY=<frame period> is set
+
+THE PROBLEM, RESTATED WITH A FRESH MEASUREMENT
+----------------------------------------------
+Every harness in this project judged "the simulation was active" by counting distinct [GXCRC]
+values. That number is satisfied by any moving object at all. alpine assault carries a scripted
+train that drives itself with no player and no AI attached, Object::crc hashes the transform, and
+so alpine read 1499 of 1500 distinct while every AI in the match owned nothing - and alpine was the
+control every other map was judged against.
+
+Measured again today, two runs, same seed 424242, 300 frames each:
+
+  run                                            frames  DISTINCT  starved ([GXACT])
+  ---------------------------------------------  ------  --------  -----------------
+  twilight flame + Hx5          (LEGAL, 6 of 8)    300     300      none
+  alpine assault + Hx2 -lanoverfill (3 of 2)       300     300      p4
+
+**Both score 300 of 300.** The old metric cannot separate a healthy match from one where an AI
+was provably inert. The new one does, and names the player.
+
+THE TRACE
+---------
+  [GXACT] f=250 total=229 unowned=0 p0=-:11/11 p1=-:199/16 p2=H:2/1 p3=A:3/2 ... p8=-:0/0
+           ^frame  ^objects ^no owner          ^kind : objects / structures
+
+kind is A (skirmish AI), H (human playable) or - (neutral, observer, dead, or an unoccupied slot).
+
+ONLY A AND H ARE JUDGED, and that is not a detail. ThePlayerList is not the lobby: it always
+carries a neutral entry owning the map scenery, plus one entry per empty slot. On the LEGAL run
+above, p0 (11 structures), p1 (199 objects) and p8 (0/0, an empty slot) are all tagged '-'. A
+detector that flagged every 0/0 entry would have called that perfectly healthy match INCONCLUSIVE.
+
+WHY IT CATCHES THE STARVED PLAYER
+----------------------------------
+p4 in the overfilled run, sampled every 50 frames:
+
+  f=0    p3=A:3/2   p4=A:0/0     <- still an ACTIVE skirmish AI, owning nothing
+  f=50   p3=A:3/2   p4=-:0/0     <- engine has now marked it dead, tag drops to '-'
+  ...    (unchanged through f=250)
+
+The window that identifies it is frame 0. `m_frame % period == 0` is true at frame 0 for every
+period, so the trace always samples it whatever GX_ACTIVITY is set to. Without that the starved
+player would be indistinguishable from an empty slot for the whole run.
+
+PROVEN INERT
+------------
+Enabling the trace must not move the simulation. Same seed, same map, same AI, with and without
+GX_ACTIVITY:
+
+  with GX_ACTIVITY=50                                       af5fdd3ed66fecfb6a1e7dfce2691ae2
+  committed baseline task59-noop-twilight-Hx5-300-guarded   af5fdd3ed66fecfb6a1e7dfce2691ae2
+
+  cmp: BYTE-IDENTICAL.
+
+It reads only: no RNG is touched, nothing is mutated, and nothing is consulted that is not already
+being hashed a few lines above.
+
+HARNESS CHANGES SHIPPED WITH IT
+--------------------------------
+* scripts/test/lib-activity.sh - starved_players, has_activity_trace, activity_summary. Reports
+  three distinct states, so "not measured" can never be mistaken for "measured and clean".
+* relay-8peer.sh: DISTINCT0 was computed over the FULL peer0 stream and compared against a
+  SHORTEST/2 threshold. A peer dying at frame 3 gave SHORTEST=3, threshold 1, and a distinct count
+  of 1500 - not less than 1 - so it printed "distinct (peer0): 1500 of 3" and exited PASS.
+* Frame floor at 90% of requested added to relay-8peer.sh, xplat-3platform-lobby.sh,
+  xplat-3platform-soak.sh, xplat-determinism-soak.sh and xplat-lan-soak.sh. None had one.
+* xplat-3platform-lobby.sh AI_PLACED was a junk grep nothing read, while the PASS line asserted the
+  REQUESTED AI count. Now parsed from the S= field of `game options:` and the run FAILS on
+  mismatch. Parser checked against three real slot lists: 1 AI, 5 AI, and human-only.
+* xplat-determinism-soak.sh idle iterations now FAIL rather than WARN-and-pass, matching siblings.
+* xplat-lan-soak.sh had NO idle check and NO floor, and it is the harness that produced
+  xplat-lan-ai-1500, cited as the macOS-vs-Windows determinism proof. Both added.
+
+WHAT THIS DOES NOT SHOW
+------------------------
+* macOS only, solo only. The trace is platform-independent code with no float arithmetic, but it
+  has not been run on Linux or Windows.
+* No networked run has been made with GX_ACTIVITY set. The harness changes that read [GXACT] are
+  therefore exercised here only against locally produced logs, not against a live three-platform
+  run. That is task 60.
+* The 0-AI control remains the belt-and-braces check and is not replaced by this. [GXACT] tells you
+  a player owned nothing; a 0-AI control tells you what the map does on its own.

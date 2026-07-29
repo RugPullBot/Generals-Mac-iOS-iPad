@@ -1,0 +1,7 @@
+[GXACT] per-player activity trace every 50 frame(s)
+[GXACT] f=0 total=228 unowned=0 p0=-:11/11 p1=-:200/16 p2=H:2/1 p3=A:3/2 p4=A:3/2 p5=A:3/2 p6=A:3/2 p7=A:3/2 p8=-:0/0
+[GXACT] f=50 total=229 unowned=0 p0=-:11/11 p1=-:199/16 p2=H:2/1 p3=A:3/2 p4=A:4/2 p5=A:3/2 p6=A:4/2 p7=A:3/2 p8=-:0/0
+[GXACT] f=100 total=229 unowned=0 p0=-:11/11 p1=-:199/16 p2=H:2/1 p3=A:3/2 p4=A:4/2 p5=A:3/2 p6=A:4/2 p7=A:3/2 p8=-:0/0
+[GXACT] f=150 total=229 unowned=0 p0=-:11/11 p1=-:199/16 p2=H:2/1 p3=A:3/2 p4=A:4/2 p5=A:3/2 p6=A:4/2 p7=A:3/2 p8=-:0/0
+[GXACT] f=200 total=229 unowned=0 p0=-:11/11 p1=-:199/16 p2=H:2/1 p3=A:3/2 p4=A:4/2 p5=A:3/2 p6=A:4/2 p7=A:3/2 p8=-:0/0
+[GXACT] f=250 total=229 unowned=0 p0=-:11/11 p1=-:199/16 p2=H:2/1 p3=A:3/2 p4=A:4/2 p5=A:3/2 p6=A:4/2 p7=A:3/2 p8=-:0/0

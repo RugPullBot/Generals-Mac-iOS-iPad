@@ -14,6 +14,9 @@
 
 set -uo pipefail
 
+# Real activity attribution, from the engine's [GXACT] trace rather than the distinct CRC count.
+. "$(dirname "$0")/lib-activity.sh"
+
 WIN_HOST="${WIN_HOST:-User@192.168.10.89}"
 MAC_GAME="${MAC_GAME:-$HOME/GeneralsX/GeneralsZH}"
 WIN_RUN='C:\dev\GeneralsX-run'
@@ -148,8 +151,38 @@ if [ "$MAC_N" = "0" ] || [ "$WIN_N" = "0" ]; then
 	exit 1
 fi
 
+# GeneralsX @fix Claude 29/07/2026 This harness had NO idle check and no frame floor, and it is
+# the one that produced xplat-lan-ai-1500 - the result cited as THE macOS-vs-Windows determinism
+# proof. Two peers that both stop at frame 3 and agree used to print "PASS: 3 frames, zero
+# differing". Agreement on an idle or truncated sim is not determinism evidence.
+FLOOR=$(( FRAMES * 9 / 10 ))
+DISTINCT=$(awk '{print $3}' "$OUT/mac.crc" | sort -u | wc -l | tr -d ' ')
+
+# Real activity, when the run was launched with GX_ACTIVITY set: a player that never got a start
+# position reads 0/0 for the whole match, however much ambient scenery is moving. See [GXACT] in
+# GameLogic.cpp and docs/WORKDIR/evidence/networked-sim-freeze-diagnosis.md.
+STARVED="$(starved_players "$OUT/mac.err")"
+
+echo "distinct CRCs: $DISTINCT of $MAC_N   (frames requested $FRAMES, floor $FLOOR)"
+echo "$(activity_summary "$OUT/mac.err")"
+
 if diff -q "$OUT/mac.crc" "$OUT/win.crc" > /dev/null; then
-	echo "PASS: $MAC_N frames, zero differing"
+	if [ "$MAC_N" -lt "$FLOOR" ]; then
+		echo "FAIL: only $MAC_N frames of $FRAMES requested (floor $FLOOR) - a peer stopped early."
+		echo "  This is a $MAC_N-frame experiment, not a $FRAMES-frame one."
+		exit 1
+	fi
+	if [ -n "$STARVED" ]; then
+		echo "INCONCLUSIVE: streams identical, but player(s) $STARVED owned no object at any sample."
+		echo "  Valid determinism evidence; NOT simulation-activity evidence."
+		exit 2
+	fi
+	if [ "$DISTINCT" -lt $(( MAC_N / 2 )) ]; then
+		echo "INCONCLUSIVE: streams identical, but only $DISTINCT distinct values in $MAC_N frames -"
+		echo "  the simulation was idle, and agreement on an idle sim proves nothing."
+		exit 2
+	fi
+	echo "PASS: $MAC_N frames (>= $FLOOR), zero differing, $DISTINCT distinct"
 	exit 0
 fi
 

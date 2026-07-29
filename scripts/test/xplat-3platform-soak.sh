@@ -57,6 +57,8 @@ set -uo pipefail
 
 # Shared map capacity table - used to drop maps that cannot seat this lobby before the soak starts.
 . "$(dirname "$0")/lib-map-capacity.sh"
+# Real activity attribution, from the engine's [GXACT] trace rather than the distinct CRC count.
+. "$(dirname "$0")/lib-activity.sh"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOBBY="$HERE/xplat-3platform-lobby.sh"
@@ -203,11 +205,24 @@ for ((i = 0; i < ITERATIONS; i++)); do
 		"$([ "$M1" = "$M2" ] && [ "$M1" = "$M3" ] && echo IDENTICAL || echo DIVERGED)" \
 		>> "$OUT/manifest.tsv"
 
+	# GeneralsX @fix Claude 29/07/2026 Frame floor and real activity, both missing before. N is the
+	# shortest of three streams, so without a floor one peer dying at frame 3 turned a 1500-frame
+	# iteration into a 3-frame one that agreed and counted as a pass. And DISTINCT cannot tell an
+	# inert AI from an active one - see lib-activity.sh.
+	FLOOR=$(( FRAMES * 9 / 10 ))
+	STARVED="$(starved_players "$IDIR/mac.err")"
+
 	if [ "$M1" != "$M2" ] || [ "$M1" != "$M3" ]; then
 		say "  DIVERGED  mac=$M1 linux=$M2 win=$M3"
 		say "            re-run this seed through xplat-determinism-soak.sh to tell"
 		say "            simulation divergence from a transport failure"
 		FAILED=$((FAILED + 1)); FAILED_TAGS="$FAILED_TAGS $TAG(seed=$SEED)"
+	elif [ "$N" -lt "$FLOOR" ]; then
+		say "  FAIL  only $N frames of $FRAMES requested (floor $FLOOR) - a peer stopped early"
+		FAILED=$((FAILED + 1)); FAILED_TAGS="$FAILED_TAGS $TAG(short=$N)"
+	elif [ -n "$STARVED" ]; then
+		say "  INCONCLUSIVE  $N frames identical, but player(s) $STARVED owned nothing all match"
+		INCONCLUSIVE=$((INCONCLUSIVE + 1))
 	elif [ "$DISTINCT" -lt $((N / 2)) ]; then
 		say "  INCONCLUSIVE  $N frames identical, but only $DISTINCT distinct - sim was idle"
 		INCONCLUSIVE=$((INCONCLUSIVE + 1))

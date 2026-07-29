@@ -4002,6 +4002,89 @@ void GameLogic::update()
 		const UnsignedInt perFrameCrc = getCRC( CRC_RECALC );
 		fprintf(stderr, "[GXCRC] f=%u v=%08X\n", (unsigned)m_frame, perFrameCrc);
 		fflush(stderr);
+
+		// GeneralsX @feature Claude 29/07/2026 Per-player activity trace, for task 61.
+		//
+		// WHY THIS EXISTS. Every harness in this project judged "the simulation was active" by
+		// counting DISTINCT [GXCRC] values, and that number is satisfied by any moving object
+		// whatsoever. alpine assault carries a scripted train that drives itself with no player
+		// and no AI attached, and Object::crc hashes the transform, so alpine scored 1499 of 1500
+		// distinct while every AI in the match owned nothing at all. It was the control every
+		// other map was judged against. Measured again on 29/07/2026 after the capacity guard
+		// landed: alpine + Hx2 with one AI provably inert scored 60 distinct of 60, identical to
+		// alpine + Hx1. The distinct count cannot tell those apart and never could.
+		//
+		// A verdict has to attribute change to PLAYERS. This line does: it reports, per player,
+		// how many objects and how many structures that player owns. A starved player - one that
+		// got startPos=-1 and no Command Center - reads 0/0 for the entire match no matter how
+		// much ambient scenery is moving, and an AI that is genuinely playing shows its counts
+		// change as it builds and loses things.
+		//
+		// OFF unless GX_ACTIVITY is set to a positive frame period, so it costs one integer
+		// compare per frame otherwise. Reads only: no RNG is touched, nothing is mutated, and
+		// no logic state is consulted that is not already being hashed a few lines above - so
+		// enabling it cannot move the CRC stream. Verify that the same way everything else here
+		// is verified: run once with it and once without and diff the [GXCRC] lines.
+		static Int s_actPeriod = -1;
+		if (s_actPeriod < 0)
+		{
+			const char *p = getenv("GX_ACTIVITY");
+			s_actPeriod = p ? atoi(p) : 0;
+			if (s_actPeriod < 0)
+				s_actPeriod = 0;
+			if (s_actPeriod > 0)
+			{
+				fprintf(stderr, "[GXACT] per-player activity trace every %d frame(s)\n", s_actPeriod);
+				fflush(stderr);
+			}
+		}
+		if (s_actPeriod > 0 && (m_frame % (UnsignedInt)s_actPeriod) == 0)
+		{
+			Int objs[MAX_PLAYER_COUNT];
+			Int bldgs[MAX_PLAYER_COUNT];
+			for (Int p = 0; p < MAX_PLAYER_COUNT; ++p)
+				objs[p] = bldgs[p] = 0;
+
+			Int total = 0, unowned = 0;
+			for (Object *o = m_objList; o; o = o->getNextObject())
+			{
+				++total;
+				Player *owner = o->getControllingPlayer();
+				const Int idx = owner ? (Int)owner->getPlayerIndex() : -1;
+				if (idx < 0 || idx >= MAX_PLAYER_COUNT)
+				{
+					// Neutral scenery, and the train that started all this.
+					++unowned;
+					continue;
+				}
+				++objs[idx];
+				if (o->isKindOf(KINDOF_STRUCTURE))
+					++bldgs[idx];
+			}
+
+			fprintf(stderr, "[GXACT] f=%u total=%d unowned=%d", (unsigned)m_frame, total, unowned);
+			const Int numPlayers = ThePlayerList ? ThePlayerList->getPlayerCount() : 0;
+			for (Int i = 0; i < numPlayers && i < MAX_PLAYER_COUNT; ++i)
+			{
+				// Tag each entry with what KIND of player it is, because ThePlayerList is not the
+				// lobby: it always carries a neutral/civilian entry that owns the map's scenery,
+				// plus an entry per unoccupied slot. Both legitimately own nothing, so a harness
+				// that flagged every 0/0 entry as starved would call a perfectly healthy match
+				// INCONCLUSIVE. Measured on a legal twilight flame + Hx5 run: 9 entries, of which
+				// p8 is an empty slot sitting at 0/0 for the whole match.
+				//
+				//   A  skirmish AI          - these MUST own something, or their AI is inert
+				//   H  human, playable      - ditto
+				//   -  neither              - neutral, observer, dead or an unoccupied slot
+				Player *pl = ThePlayerList->getNthPlayer(i);
+				char kind = '-';
+				if (pl != nullptr && pl->isPlayerActive() && pl->isPlayableSide())
+					kind = pl->isSkirmishAIPlayer() ? 'A' : 'H';
+				fprintf(stderr, " p%d=%c:%d/%d", i, kind, objs[i], bldgs[i]);
+			}
+			fprintf(stderr, "\n");
+			fflush(stderr);
+		}
 	}
 
 	if (generateForSolo || generateForMP)

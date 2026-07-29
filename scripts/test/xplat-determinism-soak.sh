@@ -187,6 +187,18 @@ for ((i = 0; i < ITERATIONS; i++)); do
 	fi
 
 	N=$(( MAC_N < LIN_N ? MAC_N : LIN_N ))
+
+	# GeneralsX @fix Claude 29/07/2026 FRAME FLOOR. Truncating to the shorter stream with no floor
+	# silently redefines the experiment: a peer that stops at frame 3 turns a 1500-frame iteration
+	# into a 3-frame one that then "agrees" and is counted as evidence. Fail it instead, before
+	# anything is added to TOTAL_FRAMES.
+	FLOOR=$(( FRAMES * 9 / 10 ))
+	if [ "$N" -lt "$FLOOR" ]; then
+		say "  FAIL  only $N frames comparable of $FRAMES requested (floor $FLOOR) - a peer stopped early"
+		FAILED=$((FAILED + 1))
+		continue
+	fi
+
 	head -n "$N" "$OUT/$TAG.mac.crc"   > "$OUT/$TAG.mac.cmp"
 	head -n "$N" "$OUT/$TAG.linux.crc" > "$OUT/$TAG.linux.cmp"
 
@@ -203,9 +215,14 @@ for ((i = 0; i < ITERATIONS; i++)); do
 	# frame did different work. An earlier "identical" run in this project had 3 distinct values
 	# across 600 frames and proved exactly nothing.
 	if [ "$DIFFERING" -eq 0 ]; then
-		say "  ok   $N frames, 0 differing, $DISTINCT distinct"
+		# GeneralsX @fix Claude 29/07/2026 This used to WARN and pass, while all three sibling
+		# harnesses treated the same condition as disqualifying. An idle sim matches trivially, so
+		# counting it as evidence is how a soak manufactures a frame total it did not earn.
 		if [ "$DISTINCT" -lt $((N / 2)) ]; then
-			say "  WARNING: only $DISTINCT distinct values in $N frames - the sim may have been idle"
+			say "  IDLE  $N frames, 0 differing, but only $DISTINCT distinct - not determinism evidence"
+			FAILED=$((FAILED + 1))
+		else
+			say "  ok   $N frames, 0 differing, $DISTINCT distinct"
 		fi
 	else
 		say "  DIVERGED  $DIFFERING of $N frames"

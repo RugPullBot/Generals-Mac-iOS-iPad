@@ -61,6 +61,8 @@ set -uo pipefail
 # Shared map capacity table - see the header of that file for why an over-capacity lobby is not a
 # cosmetic problem.
 . "$(dirname "$0")/lib-map-capacity.sh"
+# Real activity attribution, from the engine's [GXACT] trace rather than the distinct CRC count.
+. "$(dirname "$0")/lib-activity.sh"
 
 FRAMES="${FRAMES:-1500}"
 AI="${AI:-Hx5}"
@@ -330,23 +332,64 @@ MD5_WIN="$(md5 -q "$OUT/win.val" 2>/dev/null || md5sum "$OUT/win.val" | awk '{pr
 # The control. A frozen or idling simulation matches trivially - an earlier "identical" run in
 # this project had 3 distinct values across 600 frames and proved nothing at all.
 DISTINCT="$(sort -u "$OUT/mac.val" | wc -l | tr -d ' ')"
-AI_PLACED="$(grep -ac 'AI player\|lanai' "$OUT/linux.err" 2>/dev/null || echo 0)"
 
-say " frames compared : $N"
+# GeneralsX @fix Claude 29/07/2026 AI_PLACED used to be `grep -ac 'AI player\|lanai'`, was never
+# read by anything, and the PASS line below asserted "$AI AI" - the value that was REQUESTED, not
+# one that was observed. A soak that silently ran human-only would print "+ Hx5 AI" and pass.
+#
+# Count what the host actually serialised instead. The S= field of `game options:`
+# (HeadlessMatch.cpp:670-673) lists one colon-separated entry per slot, and an AI slot appears as
+# CE / CM / CH (Computer Easy / Medium / Hard).
+OPTS="$(grep -a -m1 'game options:' "$OUT/linux.err" 2>/dev/null | tr -d '\r' | sed 's/.*game options: //')"
+AI_OBSERVED="$(printf '%s' "$OPTS" | sed -E 's/.*;S=([^;]*).*/\1/' | tr ':' '\n' | grep -c '^C[EMH]')"
+AI_REQUESTED="$(ai_spec_count "$AI")"
+
+# GeneralsX @fix Claude 29/07/2026 FRAME FLOOR. N is the shortest of the three streams and had no
+# floor, so one peer dying at frame 3 turned a 1500-frame experiment into a 3-frame one that still
+# printed PASS with all three md5s equal.
+FLOOR=$(( FRAMES * 9 / 10 ))
+
+# GeneralsX @feature Claude 29/07/2026 Real activity, from the [GXACT] per-player trace rather
+# than the distinct count. A player that never got a start position reads 0/0 all match however
+# much ambient scenery moves. Only present when the run was launched with GX_ACTIVITY set.
+STARVED="$(starved_players "$OUT/mac.err")"
+
+say " frames compared : $N of $FRAMES requested (floor $FLOOR)"
 say " distinct CRCs   : $DISTINCT of $N"
+say " AI slots        : $AI_OBSERVED observed in the slot list, $AI_REQUESTED requested ($AI)"
 say " macOS   md5     : $MD5_MAC"
 say " Linux   md5     : $MD5_LIN"
 say " Windows md5     : $MD5_WIN"
+say " $(activity_summary "$OUT/mac.err")"
 say " results         : $OUT"
 say "======================================================================"
 
+# Every claim below is derived from an observation in the logs, never from an input parameter,
+# and every verdict is computed over the same denominator it prints.
+if [ "$N" -lt "$FLOOR" ]; then
+	say "FAIL: only $N frames were comparable of $FRAMES requested (floor $FLOOR)."
+	say "  A peer stopped early, so this is an $N-frame experiment. Read the three .err files."
+	exit 1
+fi
+if [ "$AI_OBSERVED" -ne "$AI_REQUESTED" ]; then
+	say "FAIL: $AI_REQUESTED AI were requested ($AI) but $AI_OBSERVED appear in the host's slot list."
+	say "  Slot list: $OPTS"
+	exit 1
+fi
+
 if [ "$MD5_MAC" = "$MD5_LIN" ] && [ "$MD5_MAC" = "$MD5_WIN" ]; then
+	if [ -n "$STARVED" ]; then
+		say "INCONCLUSIVE: all three peers agree, but player(s) $STARVED owned no object at any"
+		say "  sample - they were in the lobby and never in the game. This is valid DETERMINISM"
+		say "  evidence and is NOT simulation-activity evidence."
+		exit 2
+	fi
 	if [ "$DISTINCT" -lt $((N / 2)) ]; then
 		say "INCONCLUSIVE: identical, but only $DISTINCT distinct values in $N frames -"
 		say "  the simulation may have been idle. Agreement on an idle sim proves nothing."
 		exit 1
 	fi
-	say "PASS: $N frames, macOS + Linux + Windows + $AI AI, one md5 across all three"
+	say "PASS: $N frames (>= $FLOOR), macOS + Linux + Windows, $AI_OBSERVED AI observed in the slot list, one md5 across all three"
 	exit 0
 fi
 

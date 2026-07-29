@@ -23,18 +23,25 @@
 # "assign the lowest free address" has to be right seven times, not once.
 #
 # Usage, on the relay host:
-#   MAP='maps\killing fields\killing fields.map' FRAMES=1500 ./relay-8peer.sh
+#   MAP='maps\twilight flame\twilight flame.map' FRAMES=1500 GX_ACTIVITY=100 ./relay-8peer.sh
+#
+# Set GX_ACTIVITY to a frame period to get the [GXACT] per-player trace, which is the only thing
+# here that can tell "the AI played" from "a train moved". Without it the run still passes or fails
+# on determinism, but its activity verdict is reported as NOT MEASURED.
 #
 # Env:
 #   PEERS     total peers incl. host   (default 8)
 #   FRAMES    logic frames             (default 1500)
-#   MAP       map path, backslashed    (default killing fields)
+#   MAP       map path, backslashed    (default twilight flame - one of only three that hold 8)
 #   AI        -lanai spec, or empty    (default empty - eight humans fill the lobby)
 #   GAME      game data dir            (default /root/gamedata)
 #   RELAY_IP  relay address            (default 163.5.210.131)
 #   OUT       results dir              (default timestamped under /root)
 
 set -uo pipefail
+
+# Real activity attribution, from the engine's [GXACT] trace rather than the distinct CRC count.
+. "$(dirname "$0")/lib-activity.sh"
 
 PEERS="${PEERS:-8}"
 FRAMES="${FRAMES:-1500}"
@@ -200,11 +207,31 @@ rm -f "$OUT/.a" "$OUT/.b"
 # values across 1500 frames, 1496 of them the same one. That agreement says nothing about
 # determinism, and a harness that prints PASS for it is manufacturing evidence. Networking at eight
 # is still proven by such a run; determinism is not, so they are reported separately.
-DISTINCT0=$(awk '{print $3}' "$OUT/peer0.crc" | sort -u | wc -l | tr -d ' ')
+# GeneralsX @fix Claude 29/07/2026 TWO DENOMINATORS. DISTINCT0 was computed over the FULL peer0
+# stream while the threshold below is a fraction of SHORTEST, so a peer dying at frame 3 gave
+# SHORTEST=3, threshold 1, and a peer0 distinct count of 1500 - which is not less than 1, so IDLE
+# stayed 0 and the summary printed the impossible line "distinct (peer0): 1500 of 3" and exited
+# PASS. Count over exactly the frames that were compared.
+DISTINCT0=$(head -n "$SHORTEST" "$OUT/peer0.crc" | awk '{print $3}' | sort -u | wc -l | tr -d ' ')
 IDLE=0
 if [ "$SHORTEST" -gt 0 ] && [ "$DISTINCT0" -lt $((SHORTEST / 2)) ]; then
 	IDLE=1
 fi
+
+# GeneralsX @fix Claude 29/07/2026 FRAME FLOOR. Truncating to the shortest stream with no floor
+# silently redefines the experiment: one peer dying at frame 3 turns a 1500-frame run into a
+# 3-frame one, and every pair still "agrees". Require most of what was asked for.
+FLOOR=$(( FRAMES * 9 / 10 ))
+SHORT_RUN=0
+if [ "$SHORTEST" -lt "$FLOOR" ]; then
+	SHORT_RUN=1
+fi
+
+# GeneralsX @feature Claude 29/07/2026 A real activity measure, not the distinct count. See the
+# [GXACT] trace in GameLogic.cpp: it reports per-player object/structure counts, so a player that
+# got no start position reads 0/0 for the whole match however much ambient scenery is moving.
+# Only reported when the run was launched with GX_ACTIVITY set; absent otherwise.
+STARVED="$(starved_players "$OUT/peer0.err")"
 
 say ""
 say "======================================================================"
@@ -212,12 +239,24 @@ say " peers          : $PEERS"
 say " frames compared: $SHORTEST"
 say " pairs compared : $PAIRS"
 say " pairs differing: $BAD"
-say " distinct (peer0): $DISTINCT0 of $SHORTEST"
+say " distinct (peer0): $DISTINCT0 of $SHORTEST   (over the compared frames, NOT the full stream)"
+say " frames requested: $FRAMES  (floor $FLOOR)"
+say " $(activity_summary "$OUT/peer0.err")"
 say " results        : $OUT"
 say "======================================================================"
 if [ "$BAD" -ne 0 ] || [ "$SHORTEST" -eq 0 ]; then
 	say "FAIL"
 	exit 1
+fi
+if [ "$SHORT_RUN" -eq 1 ]; then
+	say "FAIL: only $SHORTEST frames were comparable of $FRAMES requested (floor $FLOOR)."
+	say "  A peer died early, so this is a $SHORTEST-frame experiment, not a $FRAMES-frame one."
+	exit 1
+fi
+if [ -n "$STARVED" ]; then
+	say "INCONCLUSIVE: player(s) $STARVED owned no object at any sample - they were in the lobby"
+	say "  but never in the game. Any AI count this run reports is not simulation evidence."
+	exit 2
 fi
 if [ "$IDLE" -eq 1 ]; then
 	say "INCONCLUSIVE: $PEERS peers stayed in lockstep for $SHORTEST frames and all $PAIRS pairs"

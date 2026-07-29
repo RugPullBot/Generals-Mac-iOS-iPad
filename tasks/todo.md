@@ -536,12 +536,33 @@ pointless version of this task.
 - [ ] **60.** Re-run the networked corpus on capacity-8 maps (`death valley`,
       `destruction station`, `twilight flame`) and re-label every pre-`1566959a9` row that used a
       2-player map. Every "8-player" result before that commit was overfilled.
-- [ ] **61.** Fix the activity metric. "distinct CRC values" is satisfied by any ambient mover.
-      Until it attributes change to players, run the 0-AI control alongside every activity claim.
-      Same pass: `relay-8peer.sh:199-205` compares `DISTINCT0` over the full stream against a
-      `SHORTEST/2` threshold; and every multi-peer harness truncates to the shortest stream with
-      **no floor**, so a peer dying at frame 3 turns a 1500-frame experiment into a 3-frame PASS
-      (`xplat-3platform-lobby.sh:280`, `xplat-3platform-soak.sh`, `xplat-determinism-soak.sh:170`).
+- [x] **61.** Fix the activity metric. **DONE.** The verdict no longer rests on "distinct CRC".
+      - **New `[GXACT]` engine trace** (`GameLogic.cpp`, beside `[GXCRC]`), off unless
+        `GX_ACTIVITY=<frame period>` is set. Reports per player `kind:objects/structures`, where
+        kind is `A` skirmish AI, `H` human playable, or `-` neutral/observer/dead/empty slot.
+        Only `A`/`H` are judged — `ThePlayerList` is not the lobby and always carries a neutral
+        entry plus one per empty slot, which legitimately own nothing.
+        **Proven inert:** the same seed with and without `GX_ACTIVITY` produces a byte-identical
+        `[GXCRC]` stream (md5 `af5fdd3ed66fecfb6a1e7dfce2691ae2`).
+      - **It separates what distinct could not.** Measured: legal twilight+Hx5 and overfilled
+        alpine+Hx2 BOTH score 300 distinct of 300; `[GXACT]` flags `p4` in the second and nothing
+        in the first. Frame 0 is always sampled (`frame % period == 0`), which is what catches a
+        starved AI before the engine marks it dead.
+      - **Shared `scripts/test/lib-activity.sh`** — `starved_players`, `has_activity_trace`,
+        `activity_summary`. Distinguishes "not measured" from "measured and clean".
+      - **`relay-8peer.sh` two-denominator bug fixed:** `DISTINCT0` was counted over the full
+        peer0 stream and thresholded against `SHORTEST/2`, so it could print the impossible
+        `distinct (peer0): 1500 of 3` and exit PASS. Now counted over the compared frames.
+      - **Frame floor (90% of requested) added to all five harnesses** —
+        `relay-8peer.sh`, `xplat-3platform-lobby.sh`, `xplat-3platform-soak.sh`,
+        `xplat-determinism-soak.sh`, `xplat-lan-soak.sh`.
+      - **`AI_PLACED` now asserted rather than discarded.** It was a junk grep that nothing read,
+        while the PASS line printed the *requested* AI count. Now parsed from the `S=` field of
+        `game options:` and the run FAILS if observed != requested. Parser validated against three
+        real slot lists (1, 5 and 0 AI).
+      - **`xplat-determinism-soak.sh` idle runs now FAIL** instead of warning-and-passing, matching
+        its three siblings. **`xplat-lan-soak.sh` gained an idle gate and a floor at all** — it had
+        neither, and it is the harness that produced the cited macOS↔Windows determinism proof.
 - [ ] **62.** Long-haul soak on capacity-8 maps only. Measured throughput is **17 logic fps**
       networked, so a 30-min match is ~53 min wall and 50 full matches is ~44 h — size accordingly.
       `scripts/test/xplat-3platform-soak.sh`, `ONLY_MAP=` to pick the rotation.
