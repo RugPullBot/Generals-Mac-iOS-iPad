@@ -1559,7 +1559,19 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				dropDownWindows[DROPDOWN_MULTIPLAYER]->winHide(FALSE);
 				TheTransitionHandler->reverse("MainMenuMultiPlayerMenuTransitionToNext");
 
-				StartPatchCheck();
+				// GeneralsX @feature Matchmaking. Online now opens the RELAY lobby instead of
+				// starting the GameSpy chain.
+				//
+				// StartPatchCheck() began patch-check -> login -> peerchat against
+				// gamestats.gamespy.com and peerchat.gamespy.com. GameSpy was shut down in 2014,
+				// so that path can only ever end in "CANNOT CONNECT ... please check your internet
+				// connection" - which blames the player's connection for a service that no longer
+				// exists. There is nothing to reconnect to and nothing to fix.
+				//
+				// The relay lobby does what Online used to: it reaches a server on startup, lists
+				// every game being advertised, and joining one puts the match on the relay. Same
+				// three steps, a backend we run.
+				TheShell->push( "Menus/NetworkDirectConnect.wnd" );
 //				localAnimateWindowManager->reverseAnimateWindow();
 				dropDown = DROPDOWN_NONE;
 
