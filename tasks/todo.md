@@ -32,10 +32,14 @@ measured yet.** Full detail in `docs/WORKDIR/STATE_2026-07-29_session6.md`.
 - [x] 10. Diff every `[GXCRC]` stream pairwise with the controls that make it mean something —
       distinct-CRC count and the serialised slot list. Done at 3 peers / 900 frames
       (`evidence/relay-3peer-900-*`).
-- [ ] 11. **8 peers in one room, one per network namespace on the VPS.** Still the largest untested
-      number: the biggest real game so far is 3. A netns has its own port table so each peer binds
-      8086/8088 independently; multi-instance on one box will not work, since `initRelay` disables
-      relay mode for multi-instance clients on macOS/Linux.
+- [x] 11. **8 peers in one room, one per network namespace on the VPS.** Done (`relay-8peer.meta.txt`).
+      Relay assigned `10.42.0.1`..`.8` to eight namespace endpoints, room filled (8/8), 8 joins on
+      each of 8086 and 8088, host accepted all seven and started the match, all eight in lockstep to
+      frame 1500, 28/28 pairs byte-identical. **Reported as a network proof only:** distinct = 3 CRC
+      values, because eight headless peers with no AI issue no orders and the sim sits still.
+      Determinism at scale is the separate 7-peers-plus-AI run — 1500 frames, 1499 distinct, 21/21
+      pairs identical. Eight *active* network peers is not reachable headless: eight peers fill all
+      eight slots, leaving none for an AI, and headless peers issue no orders.
 
 # Phase 2: a server list served by the relay — DONE except the UI proof
 

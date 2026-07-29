@@ -1,0 +1,83 @@
+Eight peers in one relay room - session 7, 2026-07-29
+=====================================================
+
+MEMBERS_PER_ROOM has been 8 since 99846529d. Before this, the largest real game was 3.
+
+BUILD
+  rev=2171 source=6A9BFF78, the deployed 2e226bf3a. Nothing rebuilt: HEAD has moved past the
+  deployed binaries (another session landed an engine change), and sourceID is baked at compile
+  time, so rebuilding one platform would make it unable to join the others.
+
+SETUP
+  One network namespace per peer - gx, gx2 .. gx8, each on its own /24 with its own port table.
+  Multi-instance cannot substitute: initRelay disables relay mode for multi-instance clients, so
+  eight copies on one box would silently drop off the relay onto a plain LAN and the run would
+  prove nothing about the relay. Each peer also got its own XDG_DATA_HOME, because peers write
+  Network.ini and MapPreviews into the user data dir and eight sharing one directory race there.
+  No LocalVirtualIP and no RelayRoom anywhere - every address assigned, room token generated.
+
+---------------------------------------------------------------------------------------------
+RUN 2 - EIGHT PEERS. Proves the network, NOT determinism.
+---------------------------------------------------------------------------------------------
+  map maps\killing fields\killing fields.map, 1500 frames, no AI.
+
+  The relay assigned 10.42.0.1 .. 10.42.0.8 sequentially to eight distinct namespace endpoints and
+  the room filled to (8/8) - the first time the assignment path has had to be right seven times in
+  a row. All eight registered on BOTH ports; relay-8peer-relay.txt records 8 joins on 8086 and 8
+  joins on 8088. The host logged accepts from 10.42.0.2 through 10.42.0.8 and then "starting
+  match", and all eight peers ran in lockstep to exactly frame 1500.
+
+  All 8 streams were byte-identical (md5 c0c918356475555c750e091c2ad82c0c, 28 of 28 pairs, zero
+  differing frames).
+
+  THAT AGREEMENT IS NOT EVIDENCE OF DETERMINISM, and is not claimed as such. distinct = 3 CRC
+  values across 1500 frames, with one value covering 1496 of them: eight headless peers with no AI
+  issue no orders, so the simulation sat still. This is precisely the pattern this project threw
+  away once before (an "identical" 600-frame run with three distinct values, two idle bases). It
+  is kept here because it does prove the thing eight peers were needed for - assignment, room
+  membership, unicast routing and lockstep at full capacity - and discarded as determinism data.
+
+  A sample of the flat stream is in relay-8peer-idle-1500-peer0-head400.crc.
+
+---------------------------------------------------------------------------------------------
+RUN 4 - SEVEN PEERS PLUS AN AI. Determinism with real simulation work.
+---------------------------------------------------------------------------------------------
+  map maps\alpine assault\alpine assault.map, 1500 frames, -lanai Hx1.
+  Slot list Hgxpeer0:O:O:O:O:O:O:CH - seven humans and one AI filling all eight slots.
+
+  frames 1500, distinct 1499 of 1500, all seven streams md5 ad956b152ddd9846b4dbdb5d9e89ddfc,
+  21 of 21 pairs identical, zero differing frames on the CRC value column.
+  Per-peer detail in relay-7peer-ai-1500-manifest.txt; peer0's full stream in
+  relay-7peer-ai-1500-peer0.crc.
+
+---------------------------------------------------------------------------------------------
+WHY THERE IS NO "EIGHT PEERS WITH ACTIVITY" RUN
+---------------------------------------------------------------------------------------------
+  It is not reachable with headless clients. The lobby has eight slots; eight network peers fill
+  all of them, leaving no slot for an AI, and a headless peer issues no orders of its own. Getting
+  eight active network peers needs either a ninth slot or a human at a keyboard. So the two runs
+  above are the complete answer that this harness can give: run 2 for the network at eight, run 4
+  for determinism at seven-plus-AI.
+
+---------------------------------------------------------------------------------------------
+TWO THINGS THE RUNS FOUND
+---------------------------------------------------------------------------------------------
+1. EIGHT PEERS ON ONE MACHINE ALL HAVE THE SAME NAME. The LAN player name falls back to the
+   machine name (IPEnumeration::getMachineName -> gethostname), and a NETWORK namespace does not
+   isolate the hostname - that is a UTS namespace. So every peer announced itself identically, the
+   host answered the second onward with Join Deny (5) code 3 = RET_DUPLICATE_NAME, and all seven
+   joiners exited 1 having simulated nothing while the host sat waiting for peers it had itself
+   refused. Nothing in the symptom points at naming. Fixed by passing -lanname per peer, and the
+   harness now prints the "join failed, code" line on a zero-frame peer so the next person sees
+   the reason rather than a 300 KB log. Note code 4 is RET_CRC_MISMATCH - a different build, same
+   symptom.
+
+2. AN AI IS NOT AUTOMATICALLY ACTIVE. On killing fields, -lanai Hx1 produced 4 distinct values in
+   1500 frames - the AI did nothing at all. On alpine assault the same spec produced 1499. Skirmish
+   scripts attach only for AI players and not every map carries them, which is the same property
+   that made this project's historical AI-only desync invisible on some maps. A map being 8-slot
+   says nothing about whether its AI will move. Pick maps for AI tests from the set the soak
+   already exercises.
+
+   Related: the lobby always reports eight slots regardless of map, so the published slot list
+   cannot be used to measure a map's real player capacity.

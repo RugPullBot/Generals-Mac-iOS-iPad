@@ -86,12 +86,20 @@ say ""
 # NOTE: -lanmap is passed by the CALLER, and only for the host. A joiner takes the map from the
 # host's game options; telling a joiner which map to load would also mask the map-transfer path,
 # which is the whole point of a separate test.
+#
+# -lanname is MANDATORY here, and its absence does not look like a naming problem. The LAN player
+# name falls back to the machine name (IPEnumeration::getMachineName -> gethostname), and a network
+# namespace does NOT isolate the hostname - that is a UTS namespace. So all eight peers announce
+# themselves as the same machine, the host answers the second one onward with Join Deny (5) code 3
+# = RET_DUPLICATE_NAME, and every joiner exits 1 having simulated nothing while the host sits
+# waiting for peers that were refused. Observed exactly that on the first run of this script.
 launch() {	# launch <index> <netns> <extra args...>
 	local i="$1" ns="$2"; shift 2
 	setsid nohup ip netns exec "$ns" env \
 		CNC_GENERALS_ZH_PATH="$GAME" XDG_DATA_HOME="$OUT/home$i" \
 		${ROOM:+GENERALSX_LANROOM="$ROOM"} \
 		"$GAME/GeneralsXZH" -headless "$@" \
+		-lanname "gxpeer$i" \
 		-lanframes "$FRAMES" -lantimeout 1800000 \
 		> "$OUT/peer$i.out" 2> "$OUT/peer$i.err" < /dev/null &
 	echo $!
@@ -149,8 +157,11 @@ for ((i = 0; i < PEERS; i++)); do
 		"$i" "$n" "$k" "$(md5sum < "$OUT/peer$i.crc" | cut -d' ' -f1)"
 	if [ "$n" -eq 0 ]; then
 		say "    FAIL: simulated nothing"
-		grep -a -m1 'UDP::Bind failed\|transportInit=FAILED\|build mismatch' "$OUT/peer$i.err" |
-			sed 's/^/    /'
+		# Name the layer rather than leaving a 300 KB log to be read by hand. join failed code 3 is
+		# RET_DUPLICATE_NAME (see the -lanname note above), code 4 is RET_CRC_MISMATCH which means a
+		# peer is running a different build - a completely different problem with the same symptom.
+		grep -a -m1 'UDP::Bind failed\|transportInit=FAILED\|build mismatch\|join failed, code' \
+			"$OUT/peer$i.err" | sed 's/^/    /'
 	fi
 	# Written out rather than as `[ A ] || [ B ] && C`, which parses as `(A || B) && C` and is one
 	# edit away from being silently wrong.
@@ -180,15 +191,35 @@ for ((i = 0; i < PEERS; i++)); do
 done
 rm -f "$OUT/.a" "$OUT/.b"
 
+# The idle-simulation gate. Eight headless peers with no AI issue no orders at all, so the sim sits
+# still and every stream matches trivially - this script's own first green run had THREE distinct
+# values across 1500 frames, 1496 of them the same one. That agreement says nothing about
+# determinism, and a harness that prints PASS for it is manufacturing evidence. Networking at eight
+# is still proven by such a run; determinism is not, so they are reported separately.
+DISTINCT0=$(awk '{print $3}' "$OUT/peer0.crc" | sort -u | wc -l | tr -d ' ')
+IDLE=0
+if [ "$SHORTEST" -gt 0 ] && [ "$DISTINCT0" -lt $((SHORTEST / 2)) ]; then
+	IDLE=1
+fi
+
 say ""
 say "======================================================================"
 say " peers          : $PEERS"
 say " frames compared: $SHORTEST"
 say " pairs compared : $PAIRS"
 say " pairs differing: $BAD"
+say " distinct (peer0): $DISTINCT0 of $SHORTEST"
 say " results        : $OUT"
 say "======================================================================"
-[ "$BAD" -eq 0 ] && [ "$SHORTEST" -gt 0 ] &&
-	{ say "PASS: $PEERS peers, $SHORTEST frames, all $PAIRS pairs identical"; exit 0; }
-say "FAIL"
-exit 1
+if [ "$BAD" -ne 0 ] || [ "$SHORTEST" -eq 0 ]; then
+	say "FAIL"
+	exit 1
+fi
+if [ "$IDLE" -eq 1 ]; then
+	say "INCONCLUSIVE: $PEERS peers stayed in lockstep for $SHORTEST frames and all $PAIRS pairs"
+	say "  agree, but only $DISTINCT0 distinct CRC values - the simulation was idle, so the"
+	say "  agreement is not determinism evidence. Re-run with an AI (AI=Hx1 and PEERS<8) for that."
+	exit 2
+fi
+say "PASS: $PEERS peers, $SHORTEST frames, all $PAIRS pairs identical, $DISTINCT0 distinct"
+exit 0

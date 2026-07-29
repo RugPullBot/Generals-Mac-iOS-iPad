@@ -1,0 +1,40 @@
+Jul 29 03:17:30 Ubuntu-2404 node[180152]: 2026-07-29T03:17:30.223Z [8086] room g2jtz5ww3hweui: assigned 10.42.0.1 to 10.200.0.2:45057
+Jul 29 03:17:30 Ubuntu-2404 node[180152]: 2026-07-29T03:17:30.232Z [8086] room g2jtz5ww3hweui: 10.42.0.1 joined from 10.200.0.2:8086 (1/8)
+Jul 29 03:17:30 Ubuntu-2404 node[180152]: 2026-07-29T03:17:30.232Z [8086] room g2u4lc0si784pv: 10.42.0.1 left for room g2jtz5ww3hweui (same endpoint 10.200.0.2:8086)
+Jul 29 03:17:32 Ubuntu-2404 node[180152]: 2026-07-29T03:17:32.192Z [8086] room g2jtz5ww3hweui: assigned 10.42.0.2 to 10.200.1.2:37321
+Jul 29 03:17:32 Ubuntu-2404 node[180152]: 2026-07-29T03:17:32.202Z [8086] room g2jtz5ww3hweui: 10.42.0.2 joined from 10.200.1.2:8086 (2/8)
+Jul 29 03:17:33 Ubuntu-2404 node[180152]: 2026-07-29T03:17:33.294Z [8086] room g2jtz5ww3hweui: assigned 10.42.0.3 to 10.200.2.2:57175
+Jul 29 03:17:33 Ubuntu-2404 node[180152]: 2026-07-29T03:17:33.305Z [8086] room g2jtz5ww3hweui: 10.42.0.3 joined from 10.200.2.2:8086 (3/8)
+Jul 29 03:17:34 Ubuntu-2404 node[180152]: 2026-07-29T03:17:34.479Z [8086] room g2jtz5ww3hweui: assigned 10.42.0.4 to 10.200.3.2:50830
+Jul 29 03:17:34 Ubuntu-2404 node[180152]: 2026-07-29T03:17:34.489Z [8086] room g2jtz5ww3hweui: 10.42.0.4 joined from 10.200.3.2:8086 (4/8)
+Jul 29 03:17:35 Ubuntu-2404 node[180152]: 2026-07-29T03:17:35.347Z [8086] room g2jtz5ww3hweui: listed as "gxpeer0" on killing fields (4/8)
+Jul 29 03:17:35 Ubuntu-2404 node[180152]: 2026-07-29T03:17:35.412Z [8086] room g2jtz5ww3hweui: assigned 10.42.0.5 to 10.200.4.2:51576
+Jul 29 03:17:35 Ubuntu-2404 node[180152]: 2026-07-29T03:17:35.422Z [8086] room g2jtz5ww3hweui: 10.42.0.5 joined from 10.200.4.2:8086 (5/8)
+Jul 29 03:17:36 Ubuntu-2404 node[180152]: 2026-07-29T03:17:36.337Z [8086] room g2jtz5ww3hweui: assigned 10.42.0.6 to 10.200.5.2:53589
+Jul 29 03:17:36 Ubuntu-2404 node[180152]: 2026-07-29T03:17:36.348Z [8086] room g2jtz5ww3hweui: 10.42.0.6 joined from 10.200.5.2:8086 (6/8)
+Jul 29 03:17:37 Ubuntu-2404 node[180152]: 2026-07-29T03:17:37.644Z [8086] room g2jtz5ww3hweui: assigned 10.42.0.7 to 10.200.6.2:52382
+Jul 29 03:17:37 Ubuntu-2404 node[180152]: 2026-07-29T03:17:37.654Z [8086] room g2jtz5ww3hweui: 10.42.0.7 joined from 10.200.6.2:8086 (7/8)
+Jul 29 03:17:38 Ubuntu-2404 node[180152]: 2026-07-29T03:17:38.202Z [8086] room g2jtz5ww3hweui: assigned 10.42.0.8 to 10.200.7.2:59964
+Jul 29 03:17:38 Ubuntu-2404 node[180152]: 2026-07-29T03:17:38.214Z [8086] room g2jtz5ww3hweui: 10.42.0.8 joined from 10.200.7.2:8086 (8/8)
+Jul 29 03:17:40 Ubuntu-2404 node[180152]: 2026-07-29T03:17:40.066Z [8088] room g2jtz5ww3hweui: 10.42.0.1 joined from 10.200.0.2:8088 (1/8)
+Jul 29 03:17:40 Ubuntu-2404 node[180152]: 2026-07-29T03:17:40.108Z [8088] room g2jtz5ww3hweui: 10.42.0.7 joined from 10.200.6.2:8088 (2/8)
+Jul 29 03:17:40 Ubuntu-2404 node[180152]: 2026-07-29T03:17:40.143Z [8088] room g2jtz5ww3hweui: 10.42.0.5 joined from 10.200.4.2:8088 (3/8)
+Jul 29 03:17:40 Ubuntu-2404 node[180152]: 2026-07-29T03:17:40.183Z [8088] room g2jtz5ww3hweui: 10.42.0.2 joined from 10.200.1.2:8088 (4/8)
+Jul 29 03:17:40 Ubuntu-2404 node[180152]: 2026-07-29T03:17:40.234Z [8088] room g2jtz5ww3hweui: 10.42.0.4 joined from 10.200.3.2:8088 (5/8)
+Jul 29 03:17:40 Ubuntu-2404 node[180152]: 2026-07-29T03:17:40.248Z [8088] room g2jtz5ww3hweui: 10.42.0.6 joined from 10.200.5.2:8088 (6/8)
+Jul 29 03:17:40 Ubuntu-2404 node[180152]: 2026-07-29T03:17:40.271Z [8088] room g2jtz5ww3hweui: 10.42.0.3 joined from 10.200.2.2:8088 (7/8)
+Jul 29 03:17:40 Ubuntu-2404 node[180152]: 2026-07-29T03:17:40.282Z [8088] room g2jtz5ww3hweui: 10.42.0.8 joined from 10.200.7.2:8088 (8/8)
+Jul 29 03:17:54 Ubuntu-2404 node[180152]: 2026-07-29T03:17:54.597Z [8086] room g2jtz5ww3hweui: delisted "gxpeer0" - host stopped advertising
+Jul 29 03:18:34 Ubuntu-2404 node[180152]: 2026-07-29T03:18:34.598Z [8086] room g2jtz5ww3hweui: released 10.42.0.1 from 10.200.0.2:45057
+Jul 29 03:18:34 Ubuntu-2404 node[180152]: 2026-07-29T03:18:34.599Z [8086] room g2jtz5ww3hweui: released 10.42.0.2 from 10.200.1.2:37321
+Jul 29 03:18:34 Ubuntu-2404 node[180152]: 2026-07-29T03:18:34.599Z [8086] room g2jtz5ww3hweui: released 10.42.0.3 from 10.200.2.2:57175
+Jul 29 03:18:34 Ubuntu-2404 node[180152]: 2026-07-29T03:18:34.599Z [8086] room g2jtz5ww3hweui: released 10.42.0.4 from 10.200.3.2:50830
+Jul 29 03:18:35 Ubuntu-2404 node[180152]: 2026-07-29T03:18:35.463Z [8086] room g2jtz5ww3hweui: listed as "gxpeer0" on killing fields (8/8)
+Jul 29 03:18:44 Ubuntu-2404 node[180152]: 2026-07-29T03:18:44.610Z [8086] room g2jtz5ww3hweui: released 10.42.0.5 from 10.200.4.2:51576
+Jul 29 03:18:44 Ubuntu-2404 node[180152]: 2026-07-29T03:18:44.611Z [8086] room g2jtz5ww3hweui: released 10.42.0.6 from 10.200.5.2:53589
+Jul 29 03:18:44 Ubuntu-2404 node[180152]: 2026-07-29T03:18:44.611Z [8086] room g2jtz5ww3hweui: released 10.42.0.7 from 10.200.6.2:52382
+Jul 29 03:18:44 Ubuntu-2404 node[180152]: 2026-07-29T03:18:44.611Z [8086] room g2jtz5ww3hweui: released 10.42.0.8 from 10.200.7.2:59964
+Jul 29 03:18:54 Ubuntu-2404 node[180152]: 2026-07-29T03:18:54.618Z [8086] room g2jtz5ww3hweui: delisted "gxpeer0" - host stopped advertising
+Jul 29 03:19:44 Ubuntu-2404 node[180152]: 2026-07-29T03:19:44.662Z [8086] room g2jtz5ww3hweui: 10.42.0.1 timed out
+Jul 29 03:19:44 Ubuntu-2404 node[180152]: 2026-07-29T03:19:44.663Z [8086] room g2jtz5ww3hweui: 10.42.0.2 timed out
+Jul 29 03:19:44 Ubuntu-2404 node[180152]: 2026-07-29T03:19:44.663Z [8086] room g2jtz5ww3hweui: 10.42.0.3 timed out
