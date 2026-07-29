@@ -39,7 +39,10 @@ struct SimulationId
 	UnsignedInt revision;    // GitRevision, informational only, never compared
 	UnsignedInt engineID;    // tier1 deny
 	UnsignedInt sourceID;    // tier1 deny; 0 == unknown provenance, never compared
-	UnsignedInt dataID;      // tier1 deny
+	// tier1 deny. m_iniCRC mixed with a digest of the loose simulation-relevant files
+	// that never pass through the INI parser and so were outside m_iniCRC entirely - see
+	// the allow-list and, more importantly, the exclusions in SimulationId.cpp.
+	UnsignedInt dataID;
 	UnsignedInt ordinalID;   // tier1 deny
 	UnsignedInt parseID;     // tier2 warn
 	UnsignedInt assetID;     // tier2 warn
