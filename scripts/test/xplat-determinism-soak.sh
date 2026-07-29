@@ -25,15 +25,35 @@
 #   ITERATIONS  matches to run          (default 10)
 #   FRAMES      logic frames per match  (default 1500)
 #   VPS         linux peer              (default root@163.5.210.131)
+#   VPS_NETNS   netns for the linux peer (default gx; empty to run in the root namespace)
 #   SEED_BASE   first seed              (default 700000)
 #   OUT         results dir             (default a timestamped dir under /tmp)
+#
+# WHY THE LINUX PEER RUNS IN A NAMESPACE
+#
+# The VPS is also the relay host. With RelayAddress set in Options.ini the game enters relay mode,
+# and relay mode forces a WILDCARD bind - a virtual address exists on no interface and can never be
+# bound - so the game's socket collides with the relay's own listener and every run dies instantly
+# with `UDP::Bind failed (status -6) for IP 0.0.0.0 port 8086`, transportInit=FAILED, exit 1.
+# That is not hypothetical: it is what this script did on its first real run, on all 50 iterations,
+# while the macOS side simulated its frames perfectly. A namespace gives the peer its own port
+# table and the collision goes away. Set VPS_NETNS= (empty) only if the VPS has no relay on it.
 
 set -uo pipefail
 
 ITERATIONS="${ITERATIONS:-10}"
 FRAMES="${FRAMES:-1500}"
 VPS="${VPS:-root@163.5.210.131}"
+VPS_NETNS="${VPS_NETNS-gx}"
 SEED_BASE="${SEED_BASE:-700000}"
+
+# Prefix for the remote game command. Deliberately NOT applied to kill_games: pkill is per-host,
+# not per-namespace, so it already reaches a peer inside one.
+if [ -n "$VPS_NETNS" ]; then
+	NS_PREFIX="ip netns exec $VPS_NETNS"
+else
+	NS_PREFIX=""
+fi
 MAC_GAME="${MAC_GAME:-$HOME/GeneralsX/GeneralsZH}"
 VPS_GAME="${VPS_GAME:-/root/gamedata}"
 OUT="${OUT:-/tmp/gx-soak-$(date +%Y%m%d-%H%M%S)}"
@@ -82,6 +102,16 @@ kill_games
 MAC_BIN="$MAC_GAME/GeneralsXZH"
 [ -x "$MAC_BIN" ] || die "no mac binary at $MAC_BIN"
 
+# Fail here rather than 50 iterations later. A missing namespace does not degrade gracefully - the
+# peer dies on a bind collision before frame 0 and every iteration reports "no frames simulated",
+# which reads like a headless bug rather than a setup one.
+if [ -n "$VPS_NETNS" ]; then
+	if ! ssh -o ConnectTimeout=15 "$VPS" "ip netns list | grep -qw '$VPS_NETNS'" 2>/dev/null; then
+		die "netns '$VPS_NETNS' does not exist on $VPS - create it (see tools/relay/README.md) or set VPS_NETNS="
+	fi
+	say "linux peer runs in netns $VPS_NETNS"
+fi
+
 # --------------------------------------------------------------------------------------------
 TOTAL_FRAMES=0
 TOTAL_DIFFERING=0
@@ -107,7 +137,7 @@ for ((i = 0; i < ITERATIONS; i++)); do
 	MAC_PID=$!
 
 	ssh -o ConnectTimeout=20 "$VPS" \
-		"cd $VPS_GAME && CNC_GENERALS_ZH_PATH=$VPS_GAME ./GeneralsXZH -headless -lanhost soak \
+		"cd $VPS_GAME && $NS_PREFIX env CNC_GENERALS_ZH_PATH=$VPS_GAME ./GeneralsXZH -headless -lanhost soak \
 		 -lanmap '$MAP' -lanai '$AI' -lanseed $SEED -lanframes $FRAMES 2> /tmp/soak.err; \
 		 echo EXIT=\$?; cat /tmp/soak.err" > "$OUT/$TAG.linux.err" 2>&1 &
 	VPS_PID=$!
@@ -125,6 +155,14 @@ for ((i = 0; i < ITERATIONS; i++)); do
 	# empty run is how a headless bug stayed invisible in this project once already.
 	if [ "$MAC_N" -eq 0 ] || [ "$LIN_N" -eq 0 ]; then
 		say "  FAIL: no frames simulated (mac=$MAC_N linux=$LIN_N, mac exit=$MAC_RC)"
+		# Surface WHY rather than leaving a 300 KB log to be read by hand. A bind collision is by
+		# far the most common cause and says nothing about determinism, so name it here.
+		for who in mac linux; do
+			BIND_ERR="$(grep -a -m1 'UDP::Bind failed' "$OUT/$TAG.$who.err" 2>/dev/null)"
+			[ -n "$BIND_ERR" ] && say "    $who: $BIND_ERR"
+		done
+		grep -aq 'transportInit=FAILED' "$OUT/$TAG.linux.err" 2>/dev/null &&
+			say "    linux transport never came up - is the relay holding 8086 in this namespace?"
 		FAILED=$((FAILED + 1))
 		continue
 	fi
