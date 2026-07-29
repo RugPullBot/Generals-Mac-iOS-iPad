@@ -413,6 +413,79 @@ Int countAcceptedPeers()
 	return accepted;
 }
 
+/// GeneralsX @feature Claude 29/07/2026 How many slots will become real players: occupied and not
+/// an observer. This is deliberately the same loop the LAN lobby UI runs before it lets the host
+/// press Start (LanGameOptionsMenu.cpp StartPressed) - the headless driver and the GUI are supposed
+/// to accept and refuse exactly the same lobbies, and until now only the GUI checked.
+///
+/// Note isOccupied() is FALSE for SLOT_OPEN, so this counts a peer only once it has actually
+/// joined. Calling it before the peers arrive counts intent, not reality; see publishGameOptions.
+Int countOccupiedNonObserverSlots(GameInfo *game)
+{
+	if (!game)
+		return 0;
+
+	Int occupied = 0;
+	for (Int i = 0; i < MAX_SLOTS; ++i)
+	{
+		GameSlot *slot = game->getSlot(i);
+		if (slot && slot->isOccupied() && slot->getPlayerTemplate() != PLAYERTEMPLATE_OBSERVER)
+			++occupied;
+	}
+	return occupied;
+}
+
+/// GeneralsX @feature Claude 29/07/2026 Refuse a lobby holding more players than the map has start
+/// positions. This is a GUARD ONLY: it never reassigns or clamps anything, because start positions
+/// decide where every player's opening units are placed and are therefore part of the frame-0 world
+/// CRC. Moving them would invalidate every .crc baseline in docs/WORKDIR/evidence/ and, since this
+/// engine defaults RETAIL_COMPATIBLE_CRC to 1, retail 1.04 replay compatibility with it.
+///
+/// What it prevents: populateRandomStartPosition caps positions at md->m_numPlayers
+/// (GameLogic.cpp:882-885) and pre-marks every index past it as taken (:928). A surplus player
+/// therefore finds no free position, keeps startPos=-1, gets no Command Center, and its skirmish AI
+/// returns early from adjustBuildList and owns nothing for the whole match - while the run still
+/// reports the full AI count and passes. Every "8-player" result in this project before this guard
+/// was an overfilled 2-player map.
+///
+/// Fails closed when the map is not in the cache, matching the GUI. Every hosting harness in
+/// scripts/ passes -lanmap, which is pre-flighted against the cache earlier in publishGameOptions.
+Bool lobbyFitsTheMap(GameInfo *game, Int occupied, const char *when)
+{
+	if (!game)
+		return FALSE;
+
+	const MapMetaData *md = TheMapCache->findMap(game->getMap());
+	if (md == nullptr)
+	{
+		headlessLog("capacity check (%s): map \"%s\" is not in the cache, so the lobby cannot be bounded - refusing",
+			when, game->getMap().str());
+		return FALSE;
+	}
+
+	if (occupied <= md->m_numPlayers)
+		return TRUE;
+
+	if (TheGlobalData->m_lanOverfill)
+	{
+		headlessLog("WARNING: -lanoverfill: \"%s\" holds %d player(s) but this lobby has %d occupied slot(s) (%s).",
+			game->getMap().str(), md->m_numPlayers, occupied, when);
+		headlessLog("WARNING: %d player(s) will get startPos=-1, no Command Center, and will own nothing all match.",
+			occupied - md->m_numPlayers);
+		headlessLog("WARNING: any AI count this run reports is a LIE. Do not use it as simulation evidence.");
+		return TRUE;
+	}
+
+	headlessLog("REFUSING over-capacity lobby (%s): \"%s\" holds %d player(s), this lobby has %d occupied slot(s).",
+		when, game->getMap().str(), md->m_numPlayers, occupied);
+	headlessLog("  The %d surplus player(s) would get startPos=-1, no Command Center, and their AI would own",
+		occupied - md->m_numPlayers);
+	headlessLog("  nothing for the whole match while this run still reported the full AI count and passed.");
+	headlessLog("  Use a higher-capacity map (death valley, destruction station and twilight flame hold 8),");
+	headlessLog("  or lower -lanai/-lanwait, or pass -lanoverfill to reproduce the old behaviour deliberately.");
+	return FALSE;
+}
+
 } // namespace
 
 // ------------------------------------------------------------------------------------------
@@ -658,6 +731,18 @@ Bool HeadlessMatch::publishGameOptions()
 		}
 	}
 
+	// GeneralsX @feature Claude 29/07/2026 Capacity pre-check on INTENT, before any peer connects.
+	// nextSlot is exactly the intended final occupancy: it starts at 1 + m_lanWaitPeers (the host
+	// plus the human slots held open) and advances once per AI placed. The slots reserved for peers
+	// are still SLOT_OPEN here, so isOccupied() is FALSE for them and counting the slot list would
+	// undercount by -lanwait - hence the arithmetic rather than countOccupiedNonObserverSlots().
+	//
+	// This is the cheap half of the guard: a misconfigured harness dies here in about a second,
+	// instead of after a 60 s wait for peers that are then dropped. The authoritative check runs on
+	// the real slot list just before RequestGameStart.
+	if (!lobbyFitsTheMap(game, nextSlot, "intended lobby"))
+		return FALSE;
+
 	// GXDRAWDBG - TEMPORARY. The match loop stops as soon as the LOCAL player is defeated, which on
 	// a cramped map is long before the AI have destroyed each other's bases - exactly the events a
 	// structure-rendering investigation needs. Allying the host with the first AI keeps the team
@@ -722,6 +807,15 @@ Bool HeadlessMatch::driveLobby()
 					lobbyTimeout, "peers to accept"))
 				return FALSE;
 		}
+
+		// GeneralsX @feature Claude 29/07/2026 The authoritative capacity check, on the slot list as
+		// it actually stands. Every accepted peer is SLOT_PLAYER by now, so this counts reality
+		// rather than intent and is the exact analogue of the GUI refusing to start
+		// (LanGameOptionsMenu.cpp:249-258). It is the last gate before the engine assigns start
+		// positions in populateRandomStartPosition.
+		if (!lobbyFitsTheMap(TheLAN->GetMyGame(), countOccupiedNonObserverSlots(TheLAN->GetMyGame()),
+				"final slot list"))
+			return FALSE;
 
 		headlessLog("starting match");
 		TheLAN->RequestGameStart();

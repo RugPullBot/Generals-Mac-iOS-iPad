@@ -38,7 +38,11 @@ set -uo pipefail
 
 PEERS="${PEERS:-8}"
 FRAMES="${FRAMES:-1500}"
-MAP="${MAP:-maps\\killing fields\\killing fields.map}"
+# GeneralsX @fix Claude 29/07/2026 Was killing fields, which holds TWO players, at PEERS=8. Six of
+# the eight peers therefore got startPos=-1, no Command Center, and owned nothing for the whole
+# match - and the run still passed. twilight flame is one of only three standard maps that hold 8
+# (death valley and destruction station are the others); see lib-map-capacity.sh.
+MAP="${MAP:-maps\\twilight flame\\twilight flame.map}"
 AI="${AI:-}"
 GAME="${GAME:-/root/gamedata}"
 RELAY_IP="${RELAY_IP:-163.5.210.131}"

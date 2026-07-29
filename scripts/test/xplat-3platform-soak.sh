@@ -55,6 +55,9 @@
 
 set -uo pipefail
 
+# Shared map capacity table - used to drop maps that cannot seat this lobby before the soak starts.
+. "$(dirname "$0")/lib-map-capacity.sh"
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOBBY="$HERE/xplat-3platform-lobby.sh"
 
@@ -78,15 +81,22 @@ mkdir -p "$OUT"
 
 # The full standard multiplayer set, killing fields INCLUDED, deliberately.
 #
-# Most of these currently freeze in a NETWORKED match - the world stops changing after ~4 frames
-# while every peer holds the same value - even though all of them run fully active SOLO at every
-# AI count tried. See docs/WORKDIR/evidence/networked-sim-freeze.meta.txt. alpine assault is so
-# far the only map observed to run networked, which is also the map nearly every prior networked
-# result in this project used.
+# GeneralsX @fix Claude 29/07/2026 THE COMMENT THAT USED TO BE HERE WAS WRONG AND IS WORTH
+# RECORDING. It said most of these maps "freeze in a NETWORKED match" while alpine assault was the
+# only one observed to run, and told the reader not to prune them because the INCONCLUSIVE count
+# was the signal of a real engine bug.
 #
-# Do NOT prune the frozen maps to make this soak go green. The INCONCLUSIVE count IS the signal:
-# when the freeze is fixed, these maps start passing and the frame total becomes real. Pruning
-# them would hide the bug and leave the soak measuring one map fifty times.
+# There is no freeze. This harness seats 3 humans and adds $AI on top, and most of these maps hold
+# TWO players. The surplus took startPos=-1, got no Command Center, and their AI owned nothing -
+# so the world genuinely did stop changing, because nothing was left in it that moves. alpine only
+# looked alive because it carries a scripted train that self-moves with no player attached and
+# whose transform is hashed into the object CRC. See
+# docs/WORKDIR/evidence/networked-sim-freeze-diagnosis.md.
+#
+# So the rotation is kept in full, but a map that cannot seat 3 humans + the AI is now SKIPPED and
+# COUNTED rather than run and scored. With three human peers this harness can never use a 2-start
+# map at all, whatever the AI count. Use ONLY_MAP and a lower AI to reach the smaller maps
+# deliberately; the three that hold 8 are death valley, destruction station and twilight flame.
 MAPS=(
 	"maps\\alpine assault\\alpine assault.map"
 	"maps\\killing fields\\killing fields.map"
@@ -110,6 +120,35 @@ if [ -n "$ONLY_MAP" ]; then
 	MAPS=("${FILTERED[@]}")
 	say "ONLY_MAP='$ONLY_MAP' -> ${#MAPS[@]} map(s) in rotation"
 fi
+
+# GeneralsX @feature Claude 29/07/2026 Drop maps that cannot seat this lobby, ONCE, up front, and
+# name every one that was dropped. Filtering here rather than skipping per-iteration keeps the
+# iteration count meaningful: all $ITERATIONS matches still run, on maps where the players actually
+# exist. Announcing the exclusions is the point - a soak that quietly measures a different
+# experiment than the one requested is exactly what produced the "networked freeze".
+NEED=$(( 3 + $(ai_spec_count "$AI") ))
+SKIPPED=0
+FITTING=()
+EXCLUDED=""
+for m in "${MAPS[@]}"; do
+	if lobby_fits "$m" "$NEED" >/dev/null 2>&1; then
+		FITTING+=("$m")
+	else
+		SKIPPED=$((SKIPPED + 1))
+		EXCLUDED="$EXCLUDED
+   - ${m##*\\} (holds $(map_capacity "$m"))"
+	fi
+done
+if [ -n "$EXCLUDED" ]; then
+	say ""
+	say " EXCLUDED $SKIPPED map(s): this lobby needs $NEED (3 humans + $AI) and they hold less:$EXCLUDED"
+	say " Reach them deliberately with a lower AI and ONLY_MAP, e.g. AI=Hx0 ONLY_MAP='cairo'."
+fi
+[ "${#FITTING[@]}" -gt 0 ] ||
+	die "no map in the rotation can seat $NEED players (3 humans + $AI).
+       Only death valley, destruction station and twilight flame hold 8. Lower AI."
+MAPS=("${FITTING[@]}")
+say " rotation: ${#MAPS[@]} map(s) that hold at least $NEED"
 
 say "======================================================================"
 say " three-platform soak: macOS + Linux + Windows, $AI, $ITERATIONS x $FRAMES frames"
@@ -183,6 +222,7 @@ say ""
 say "======================================================================"
 say " matches passed  : $PASSED of $ITERATIONS"
 say " inconclusive    : $INCONCLUSIVE (identical but idle - not counted as evidence)"
+say " maps excluded   : $SKIPPED (too small to seat 3 humans + $AI - never run, never scored)"
 say " diverged/failed : $FAILED $FAILED_TAGS"
 say " frames of real  : $TOTAL_FRAMES   (passing matches only)"
 say " manifest        : $OUT/manifest.tsv"

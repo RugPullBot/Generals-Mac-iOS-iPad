@@ -629,6 +629,18 @@ Int parseLanSeed(char *args[], int num)
 	exit(1);
 }
 
+// GeneralsX @feature Claude 29/07/2026 Escape hatch for the over-capacity lobby refusal added in
+// HeadlessMatch. The default is to refuse, because a lobby with more players than the map has start
+// positions silently starves the surplus - they get startPos=-1, no Command Center, and their AI
+// owns nothing, while the run still reports the full AI count and passes. Every "8-player" result
+// in this project before that guard was an overfilled 2-player map. This flag restores the old
+// behaviour so historical configurations remain reproducible for archaeology.
+Int parseLanOverfill(char *args[], int num)
+{
+	TheWritableGlobalData->m_lanOverfill = TRUE;
+	return 1;
+}
+
 Int parseLanListGames(char *args[], int num)
 {
 	// Browsing without a UI. This is also the only way to exercise the whole list path - client
@@ -1376,6 +1388,7 @@ static CommandLineParam paramsForStartup[] =
 	{ "-lantimeout", parseLanTimeout },
 	{ "-lanseed", parseLanSeed },
 	{ "-lanlist", parseLanListGames },
+	{ "-lanoverfill", parseLanOverfill },
 
 	// TheSuperHackers @feature helmutbuhler 23/05/2025
 	// Simulate each replay in a separate process and use 1..N processes at the same time.

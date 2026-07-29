@@ -16,8 +16,11 @@ $run    = 'C:\dev\GeneralsX-run'
 $errlog = Join-Path $run 'winhost.err'
 Remove-Item $errlog -ErrorAction SilentlyContinue
 
+# GeneralsX @fix Claude 29/07/2026 Was alpine assault, which holds TWO players, while this lobby
+# is host + 1 joiner + Hx1 = THREE. The AI therefore got startPos=-1, no Command Center, and owned
+# nothing - and the run still reported aiPlayers=1 and passed. twilight flame holds 8.
 $cmdline = '/c generalszh.exe -headless -lanhost winhost -lanname winhost -lanai Hx1 ' +
-           '-lanmap "maps\alpine assault\alpine assault.map" -lanwait 1 -lanframes 600 ' +
+           '-lanmap "maps\twilight flame\twilight flame.map" -lanwait 1 -lanframes 600 ' +
            '-lantimeout 900000 2> "' + $errlog + '"'
 
 $p = Start-Process cmd -ArgumentList $cmdline -WorkingDirectory $run -NoNewWindow -Wait -PassThru

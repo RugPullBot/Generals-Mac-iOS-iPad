@@ -509,10 +509,30 @@ pointless version of this task.
 - [x] **58.** Re-run the three-platform test on a legal map with a 0-AI control.
       `evidence/xplat3-tf-legal-1500.*` — twilight flame, 8/8 legal, 1500 frames, 1500 distinct,
       md5 `b29a9b44bd3a5ff68e77aef25f966baa` on all three, `cmp` identical on all three pairs.
-- [ ] **59.** Decide whether the ENGINE should refuse/clamp an over-capacity lobby. GUI checks
-      (`LanGameOptionsMenu.cpp:250-256`), `HeadlessMatch` does not. **Guard-only or nothing** —
-      reassigning start positions invalidates every CRC baseline and retail 1.04 replay
-      compatibility. Decide the shape before writing code.
+- [x] **59.** Decide whether the ENGINE should refuse/clamp an over-capacity lobby.
+      **DECIDED: yes, guard only, in two parts. Both are provably no-ops on a legal match.**
+      - **Part 1, driver.** `HeadlessMatch::lobbyFitsTheMap` refuses an over-capacity lobby,
+        mirroring `LanGameOptionsMenu.cpp:249-258`. Two call sites: an *intent* pre-check at the
+        end of `publishGameOptions` (fails in ~1 s, before peers connect) and the *authoritative*
+        check on the real slot list just before `RequestGameStart`. The check is NOT inside
+        `publishGameOptions` alone because `isOccupied()` is FALSE for `SLOT_OPEN`, so counting
+        the slot list there undercounts by `-lanwait`. Escape hatch `-lanoverfill` restores the
+        old behaviour, loudly, for reproducing historical runs.
+      - **Part 2, engine.** `GameLogic.cpp` guards `farthestIndex < 0` and skips the
+        `taken[farthestIndex] = TRUE` out-of-bounds stack write. `setStartPos(-1)` is deliberately
+        left outside the guard so the stored value is unchanged. Skipping the `teamPosIdx` write
+        is provably equivalent: the branch is entered via `( team < 0 || teamPosIdx[team] == -1 )`.
+        Why it was empirically harmless: `hasStartSpotBeenPicked` is declared immediately before
+        `taken[]` (`:924-925`) and is already TRUE by then, so the write was idempotent under
+        declaration-order layout — a coincidence, not a guarantee.
+      - **Rejected: anything that reassigns, wraps to 0, or shares a start position.** That moves
+        the frame-0 world CRC, invalidating every `.crc` in `evidence/` and, with
+        `RETAIL_COMPATIBLE_CRC` defaulting to 1, retail 1.04 replay compatibility.
+      - Harness fallout fixed in the same commit, via new shared `scripts/test/lib-map-capacity.sh`:
+        `relay-8peer.sh` (killing fields, holds 2, at PEERS=8), `relay-maptransfer.sh` (alpine,
+        holds 2, needed 3), `winhost.ps1` (alpine, needed 3), plus capacity-aware map selection in
+        `xplat-determinism-soak.sh` (skips + counts) and `xplat-3platform-soak.sh` (filters the
+        rotation up front and names every excluded map).
 - [ ] **60.** Re-run the networked corpus on capacity-8 maps (`death valley`,
       `destruction station`, `twilight flame`) and re-label every pre-`1566959a9` row that used a
       2-player map. Every "8-player" result before that commit was overfilled.

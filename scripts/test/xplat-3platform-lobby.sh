@@ -58,6 +58,10 @@
 
 set -uo pipefail
 
+# Shared map capacity table - see the header of that file for why an over-capacity lobby is not a
+# cosmetic problem.
+. "$(dirname "$0")/lib-map-capacity.sh"
+
 FRAMES="${FRAMES:-1500}"
 AI="${AI:-Hx5}"
 # Pin the match seed. Empty means the host picks one, which is right for a single run and wrong
@@ -130,32 +134,16 @@ verify_clean || die "a game is still running somewhere - refusing to start"
 [ -x "$MAC_GAME/GeneralsXZH" ] || die "no mac binary at $MAC_GAME/GeneralsXZH"
 
 # ---------------------------------------------------------------------------------------------
-# Map capacity. Measured with md->m_numPlayers (GameLogic.cpp:882-885) by loading each map; see
-# evidence/xplat3-tf-legal-1500.meta.txt. Only three standard maps hold 8 players.
-map_capacity() {
-	case "$1" in
-		*"death valley"*|*"destruction station"*|*"twilight flame"*) echo 8 ;;
-		*"dark mountain"*)                                           echo 4 ;;
-		*"cairo commandos"*)                                         echo 3 ;;
-		*"alpine assault"*|*"bitter winter"*|*"desert fury"*)        echo 2 ;;
-		*"dust devil"*|*"final crusade"*|*"killing fields"*)         echo 2 ;;
-		*) echo 0 ;;
-	esac
-}
-
-AI_COUNT="$(printf '%s' "$AI" | sed -E 's/^[EMHemh][xX]([0-9]+).*/\1/')"
-case "$AI_COUNT" in ''|*[!0-9]*) AI_COUNT=0 ;; esac
+# Map capacity. The table moved to lib-map-capacity.sh so the harnesses cannot drift apart on it;
+# the engine now enforces the same rule itself (HeadlessMatch::lobbyFitsTheMap), so getting this
+# wrong here fails loudly at the host rather than producing a confident wrong answer.
+AI_COUNT="$(ai_spec_count "$AI")"
 NEED=$(( 3 + AI_COUNT ))
-CAP="$(map_capacity "$MAP")"
-if [ "$CAP" = "0" ]; then
-	say "  WARNING: unknown capacity for '$MAP' - cannot check it holds $NEED players"
-elif [ "$NEED" -gt "$CAP" ]; then
-	die "map '${MAP##*\\}' holds $CAP players but this lobby needs $NEED (3 humans + $AI_COUNT AI).
+if ! lobby_fits "$MAP" "$NEED"; then
+	die "this lobby needs $NEED (3 humans + $AI_COUNT AI).
        The surplus players would get no start position and their AI would own nothing, and the run
        would still report aiPlayers=$AI_COUNT and 'pass'. Pick death valley, destruction station or
        twilight flame, or lower AI."
-else
-	say "  map holds $CAP, lobby needs $NEED - ok"
 fi
 
 ssh -o ConnectTimeout=15 "$VPS" "ip netns list | grep -qw '$VPS_NETNS'" 2>/dev/null ||

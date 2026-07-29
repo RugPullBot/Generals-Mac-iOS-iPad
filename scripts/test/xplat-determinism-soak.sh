@@ -41,6 +41,10 @@
 
 set -uo pipefail
 
+# Shared map capacity table. This soak cycles maps and AI counts independently, so some
+# combinations ask for more players than the map holds; see the skip in the iteration loop.
+. "$(dirname "$0")/lib-map-capacity.sh"
+
 ITERATIONS="${ITERATIONS:-10}"
 FRAMES="${FRAMES:-1500}"
 VPS="${VPS:-root@163.5.210.131}"
@@ -117,6 +121,7 @@ TOTAL_FRAMES=0
 TOTAL_DIFFERING=0
 FAILED=0
 RUN=0
+SKIPPED=0
 
 for ((i = 0; i < ITERATIONS; i++)); do
 	SEED=$((SEED_BASE + i * 977))				# 977 is prime, so seeds do not fall into a pattern
@@ -126,6 +131,20 @@ for ((i = 0; i < ITERATIONS; i++)); do
 
 	say ""
 	say "=== [$TAG] seed=$SEED ai=$AI map=${MAP##*\\} ==="
+
+	# GeneralsX @fix Claude 29/07/2026 MAPS and AI_SPECS cycle independently, so this loop produces
+	# combinations that do not fit - a solo lobby is the host plus its AI, and Hx2 on a 2-start map
+	# needs three positions. Those iterations used to run anyway with the surplus AI silently inert;
+	# 7 of the 50 in the committed xplat-soak-50x1500 corpus were exactly that (dust devil x3,
+	# bitter winter x2, desert fury x2). The engine refuses them now, so skip them here and COUNT
+	# the skips - a soak that quietly shrinks its own denominator is the failure mode this suite
+	# exists to catch.
+	NEED=$(( 1 + $(ai_spec_count "$AI") ))
+	if ! lobby_fits "$MAP" "$NEED" >/dev/null 2>&1; then
+		say "    SKIPPED: holds $(map_capacity "$MAP"), this lobby needs $NEED (host + $AI)"
+		SKIPPED=$((SKIPPED + 1))
+		continue
+	fi
 
 	kill_games
 
@@ -199,15 +218,19 @@ kill_games
 
 say ""
 say "======================================================================"
-say " matches run     : $RUN of $ITERATIONS"
+ATTEMPTED=$((ITERATIONS - SKIPPED))
+say " matches run     : $RUN of $ATTEMPTED attempted ($ITERATIONS requested)"
+say " skipped         : $SKIPPED (over-capacity map/AI combination)"
 say " total frames    : $TOTAL_FRAMES"
 say " differing frames: $TOTAL_DIFFERING"
 say " failures        : $FAILED"
 say " results         : $OUT"
 say "======================================================================"
 
-if [ "$FAILED" -eq 0 ] && [ "$TOTAL_DIFFERING" -eq 0 ] && [ "$RUN" -eq "$ITERATIONS" ]; then
-	say "PASS: $TOTAL_FRAMES frames across $RUN matches, macOS vs Linux, zero differing"
+# A skip is not a failure, but it MUST show up in the claim rather than silently shrinking the
+# denominator - so PASS is measured against what was attempted and always names the skip count.
+if [ "$FAILED" -eq 0 ] && [ "$TOTAL_DIFFERING" -eq 0 ] && [ "$RUN" -eq "$ATTEMPTED" ] && [ "$RUN" -gt 0 ]; then
+	say "PASS: $TOTAL_FRAMES frames across $RUN matches, macOS vs Linux, zero differing ($SKIPPED skipped as over-capacity)"
 	exit 0
 fi
 

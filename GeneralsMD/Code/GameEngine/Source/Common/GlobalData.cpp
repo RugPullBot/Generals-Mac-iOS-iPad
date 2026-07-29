@@ -1026,6 +1026,7 @@ GlobalData::GlobalData()
 	m_lanTimeoutMs = 120000;
 	m_lanSeed = 0;
 	m_lanListGames = FALSE;
+	m_lanOverfill = FALSE;
 
 	for (i = LEVEL_FIRST; i <= LEVEL_LAST; ++i)
 		m_healthBonus[i] = 1.0f;

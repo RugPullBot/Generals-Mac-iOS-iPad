@@ -37,11 +37,17 @@
 
 set -uo pipefail
 
-# Source map defaults to one whose AI actually moves. This matters: -lanai on a map with no
-# skirmish scripts produces a frozen simulation (4 distinct CRC values in 1500 frames on killing
-# fields, 1499 on alpine assault), and then the CRC half of this test proves nothing even though
-# the file transfer half is fine.
-SRC_MAP="${SRC_MAP:-Maps\\Alpine Assault\\Alpine Assault.map}"
+# Source map must have room for the whole lobby: host + 1 joiner + the AI. This test runs
+# -lanwait 1 with AI=Hx1, so it needs THREE start positions.
+#
+# GeneralsX @fix Claude 29/07/2026 Was Alpine Assault, which holds TWO. The comment that chose it
+# claimed alpine was "a map whose AI actually moves" on the evidence of 1499 distinct CRC values.
+# That reasoning is now known to be wrong in both halves: the 1499 came from a scripted train that
+# self-moves with no player attached and whose transform is hashed into the object CRC, and with
+# three occupied slots on a 2-start map the AI here was getting no Command Center at all. The
+# "frozen simulation" this comment blamed on missing skirmish scripts was the same overfilled-lobby
+# defect. See docs/WORKDIR/evidence/networked-sim-freeze-diagnosis.md.
+SRC_MAP="${SRC_MAP:-Maps\\Twilight Flame\\Twilight Flame.map}"
 CUSTOM="${CUSTOM:-gxcustom}"
 AI="${AI:-Hx1}"
 FRAMES="${FRAMES:-600}"

@@ -1100,9 +1100,47 @@ static void populateRandomStartPosition( GameInfo *game )
 
 				DEBUG_ASSERTCRASH(farthestIndex >= 0, ("Couldn't find a farthest spot!"));
 				slot->setStartPos(farthestIndex);
-				taken[farthestIndex] = TRUE;
-				if( team > -1 )
-					teamPosIdx[team] = farthestIndex;  //remember where this team is
+
+				// GeneralsX @fix Claude 29/07/2026 GUARD ONLY - this must never reassign a start
+				// position. farthestIndex is still -1 when every one of the map's numPlayers
+				// positions is already taken, i.e. whenever the lobby holds more players than the
+				// map supports. DEBUG_ASSERTCRASH is ((void)0) in release (Debug.h:206), so today
+				// that case is silent and then executes taken[-1] = TRUE - an out-of-bounds stack
+				// write, once per surplus player, on all three toolchains.
+				//
+				// It has been empirically harmless, and there is a plausible reason: hasStartSpotBeenPicked
+				// is declared immediately before taken[] (:924-925), so under declaration-order
+				// layout taken[-1] aliases it - and it is already TRUE by the time this line runs
+				// (set at :1060, in the sibling branch that must execute first). The write is then
+				// idempotent. That is a coincidence of stack layout, not a guarantee.
+				//
+				// Skipping the two writes below when the index is negative is provably equivalent
+				// to performing them, so this changes no match, legal or otherwise:
+				//   - taken[-1] = TRUE is undefined behaviour and has no defined effect to preserve.
+				//   - teamPosIdx[team] = -1 is a no-op here: this branch was entered via
+				//     ( team < 0 || teamPosIdx[team] == -1 ), so either team < 0 and the write is
+				//     already skipped by its own guard, or teamPosIdx[team] is -1 already.
+				// setStartPos(farthestIndex) is deliberately left OUTSIDE the guard, storing -1
+				// exactly as before, because that value is what the rest of the engine reads.
+				//
+				// Once HeadlessMatch refuses an over-capacity lobby this branch is unreachable in
+				// any legal match, so a re-run of an existing soak must diff byte-for-byte against
+				// its committed baseline. Reassigning, wrapping to 0 or sharing a position would
+				// move the frame-0 world CRC and break both docs/WORKDIR/evidence/ and, with
+				// RETAIL_COMPATIBLE_CRC defaulting to 1, retail 1.04 replay compatibility.
+				if (farthestIndex >= 0)
+				{
+					taken[farthestIndex] = TRUE;
+					if( team > -1 )
+						teamPosIdx[team] = farthestIndex;  //remember where this team is
+				}
+				else
+				{
+					fprintf(stderr, "[GXPOS] OVER-CAPACITY: slot=%d got startPos=-1 - the map has only %d "
+						"start position(s) and they are all taken. This player gets no Command Center "
+						"and its AI will own nothing all match.\n", i, numPlayers);
+					fflush(stderr);
+				}
 			}
 			else  //team already has a starting position
 			{	//pick position closest to team
