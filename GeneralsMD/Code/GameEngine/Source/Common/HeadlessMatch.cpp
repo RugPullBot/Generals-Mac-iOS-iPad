@@ -250,6 +250,107 @@ public:
 	}
 };
 
+// ------------------------------------------------------------------------------------------
+// GeneralsX @feature Matchmaking. Which relay room this process belongs in.
+//
+// A host gets a room of its own (Transport::getLocalHostRoom), because the relay lists exactly one
+// game per room and two hosts sharing one would overwrite each other's listing. A joiner has to
+// end up in the room of the game it wants, which it does not know from -lanjoin alone: addresses
+// are allocated per room, so every host on the relay is 10.42.0.1 and the address identifies
+// nothing on its own.
+//
+// So the joiner browses first, exactly as the UI's game list does, and takes the room off the
+// listing whose host address matches. When that is ambiguous or the game is not listed at all -
+// a private game never advertises - the room has to be given explicitly:
+//
+//   GENERALSX_LANROOM=<token>    environment, highest precedence, either role
+//   RelayRoom=<token>            Options.ini, the existing explicit setting
+//
+// The pin is an environment variable rather than a -lanroom flag ONLY because adding a flag means
+// editing CommandLine.cpp and GlobalData, which are outside the file set this change is allowed to
+// touch. It is read at exactly one place and behaves like a flag in every other respect.
+// ------------------------------------------------------------------------------------------
+
+/// An explicitly pinned room, or empty. Environment first, then Options.ini.
+AsciiString pinnedRelayRoom()
+{
+	const char *env = getenv("GENERALSX_LANROOM");
+	if (env != nullptr && *env != '\0')
+		return AsciiString(env);
+
+	OptionPreferences prefs;
+	return prefs.getRelayRoom();
+}
+
+/// The room to enter, or empty if a joiner could not work out which game was meant.
+AsciiString chooseRelayRoom(const AsciiString &relayHost)
+{
+	const AsciiString pinned = pinnedRelayRoom();
+	if (!pinned.isEmpty())
+	{
+		headlessLog("relay room pinned to '%s'", pinned.str());
+		return pinned;
+	}
+
+	if (TheGlobalData->m_lanRole != LANROLE_JOIN)
+	{
+		// Hosting, or -lanlist, which needs a room only so the relay has somewhere to put it.
+		return Transport::getLocalHostRoom();
+	}
+
+	// Browsing, over a throwaway socket, before any transport exists - see the note on
+	// Transport::requestRelayGameList. Retried because a host publishes its advertisement on its
+	// 5 s registration keepalive, so a joiner that starts alongside its host can easily ask before
+	// the first one has gone out.
+	const UnsignedInt target = TheGlobalData->m_lanJoinIP;
+	for (Int attempt = 0; attempt < 4; ++attempt)
+	{
+		Transport::RelayGameListing games[Transport::MAX_RELAY_LISTINGS];
+		const Int count = Transport::requestRelayGameList(relayHost.str(), games,
+			Transport::MAX_RELAY_LISTINGS, 2000);
+
+		Int matches = 0;
+		Int firstMatch = -1;
+		for (Int i = 0; i < count; ++i)
+		{
+			if (games[i].hostVirtualIP != target)
+				continue;
+			if (firstMatch < 0)
+				firstMatch = i;
+			++matches;
+		}
+
+		if (matches == 1)
+		{
+			headlessLog("game at %d.%d.%d.%d is in room '%s' (\"%s\" on %s)",
+				PRINTF_IP_AS_4_INTS(target), games[firstMatch].room,
+				games[firstMatch].name, games[firstMatch].map);
+			return AsciiString(games[firstMatch].room);
+		}
+
+		if (matches > 1)
+		{
+			// Not recoverable by waiting: the address genuinely does not distinguish them.
+			headlessLog("%d listed games have host %d.%d.%d.%d - set GENERALSX_LANROOM to pick one:",
+				matches, PRINTF_IP_AS_4_INTS(target));
+			for (Int i = 0; i < count; ++i)
+			{
+				if (games[i].hostVirtualIP == target)
+					headlessLog("  room=%s name=\"%s\" map=\"%s\"",
+						games[i].room, games[i].name, games[i].map);
+			}
+			return AsciiString();
+		}
+
+		headlessLog("no listed game at %d.%d.%d.%d yet (%d listed); retrying",
+			PRINTF_IP_AS_4_INTS(target), count);
+	}
+
+	headlessLog("nothing on the relay advertises %d.%d.%d.%d", PRINTF_IP_AS_4_INTS(target));
+	headlessLog("a private game never advertises - join it with GENERALSX_LANROOM=<room>");
+	return AsciiString();
+}
+
 /// Throttle for the joiner's re-accept, so the 10 ms pump does not flood the lobby.
 UnsignedInt s_lastAcceptSent = 0;
 
@@ -370,19 +471,24 @@ Bool HeadlessMatch::setUpLan()
 	const AsciiString relayHost = prefs.getRelayAddress();
 
 	UnsignedInt ip = 0;
+	AsciiString room;
 	if (!relayHost.isEmpty())
 	{
-		AsciiString room = prefs.getRelayRoom();
+		// Which room, and for a joiner that means browsing first - see chooseRelayRoom.
+		room = chooseRelayRoom(relayHost);
 		if (room.isEmpty())
-			room = "default";
+		{
+			headlessLog("cannot tell which relay room to join - aborting rather than guessing");
+			return FALSE;
+		}
 
 		// Ask the relay who we are before anything snapshots an identity. A relay-allocated
 		// address is what lets strangers play: hand-configured ones have to be unique by human
-		// agreement, and everyone who takes the default is 10.42.0.1.
+		// agreement, and everyone who takes the default is 10.42.0.1. The identity is pinned
+		// TOGETHER with the room it was allocated in, because it means nothing anywhere else.
 		UnsignedInt assignedIP = 0;
-		if (Transport::requestRelayIdentity(relayHost.str(), room.str(), assignedIP))
+		if (Transport::enterRelayRoom(relayHost.str(), room.str(), assignedIP))
 		{
-			Transport::setAssignedIdentity(room.str(), assignedIP);
 			ip = assignedIP;
 			headlessLog("relay assigned us %d.%d.%d.%d in room %s",
 				PRINTF_IP_AS_4_INTS(ip), room.str());
@@ -393,6 +499,13 @@ Bool HeadlessMatch::setUpLan()
 			// logged loudly because two peers that both fall back to the default address will
 			// collide, and that presents as a lobby that corrupts rather than one that refuses.
 			ip = prefs.getLocalVirtualIP();
+			if (ip != 0)
+			{
+				// Still pin the ROOM. Without this initRelay falls back to the room we would host
+				// in, which for a joiner is not the room the game is in - so an unanswered GXWHO
+				// would quietly turn a join into a game of one.
+				Transport::setAssignedIdentity(room.str(), ip);
+			}
 			headlessLog("relay did not assign an identity; falling back to configured LocalVirtualIP %d.%d.%d.%d",
 				PRINTF_IP_AS_4_INTS(ip));
 		}
@@ -401,7 +514,7 @@ Bool HeadlessMatch::setUpLan()
 	if (ip != 0)
 	{
 		headlessLog("relay mode: local identity is the virtual address %d.%d.%d.%d (relay %s, room %s)",
-			PRINTF_IP_AS_4_INTS(ip), relayHost.str(), prefs.getRelayRoom().str());
+			PRINTF_IP_AS_4_INTS(ip), relayHost.str(), room.str());
 	}
 	else
 	{

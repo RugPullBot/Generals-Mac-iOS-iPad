@@ -31,6 +31,10 @@
 #include "GameNetwork/Transport.h"
 #include "GameNetwork/NetworkInterface.h"
 
+#ifndef _WIN32
+#include <unistd.h>		// getpid, one of the ingredients of the generated room token
+#endif
+
 // GeneralsX @feature Relay transport. The registration datagram is plaintext on purpose: the
 // relay recognises its own control traffic by this tag alone and never has to look at, let alone
 // decrypt, a single game packet.
@@ -48,6 +52,9 @@ static const char RELAY_WHO_TAG[] = "GXWHO";
 // so initRelay, which sits above the accessors, can read it.
 static char s_assignedRoom[32] = { 0 };
 static UnsignedInt s_assignedVirtualIP = 0;
+// The room this process hosts in when Options.ini does not name one. Generated on first use and
+// then never changed, so hosting, backing out of the browser and hosting again keeps one room.
+static char s_generatedRoom[32] = { 0 };
 static const Int RELAY_MAX_ROOM_LEN = 31;
 static const UnsignedInt RELAY_REGISTRATION_INTERVAL = 5000;	// ms
 
@@ -191,12 +198,12 @@ void Transport::initRelay( UnsignedShort port )
 	// The room the identity was assigned IN wins, for the same reason the identity does: an
 	// address allocated for room A means nothing in room B, and using it there would collide with
 	// whoever the relay really gave that number to.
-	AsciiString room = (s_assignedRoom[0] != '\0') ? AsciiString(s_assignedRoom) : prefs.getRelayRoom();
-	if (room.isEmpty())
-	{
-		room = "default";
-		DEBUG_LOG(("Transport::initRelay - no RelayRoom set, using '%s'; anyone else on this relay in the default room would be paired with us", room.str()));
-	}
+	//
+	// With nothing pinned this is a host that never got as far as asking - so it falls back to the
+	// room it WOULD host in, not to a shared "default". A shared default is what made the relay
+	// hold exactly one game: every host advertised into it and each new advertisement replaced the
+	// last, so the browser could only ever show the most recent game and everyone dialled it.
+	AsciiString room = (s_assignedRoom[0] != '\0') ? AsciiString(s_assignedRoom) : getLocalHostRoom();
 
 	// Set the identity before building, since the registration carries it. The room may be
 	// replaced later by setRelayRoom when a game is picked out of the browser.
@@ -363,6 +370,87 @@ void Transport::clearAssignedIdentity()
 	s_assignedVirtualIP = 0;
 }
 
+/// FNV-1a over the eight bytes of one ingredient. Not a hash of anything anyone will verify - it
+/// is here purely to smear several weak, correlated sources into one value whose low digits vary.
+static void mixRoomEntropy( UnsignedInt64 &h, UnsignedInt64 v )
+{
+	for (Int i = 0; i < 8; ++i)
+	{
+		h ^= (UnsignedInt64)((v >> (i * 8)) & 0xFF);
+		h *= 1099511628211ULL;
+	}
+}
+
+// GeneralsX @feature Matchmaking. See the note on the declaration: one room holds exactly one
+// advertised game, so hosts must not share one.
+//
+// The token has to be unique against hosts on OTHER machines, so being unique within this process
+// is not enough. It mixes the wall clock, the millisecond timer, the process id and two addresses
+// that ASLR moves per run; two machines would have to agree on all of them at once to collide.
+// Deliberately no rand(): seeding or consuming the C RNG from here would be a hidden input to a
+// lockstep simulation that has been very carefully kept deterministic.
+AsciiString Transport::getLocalHostRoom()
+{
+	OptionPreferences prefs;
+	const AsciiString configured = prefs.getRelayRoom();
+	if (!configured.isEmpty())
+		return configured;		// explicit, and therefore private-by-arrangement - leave it alone
+
+	if (s_generatedRoom[0] == '\0')
+	{
+#ifdef _WIN32
+		const UnsignedInt64 pid = (UnsignedInt64)GetCurrentProcessId();
+#else
+		const UnsignedInt64 pid = (UnsignedInt64)getpid();
+#endif
+		UnsignedInt64 h = 14695981039346656037ULL;		// FNV-1a offset basis
+		mixRoomEntropy(h, (UnsignedInt64)time(nullptr));
+		mixRoomEntropy(h, (UnsignedInt64)timeGetTime());
+		mixRoomEntropy(h, pid);
+		mixRoomEntropy(h, (UnsignedInt64)(size_t)&h);					// stack
+		mixRoomEntropy(h, (UnsignedInt64)(size_t)&s_generatedRoom);		// image
+
+		// Base 36, so the token stays inside the relay's [A-Za-z0-9._-]{1,31} and reads as one
+		// word in its log. 64 bits is 13 digits, plus a leading letter so a token can never be
+		// mistaken for a number by anything that parses these lines.
+		static const char digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+		char reversed[16];
+		Int r = 0;
+		UnsignedInt64 v = h;
+		do
+		{
+			reversed[r++] = digits[v % 36];
+			v /= 36;
+		} while (v != 0 && r < (Int)sizeof(reversed));
+
+		Int n = 0;
+		s_generatedRoom[n++] = 'g';
+		while (r > 0)
+			s_generatedRoom[n++] = reversed[--r];
+		s_generatedRoom[n] = '\0';
+
+		DEBUG_LOG(("Transport::getLocalHostRoom - no RelayRoom configured; hosting in generated room '%s'",
+			s_generatedRoom));
+	}
+
+	return AsciiString(s_generatedRoom);
+}
+
+Bool Transport::enterRelayRoom( const char *relayHost, const char *room, UnsignedInt &outVirtualIP )
+{
+	outVirtualIP = 0;
+
+	UnsignedInt assigned = 0;
+	if (!requestRelayIdentity(relayHost, room, assigned))
+		return FALSE;
+
+	// Pinned together, never separately: initRelay reads both, and an identity paired with the
+	// wrong room is an address the relay believes belongs to somebody else.
+	setAssignedIdentity(room, assigned);
+	outVirtualIP = assigned;
+	return TRUE;
+}
+
 Bool Transport::requestRelayIdentity( const char *relayHost, const char *room,
 	UnsignedInt &outVirtualIP )
 {
@@ -436,13 +524,26 @@ void Transport::requestGameList()
 	m_udpsock->Write((const unsigned char *)query, (Int)(sizeof(query) - 1), m_relayAddr, m_port);
 }
 
-Bool Transport::captureGameListReply( const UnsignedByte *msg, Int len )
+/// What one datagram turned out to be. Three outcomes, not two: "ours but not a game" has to be
+/// distinguishable from "not ours", because the live transport shares this socket with game
+/// traffic and must swallow the first while passing the second to the packet parser.
+enum RelayGameLineResult
+{
+	GAMELINE_NOT_OURS = 0,	///< Not a GXGAME datagram at all.
+	GAMELINE_NOTHING,		///< A GXGAME datagram carrying no game (placeholder, or malformed).
+	GAMELINE_LISTING		///< A game, written into entry.
+};
+
+/// Shared by the live transport's receive path and the static browse query, so the two can never
+/// disagree about what the relay said.
+static RelayGameLineResult parseRelayGameLine( const UnsignedByte *msg, Int len,
+	Transport::RelayGameListing &entry )
 {
 	static const char tag[] = "GXGAME ";
 	static const Int tagLen = (Int)(sizeof(tag) - 1);
 
 	if (len <= tagLen || len >= 512 || memcmp(msg, tag, tagLen) != 0)
-		return FALSE;
+		return GAMELINE_NOT_OURS;
 
 	// Copy to a NUL-terminated scratch buffer: what is on the wire is not a C string.
 	char line[512];
@@ -459,15 +560,11 @@ Bool Transport::captureGameListReply( const UnsignedByte *msg, Int len )
 	Int players = 0, slots = 0;
 	Int consumed = 0;
 	if (sscanf(line, "%31s %23s %d %d %n", room, hostIP, &players, &slots, &consumed) < 4)
-		return TRUE;	// malformed, but it WAS ours - swallow it rather than parse it as a packet
+		return GAMELINE_NOTHING;	// malformed, but it WAS ours - do not parse it as a packet
 
 	if (room[0] == '-' && room[1] == '\0')
-		return TRUE;	// "nothing listed" placeholder
+		return GAMELINE_NOTHING;	// "nothing listed" placeholder
 
-	if (m_gameListCount >= MAX_RELAY_LISTINGS)
-		return TRUE;
-
-	RelayGameListing &entry = m_gameList[m_gameListCount];
 	memset(&entry, 0, sizeof(entry));
 	strlcpy(entry.room, room, sizeof(entry.room));
 	entry.hostVirtualIP = ResolveIP(AsciiString(hostIP));
@@ -490,8 +587,66 @@ Bool Transport::captureGameListReply( const UnsignedByte *msg, Int len )
 		strlcpy(entry.name, rest, sizeof(entry.name));
 	}
 
-	++m_gameListCount;
+	return GAMELINE_LISTING;
+}
+
+Bool Transport::captureGameListReply( const UnsignedByte *msg, Int len )
+{
+	RelayGameListing entry;
+	const RelayGameLineResult result = parseRelayGameLine(msg, len, entry);
+	if (result == GAMELINE_NOT_OURS)
+		return FALSE;
+
+	if (result == GAMELINE_LISTING && m_gameListCount < MAX_RELAY_LISTINGS)
+		m_gameList[m_gameListCount++] = entry;
+
 	return TRUE;
+}
+
+// GeneralsX @feature Matchmaking. Browsing from a throwaway socket, for the same reason
+// requestRelayIdentity uses one: a joiner has to know which ROOM a game is in before it can ask
+// for an identity, and it cannot ask for an identity before the transport binds - so the whole
+// chain has to run ahead of the transport rather than on it.
+//
+// The relay answers GXLIST across every room and without requiring the asker to be registered
+// (tools/relay/relay.js sendList), so this needs no identity of its own.
+Int Transport::requestRelayGameList( const char *relayHost, RelayGameListing *out, Int maxOut,
+	UnsignedInt waitMs )
+{
+	if (relayHost == nullptr || *relayHost == '\0' || out == nullptr || maxOut <= 0)
+		return 0;
+
+	const UnsignedInt relayAddr = ResolveIP(AsciiString(relayHost));
+	if (relayAddr == 0 || relayAddr == INADDR_NONE)
+		return 0;
+
+	UDP sock;
+	if (sock.Bind((UnsignedInt)INADDR_ANY, 0) != 0)
+		return 0;
+
+	static const char query[] = "GXLIST";
+	sock.Write((const unsigned char *)query, (Int)(sizeof(query) - 1), relayAddr, RELAY_LOBBY_PORT);
+
+	// The reply is a burst of one datagram per game with no terminator, so there is nothing to wait
+	// FOR - drain for a fixed moment and report what arrived.
+	Int count = 0;
+	const UnsignedInt deadline = timeGetTime() + waitMs;
+	while (timeGetTime() < deadline && count < maxOut)
+	{
+		unsigned char buf[512];
+		sockaddr_in from;
+		const Int len = sock.Read(buf, sizeof(buf), &from);
+		if (len > 0)
+		{
+			RelayGameListing entry;
+			if (parseRelayGameLine(buf, len, entry) == GAMELINE_LISTING)
+				out[count++] = entry;
+			continue;	// keep draining the burst rather than sleeping between its datagrams
+		}
+		Sleep(10);
+	}
+
+	return count;
 }
 
 Transport::~Transport()

@@ -77,6 +77,55 @@ static GameWindow *editPlayerName = nullptr;
 static GameWindow *comboboxRemoteIP = nullptr;
 static GameWindow *staticLocalIP = nullptr;
 
+// GeneralsX @feature Matchmaking. Every host now advertises in a room of its own, and the relay
+// hands out addresses PER ROOM - so the first player in every room is 10.42.0.1 and the host
+// address no longer identifies a game. The room has to travel with the selection or joining is a
+// coin toss between every game in the browser.
+//
+// It travels two ways, because the combo box is editable and its contents outlive this screen:
+//
+//   * snapshotted here as the list is built, and read back by index when Join is pressed. Exact,
+//     and the only source that is right for a row the player picked out of the live list.
+//   * appended to the entry text as "#<room>", which is what survives into the saved RemoteIP
+//     history and back out of it on the next visit. JoinDirectConnectGame splits the entry on '('
+//     before parsing the address, so everything after that is free space.
+static char s_listedRoom[Transport::MAX_RELAY_LISTINGS][32];
+static UnsignedInt s_listedHostIP[Transport::MAX_RELAY_LISTINGS];
+static Int s_listedCount = 0;
+
+/// The room a combo box entry refers to, or empty if it names none.
+static AsciiString relayRoomForEntry( Int selectedPos, UnsignedInt hostIP, const AsciiString &entryText )
+{
+	// The snapshot wins when it agrees about the host address. The cross-check matters: the list is
+	// rebuilt whenever the relay's reply count changes, so a stale index would otherwise silently
+	// send the player into a different game's room.
+	if (selectedPos >= 0 && selectedPos < s_listedCount
+		&& s_listedHostIP[selectedPos] == hostIP && s_listedRoom[selectedPos][0] != '\0')
+	{
+		return AsciiString(s_listedRoom[selectedPos]);
+	}
+
+	// A typed address, or one picked out of the saved history, lands here - neither is covered by
+	// a snapshot that only describes rows this visit built.
+	const char *hash = strrchr(entryText.str(), '#');
+	if (hash != nullptr)
+	{
+		char room[32];
+		Int n = 0;
+		for (const char *c = hash + 1; *c != '\0' && n < (Int)sizeof(room) - 1; ++c)
+		{
+			if (!isalnum((unsigned char)*c) && *c != '-' && *c != '_' && *c != '.')
+				break;
+			room[n++] = *c;
+		}
+		room[n] = '\0';
+		if (n > 0)
+			return AsciiString(room);
+	}
+
+	return AsciiString();
+}
+
 void PopulateRemoteIPComboBox()
 {
 	LANPreferences userprefs;
@@ -108,6 +157,7 @@ void PopulateRemoteIPComboBox()
 	// text back and parses an address out of it; it already splits on '(' before doing so, so an
 	// annotation in parentheses is carried for free and needs no change there.
 	Int listedGames = 0;
+	s_listedCount = 0;
 	if (relayMode && TheLAN != nullptr && TheLAN->getTransport() != nullptr)
 	{
 		Transport *transport = TheLAN->getTransport();
@@ -119,20 +169,36 @@ void PopulateRemoteIPComboBox()
 				continue;
 
 			// Do not offer our own game - a host browsing its own lobby would be dialling itself.
-			// Compare against the identity actually in use, which is normally relay-assigned and
-			// therefore not in the preferences file at all.
-			if (TheLAN != nullptr && game->hostVirtualIP == TheLAN->GetLocalIP())
+			// The ROOM is half of that test and not an optimisation: addresses are allocated per
+			// room, so every host in the browser is 10.42.0.1 and so are we. Matching on the
+			// address alone used to be right when there was one room; now it hides every game in
+			// the list, including all the ones we could actually join.
+			if (game->hostVirtualIP == TheLAN->GetLocalIP()
+				&& strcmp(game->room, relayTransport->getRelayRoom()) == 0)
 				continue;
 
 			UnicodeString wideName, wideMap;
 			wideName.translate(AsciiString(game->name));
 			wideMap.translate(AsciiString(game->map));
 
+			UnicodeString wideRoom;
+			wideRoom.translate(AsciiString(game->room));
+
+			// The room rides in the text as well as in the snapshot below - see the note by
+			// s_listedRoom. It is inside the parentheses so the row still reads as one unit, and
+			// after the address so JoinDirectConnectGame's split on '(' is unaffected.
 			UnicodeString listing;
-			listing.format(L"%d.%d.%d.%d (%ls  %d/%d  %ls)",
+			listing.format(L"%d.%d.%d.%d (%ls  %d/%d  %ls  #%ls)",
 				PRINTF_IP_AS_4_INTS(game->hostVirtualIP),
-				wideName.str(), game->players, game->slots, wideMap.str());
+				wideName.str(), game->players, game->slots, wideMap.str(), wideRoom.str());
 			GadgetComboBoxAddEntry(comboboxRemoteIP, listing, white);
+
+			if (s_listedCount < Transport::MAX_RELAY_LISTINGS)
+			{
+				strlcpy(s_listedRoom[s_listedCount], game->room, sizeof(s_listedRoom[0]));
+				s_listedHostIP[s_listedCount] = game->hostVirtualIP;
+				++s_listedCount;
+			}
 			++listedGames;
 		}
 	}
@@ -285,10 +351,18 @@ void JoinDirectConnectGame()
 		TheLAN = NEW LANAPI();
 	}
 
+	// Read the selection BEFORE anything rebuilds the combo box. UpdateRemoteIPList walks the list
+	// by MOVING the selection, and PopulateRemoteIPComboBox then resets it to 0 and rebuilds the
+	// room snapshot underneath us - so by the time either has run, neither the index nor the text
+	// still describes what the player clicked.
+	Int selectedPos = -1;
+	GadgetComboBoxGetSelectedPos(comboboxRemoteIP, &selectedPos);
+
 	UnsignedInt ipaddress = 0;
 	UnicodeString ipunistring = GadgetComboBoxGetText(comboboxRemoteIP);
 	AsciiString asciientry;
 	asciientry.translate(ipunistring);
+	const AsciiString selectedEntry = asciientry;	// nextToken below consumes asciientry
 
 	AsciiString ipstring;
 	asciientry.nextToken(&ipstring, "(");
@@ -302,6 +376,8 @@ void JoinDirectConnectGame()
 	ipaddress = (ip1 << 24) + (ip2 << 16) + (ip3 << 8) + ip4;
 //	ipaddress = htonl(ipaddress);
 
+	const AsciiString targetRoom = relayRoomForEntry(selectedPos, ipaddress, selectedEntry);
+
 	UnicodeString name;
 	name = GadgetTextEntryGetText(editPlayerName);
 
@@ -311,6 +387,62 @@ void JoinDirectConnectGame()
 
 	UpdateRemoteIPList();
 	PopulateRemoteIPComboBox();
+
+	// GeneralsX @feature Matchmaking. Move into the picked game's room before dialling into it.
+	//
+	// The whole sequence is ordered and none of it is interchangeable:
+	//
+	//   1. take the room from the LISTING, never from Options.ini - the game we picked decides
+	//      where it lives, and our own configuration says nothing about it;
+	//   2. ask the relay for an identity IN THAT ROOM, because addresses are allocated per room and
+	//      the one we hold was allocated somewhere else. Carrying it over would not be a private
+	//      address in a new place, it would be somebody else's address;
+	//   3. throw TheLAN away and build a new one, so that no LANGameInfo is alive across the
+	//      change. LANGameInfo snapshots the local IP in its constructor and AmIHost and
+	//      getLocalSlotNum read that snapshot rather than TheLAN - an identity that lands after one
+	//      exists reaches nothing that decides anything. This is the same constraint the assert in
+	//      NetworkDirectConnectInit guards, and the same fix;
+	//   4. only then SetLocalIP, which rebinds the transport and re-runs initRelay against the new
+	//      room and identity;
+	//   5. and only then dial the host.
+	//
+	// Doing nothing at all is the right answer when the game is already in our room, and when the
+	// entry names no room - a hand-typed address on a plain LAN has no room and needs none.
+	Transport *transport = TheLAN->getTransport();
+	if (transport != nullptr && transport->isRelayEnabled() && !targetRoom.isEmpty()
+		&& strcmp(targetRoom.str(), transport->getRelayRoom()) != 0)
+	{
+		OptionPreferences optprefs;
+		const AsciiString relayHost = optprefs.getRelayAddress();
+
+		UnsignedInt joinIP = 0;
+		if (Transport::enterRelayRoom(relayHost.str(), targetRoom.str(), joinIP))
+		{
+			DEBUG_LOG(("JoinDirectConnectGame - moving from room '%s' to '%s'; we are %d.%d.%d.%d there",
+				transport->getRelayRoom(), targetRoom.str(), PRINTF_IP_AS_4_INTS(joinIP)));
+
+			delete TheLAN;
+			TheLAN = NEW LANAPI();
+			DEBUG_ASSERTCRASH(TheLAN->GetMyGame() == nullptr,
+				("JoinDirectConnectGame - a LANGameInfo already exists and has snapshotted the old local IP; SetLocalIP below will not reach it"));
+			TheLAN->init();
+			TheLAN->SetLocalIP(joinIP);
+
+			// The browser was built from the old transport's replies and the new one has heard
+			// nothing yet. Re-ask, so that a failed join leaves a screen that refills itself
+			// instead of an empty list.
+			if (TheLAN->getTransport() != nullptr && TheLAN->getTransport()->isRelayEnabled())
+				TheLAN->getTransport()->requestGameList();
+		}
+		else
+		{
+			// Dialling anyway would reach the relay but never the host: we are not a member of the
+			// room the packet has to be forwarded in. Say so rather than letting it time out as a
+			// generic unreachable peer.
+			DEBUG_LOG(("JoinDirectConnectGame - the relay would not give us an identity in room '%s'; the join will not reach the host",
+				targetRoom.str()));
+		}
+	}
 
 	name.truncateTo(g_lanPlayerNameLength);
 	TheLAN->RequestSetName(name);
@@ -396,14 +528,15 @@ void NetworkDirectConnectInit( WindowLayout *layout, void *userData )
 		UnsignedInt virtualIP = 0;
 		if (!relayHost.isEmpty())
 		{
-			AsciiString room = prefs.getRelayRoom();
-			if (room.isEmpty())
-				room = "default";
+			// GeneralsX @feature Matchmaking. Our OWN room, not a shared one. Entering this screen
+			// is entering the room we would host in, so that a game created from here is the only
+			// game in it; picking somebody else's game out of the browser moves us into theirs
+			// instead - see JoinDirectConnectGame.
+			AsciiString room = Transport::getLocalHostRoom();
 
 			UnsignedInt assignedIP = 0;
-			if (Transport::requestRelayIdentity(relayHost.str(), room.str(), assignedIP))
+			if (Transport::enterRelayRoom(relayHost.str(), room.str(), assignedIP))
 			{
-				Transport::setAssignedIdentity(room.str(), assignedIP);
 				virtualIP = assignedIP;
 				DEBUG_LOG(("NetworkDirectConnectInit - relay assigned %d.%d.%d.%d in room '%s'",
 					PRINTF_IP_AS_4_INTS(virtualIP), room.str()));

@@ -111,6 +111,11 @@ public:
 	/// game out of the browser has to be able to change it without a restart.
 	Bool setRelayRoom( const char *room );
 
+	/// The room we are registered in right now, "" when relay mode is off. The browser needs it to
+	/// tell "the game I picked lives somewhere else" from "it is in the room I am already in", and
+	/// only the second case may skip the re-identify/rebind dance.
+	const char *getRelayRoom() const { return m_relayRoom; }
+
 	/// Advertise this game to the relay's list, refreshed on the registration keepalive so it
 	/// inherits that cadence for free. Passing nothing stops the advertisement, and the relay
 	/// delists a game purely by not hearing about it - so a host that crashes drops off by itself.
@@ -149,9 +154,40 @@ public:
 	static void setAssignedIdentity( const char *room, UnsignedInt virtualIP );
 	static void clearAssignedIdentity();
 
+	/// GeneralsX @feature Matchmaking. The room THIS client hosts in.
+	///
+	/// One room holds one game: the relay keys its advertisement table by room name, so two hosts
+	/// sharing a room are two hosts fighting over one listing - the later advertisement simply
+	/// replaces the earlier one and everybody in the browser dials whoever won. Public matchmaking
+	/// therefore needs a room per HOST, not a room per relay, which is what the single configured
+	/// RelayRoom used to give.
+	///
+	/// A RelayRoom set in Options.ini is honoured unchanged: that is the explicit case, and it is
+	/// how a group who already know each other arrange a private game nobody can wander into. When
+	/// it is empty a token unique to this process is generated instead, once, and cached - so a
+	/// host that backs out of the browser and hosts again keeps the room it was advertising in.
+	static AsciiString getLocalHostRoom();
+
+	/// Move into `room` before dialling a host that lives there: ask the relay for an identity in
+	/// THAT room and pin it. Wraps requestRelayIdentity + setAssignedIdentity so the two can never
+	/// drift apart - an address allocated in room A is somebody else's address in room B, and
+	/// pinning the pair together is the only thing that stops that from being a silent collision.
+	///
+	/// The caller must still rebuild TheLAN and re-run SetLocalIP afterwards; see the ordering note
+	/// on requestRelayIdentity.
+	static Bool enterRelayRoom( const char *relayHost, const char *room, UnsignedInt &outVirtualIP );
+
 	/// Ask the relay what games exist. Replies arrive asynchronously on this same socket, so the
 	/// caller pumps for a moment and then reads the list; there is no blocking form on purpose.
 	void requestGameList();
+
+	/// The same query over a throwaway socket, for callers that have to browse BEFORE a transport
+	/// exists. A joiner is in that position by definition now: it cannot ask the relay for an
+	/// identity until it knows which room the game it wants is in, and it cannot know that without
+	/// looking at the list first. Blocks for up to waitMs and returns how many games were parsed.
+	static Int requestRelayGameList( const char *relayHost, RelayGameListing *out, Int maxOut,
+		UnsignedInt waitMs );
+
 	Int getGameListCount() const { return m_gameListCount; }
 	const RelayGameListing *getGameListing( Int i ) const
 		{ return (i >= 0 && i < m_gameListCount) ? &m_gameList[i] : nullptr; }
