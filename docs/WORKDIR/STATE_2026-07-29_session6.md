@@ -239,3 +239,83 @@ Nothing here should be read as working.
   `git fetch && git reset --hard origin/main`, never `pull`.
 * **The relay is running as a service on `163.5.210.131`.** Assume someone is playing before you
   restart it or kill anything named `GeneralsXZH`.
+
+---
+
+# Session 6 addendum — written after the deploy, HEAD `2e226bf3a`
+
+Everything below happened after the body of this document was written at `508d6c563`.
+
+## THE RESULT THAT SUPERSEDES EVERYTHING ABOVE
+
+**Three platforms. 93,017 frames. One md5.**
+
+macOS arm64/clang, Windows x86-64/MSVC and a headless Linux x86-64 host played one match together
+over the internet through the relay, to a victory screen, and **all three `[GXCRC]` streams are
+byte-identical**: `171ad3ba1cb35fcfd8edefa1984948ce`. 93,016 distinct CRC values out of 93,017 —
+an hour of real play, not an idle sim. Zero mismatches from any peer.
+
+Evidence: `docs/WORKDIR/evidence/relay-3platform-93017-{macos,windows,linux}.crc` + `.meta.txt`.
+
+This replaces the 14,756-frame match as the headline in two ways: it is six times longer, and
+**Windows is measured** rather than "present but uncaptured". Capturing it required knowing that
+`gxlaunch.ps1` writes stderr to `C:\dev\GeneralsX-run\logs\lan-stderr.txt` **and deletes it on every
+launch** — found before the match ended rather than after, which is the only reason this is a
+three-way result.
+
+## Deployed and verified
+
+All four platforms are built and deployed at `2e226bf3a`. **macOS and Linux both report
+`source=6A9BFF78`** — verified, not assumed. Windows and iPad are built from the same tree but their
+SimID has not been observed at runtime.
+
+The relay is the hardened build, `MemoryMax` raised 128M -> 256M. Identity assignment confirmed
+working live (`relay assigned us 10.42.0.1`), and a game lists as `twilight flame` rather than the
+raw slot-list path.
+
+## Bugs fixed this stretch, all found by PLAYING
+
+* **The frame limit was never restored after a game** (`2e226bf3a`). Starting a network game sets
+  `m_useFpsLimit = false` and nothing turned it back on, so from the end of the first match the
+  pacer stopped limiting for the rest of the process — the victory banner ran at ~10x and the menus
+  stayed that way, on winner and loser alike. Fixed in `GameLogic::clearGameData`, which every exit
+  path goes through. Proven not to be a determinism issue: the uncapped post-game frames stayed
+  byte-identical across macOS and Windows for 3,600 frames past the host's exit.
+* **`% m` in the SagePatch.ini generator was UB** (`525f82467`). An `fprintf` with no arguments, so
+  the comment came out as `~5more` and it consumed a vararg that was never passed.
+* **The browser showed the map's full path** (`f8d99cabb`), which overflowed the widget so the
+  player saw the tail of the string.
+
+## Still open
+
+* **Destroyed structures keep their old visuals** — reported twice with screenshots. Client-side
+  only; all peers agree they are destroyed. There is a spawned task with the full context. The
+  decisive next step is checking the same building on Windows: broken on both means game logic,
+  broken only on macOS means the DXVK/MoltenVK path.
+* **1-2s freezes during play.** Ruled out: the simulation (host advanced 51-56 frames per 2s across
+  80s, zero stalls), the network (lockstep would have dragged the host), and DXVK file logging
+  (disabled in both places). Leading hypothesis is DXVK pipeline compilation — the cache is cold
+  (90 KB) and was written during play. **Inferred, not proven.** The free check: if the freezes
+  reduce next session as the cache warms, that was it.
+
+## UNPROVEN — the whole point of the next session
+
+Everything here is committed and compiles. **None of it has carried a real game.**
+
+* **Per-host rooms and room switching on join.** `setRelayRoom` finally has call sites. Until this
+  is exercised, one relay is still effectively one game.
+* **8 peers in a room.** The largest real game so far is 3.
+* **iPadOS joining anything.** Installed at the current commit with its config cleaned so the relay
+  assigns its address, but it has never got through a lobby.
+* **Map transfer over the relay.** Every peer so far already had the map.
+* **The relay hardening** — 36/36 tests, deployed, but no game has run through the new build.
+
+## The test to run first, and why
+
+Two hosts in **different rooms**, both listed, each joinable, neither seeing the other's traffic.
+That single test covers per-host rooms, room switching, identity assignment per room, and the
+browser in one pass — and it is the difference between "works for us" and "works for strangers".
+
+`scripts/test/xplat-determinism-soak.sh` is written and committed but **has never been run**. It
+answers the "everyone desyncs eventually" objection with volume: many seeds, many maps, always an
+AI, zero networking. `ITERATIONS=50 FRAMES=1500` is roughly 75,000 frames.
