@@ -298,6 +298,18 @@ extern WindowMsgHandledType PopupJoinGameSystem( GameWindow *window, UnsignedInt
 extern WindowMsgHandledType PopupJoinGameInput( GameWindow *window, UnsignedInt msg, WindowMsgData mData1, WindowMsgData mData2 );
 
 //  Network Direct ConnectWindow ---------------------------------------------------------------------------------
+/// GeneralsX @feature Matchmaking. Build TheLAN for an online screen, in the one order that works.
+///
+/// Extracted verbatim out of NetworkDirectConnectInit so the WOL lobby cannot drift from it. The
+/// sequence - throw TheLAN away, ask the relay for an identity in OUR host room, re-new, init,
+/// SetLocalIP - is ordered because LANGameInfo snapshots the local IP in its constructor, and
+/// AmIHost and slot matching read that snapshot rather than TheLAN. An identity that lands after a
+/// LANGameInfo exists reaches nothing that decides anything.
+///
+/// Returns TRUE when relay mode came up, FALSE when this is a plain LAN (in which case TheLAN is
+/// still built, just against an interface address).
+extern Bool SetUpOnlineLobbyLAN( void );
+
 extern void NetworkDirectConnectInit( WindowLayout *layout, void *userData );
 extern void NetworkDirectConnectUpdate( WindowLayout *layout, void *userData );
 extern void NetworkDirectConnectShutdown( WindowLayout *layout, void *userData );

@@ -659,6 +659,20 @@ static Int insertGame( GameWindow *win, GameSpyStagingRoom *game, Bool showMap )
   }
 #endif
 
+	// GeneralsX @feature Matchmaking. A game with no ping measurement gets an EMPTY ping cell.
+	//
+	// getPingValue() answers the full ping timeout when it has nothing to compare, so an unmeasured
+	// game scores worse than the "bad" cutoff and is drawn with the red one-bar icon. That is not a
+	// pessimistic reading of a real measurement, it is the absence of one being rendered as a
+	// verdict - and every game listed by our relay is in that position, because the relay's GXGAME
+	// reply carries no ping. Showing a bar there would tell the player, falsely and about every
+	// single row, that the game is unplayable. Blank says what we actually know.
+	if (game->getPingString().isEmpty())
+	{
+		GadgetListBoxAddEntryText(win, L" ", gameColor, index, COLUMN_PING);
+		return index;
+	}
+
 	s.format(L"%d", game->getPingAsInt());
 	GadgetListBoxAddEntryText(win, s, gameColor, index, COLUMN_PING);
 	Int ping = game->getPingAsInt();

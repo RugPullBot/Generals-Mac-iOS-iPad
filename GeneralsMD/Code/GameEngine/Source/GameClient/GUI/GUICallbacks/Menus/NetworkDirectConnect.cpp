@@ -459,6 +459,110 @@ void JoinDirectConnectGame()
 }
 
 //-------------------------------------------------------------------------------------------------
+/** Build TheLAN for an online screen. See the note on the declaration in GUICallbacks.h. */
+//-------------------------------------------------------------------------------------------------
+Bool SetUpOnlineLobbyLAN( void )
+{
+	delete TheLAN;
+	TheLAN = nullptr;
+
+	TheLAN = NEW LANAPI();
+
+	OptionPreferences prefs;
+	UnsignedInt IP = prefs.getOnlineIPAddress();
+
+	// GeneralsX @feature Relay transport. With a relay configured our identity is the virtual
+	// LAN address, not a NIC address: the lobby is a two-machine LAN whose members are
+	// 10.42.0.1 and 10.42.0.2 wherever the machines physically are. The interface enumeration
+	// below must be skipped entirely, because the virtual address is on no interface and the
+	// "the IP we had no longer exists" fallback would replace it with a real one.
+	// GeneralsX @feature Matchmaking. Ask the relay to allocate our address rather than reading
+	// a hand-written one. This has to happen HERE, before SetLocalIP below, because
+	// LANGameInfo snapshots the local IP at construction and AmIHost and slot matching read
+	// that snapshot - an identity that lands later reaches nothing that matters.
+	//
+	// Falls back to the configured LocalVirtualIP so hand-set setups and LAN play are
+	// unchanged; relay mode simply stays off if neither produces an address.
+	const AsciiString relayHost = prefs.getRelayAddress();
+	UnsignedInt virtualIP = 0;
+	if (!relayHost.isEmpty())
+	{
+		// GeneralsX @feature Matchmaking. Our OWN room, not a shared one. Entering an online
+		// screen is entering the room we would host in, so that a game created from here is the
+		// only game in it; picking somebody else's game out of the browser moves us into theirs
+		// instead - see JoinDirectConnectGame.
+		AsciiString room = Transport::getLocalHostRoom();
+
+		UnsignedInt assignedIP = 0;
+		if (Transport::enterRelayRoom(relayHost.str(), room.str(), assignedIP))
+		{
+			virtualIP = assignedIP;
+			DEBUG_LOG(("SetUpOnlineLobbyLAN - relay assigned %d.%d.%d.%d in room '%s'",
+				PRINTF_IP_AS_4_INTS(virtualIP), room.str()));
+		}
+		else
+		{
+			virtualIP = prefs.getLocalVirtualIP();
+			DEBUG_LOG(("SetUpOnlineLobbyLAN - relay did not assign an identity; falling back to LocalVirtualIP %d.%d.%d.%d",
+				PRINTF_IP_AS_4_INTS(virtualIP)));
+		}
+	}
+
+	const Bool relayMode = !relayHost.isEmpty() && (virtualIP != 0);
+
+	if (relayMode)
+	{
+		IP = virtualIP;
+		DEBUG_LOG(("SetUpOnlineLobbyLAN - relay mode, local identity is %d.%d.%d.%d", PRINTF_IP_AS_4_INTS(IP)));
+	}
+	else
+	{
+		IPEnumeration IPs;
+
+		EnumeratedIP *IPlist = IPs.getAddresses();
+		DEBUG_ASSERTCRASH(IPlist, ("No IP addresses found!"));
+		if (!IPlist)
+		{
+			/// @todo: display an error to the user rather than continuing silently
+			DEBUG_LOG(("SetUpOnlineLobbyLAN: no local IP addresses found.\n"));
+		}
+
+		Bool foundIP = FALSE;
+		EnumeratedIP *tempIP = IPlist;
+		while ((tempIP != nullptr) && (foundIP == FALSE)) {
+			if (IP == tempIP->getIP()) {
+				foundIP = TRUE;
+			}
+			tempIP = tempIP->getNext();
+		}
+
+		if (foundIP == FALSE && IPlist != nullptr) {
+			// The IP that we had no longer exists, we need to pick a new one.
+			IP = IPlist->getIP();
+		}
+		// GeneralsX @bugfix IPlist can be null when the machine has no usable
+		// network interface (an iPad with Wi-Fi off). The empty `if (!IPlist)`
+		// guard above let execution reach here, and the while loop's own null
+		// test meant foundIP stayed FALSE — so this branch dereferenced the
+		// null every time. DEBUG_ASSERTCRASH compiles away in release.
+	}
+
+	// GeneralsX @feature The order here is load-bearing, and only accidentally correct: there
+	// is a third copy of the local identity, because LANGameInfo's constructor snapshots
+	// TheLAN->GetLocalIP() and GameInfo::getLocalSlotNum and amIHost read that snapshot rather
+	// than TheLAN. SetLocalIP therefore has to run before any LANGameInfo exists - which the
+	// delete and re-new of TheLAN above guarantees. Assert it so that a future reshuffle of
+	// this function fails loudly here instead of producing a lobby that accepts a joiner and
+	// then silently ejects them.
+	DEBUG_ASSERTCRASH(TheLAN->GetMyGame() == nullptr,
+		("SetUpOnlineLobbyLAN - a LANGameInfo already exists and has snapshotted the old local IP; SetLocalIP below will not reach it"));
+	TheLAN->init();
+	TheLAN->SetLocalIP(IP);
+
+	return relayMode;
+}
+
+//-------------------------------------------------------------------------------------------------
 /** Initialize the WOL Welcome Menu */
 //-------------------------------------------------------------------------------------------------
 void NetworkDirectConnectInit( WindowLayout *layout, void *userData )
@@ -550,109 +654,9 @@ void NetworkDirectConnectInit( WindowLayout *layout, void *userData )
 
 	UnicodeString ipstr;
 
-	delete TheLAN;
-	TheLAN = nullptr;
-
-	if (TheLAN == nullptr) {
-//		DEBUG_ASSERTCRASH(TheLAN != nullptr, ("TheLAN is null initializing the direct connect screen."));
-		TheLAN = NEW LANAPI();
-
-		OptionPreferences prefs;
-		UnsignedInt IP = prefs.getOnlineIPAddress();
-
-		// GeneralsX @feature Relay transport. With a relay configured our identity is the virtual
-		// LAN address, not a NIC address: the lobby is a two-machine LAN whose members are
-		// 10.42.0.1 and 10.42.0.2 wherever the machines physically are. The interface enumeration
-		// below must be skipped entirely, because the virtual address is on no interface and the
-		// "the IP we had no longer exists" fallback would replace it with a real one.
-		// GeneralsX @feature Matchmaking. Ask the relay to allocate our address rather than reading
-		// a hand-written one. This has to happen HERE, before SetLocalIP below, because
-		// LANGameInfo snapshots the local IP at construction and AmIHost and slot matching read
-		// that snapshot - an identity that lands later reaches nothing that matters.
-		//
-		// Falls back to the configured LocalVirtualIP so hand-set setups and LAN play are
-		// unchanged; relay mode simply stays off if neither produces an address.
-		const AsciiString relayHost = prefs.getRelayAddress();
-		UnsignedInt virtualIP = 0;
-		if (!relayHost.isEmpty())
-		{
-			// GeneralsX @feature Matchmaking. Our OWN room, not a shared one. Entering this screen
-			// is entering the room we would host in, so that a game created from here is the only
-			// game in it; picking somebody else's game out of the browser moves us into theirs
-			// instead - see JoinDirectConnectGame.
-			AsciiString room = Transport::getLocalHostRoom();
-
-			UnsignedInt assignedIP = 0;
-			if (Transport::enterRelayRoom(relayHost.str(), room.str(), assignedIP))
-			{
-				virtualIP = assignedIP;
-				DEBUG_LOG(("NetworkDirectConnectInit - relay assigned %d.%d.%d.%d in room '%s'",
-					PRINTF_IP_AS_4_INTS(virtualIP), room.str()));
-			}
-			else
-			{
-				virtualIP = prefs.getLocalVirtualIP();
-				DEBUG_LOG(("NetworkDirectConnectInit - relay did not assign an identity; falling back to LocalVirtualIP %d.%d.%d.%d",
-					PRINTF_IP_AS_4_INTS(virtualIP)));
-			}
-		}
-
-		const Bool relayMode = !relayHost.isEmpty() && (virtualIP != 0);
-
-		if (relayMode)
-		{
-			IP = virtualIP;
-			DEBUG_LOG(("NetworkDirectConnectInit - relay mode, local identity is %d.%d.%d.%d", PRINTF_IP_AS_4_INTS(IP)));
-		}
-		else
-		{
-			IPEnumeration IPs;
-
-//			if (!IP)
-//			{
-				EnumeratedIP *IPlist = IPs.getAddresses();
-				DEBUG_ASSERTCRASH(IPlist, ("No IP addresses found!"));
-				if (!IPlist)
-				{
-					/// @todo: display an error to the user rather than continuing silently
-					DEBUG_LOG(("NetworkDirectConnectInit: no local IP addresses found.\n"));
-				}
-
-				Bool foundIP = FALSE;
-				EnumeratedIP *tempIP = IPlist;
-				while ((tempIP != nullptr) && (foundIP == FALSE)) {
-					if (IP == tempIP->getIP()) {
-						foundIP = TRUE;
-					}
-					tempIP = tempIP->getNext();
-				}
-
-				if (foundIP == FALSE && IPlist != nullptr) {
-					// The IP that we had no longer exists, we need to pick a new one.
-					IP = IPlist->getIP();
-				}
-				// GeneralsX @bugfix IPlist can be null when the machine has no usable
-				// network interface (an iPad with Wi-Fi off). The empty `if (!IPlist)`
-				// guard above let execution reach here, and the while loop's own null
-				// test meant foundIP stayed FALSE — so this branch dereferenced the
-				// null every time. DEBUG_ASSERTCRASH compiles away in release.
-
-//				IP = IPlist->getIP();
-//			}
-		}
-
-		// GeneralsX @feature The order here is load-bearing, and only accidentally correct: there
-		// is a third copy of the local identity, because LANGameInfo's constructor snapshots
-		// TheLAN->GetLocalIP() and GameInfo::getLocalSlotNum and amIHost read that snapshot rather
-		// than TheLAN. SetLocalIP therefore has to run before any LANGameInfo exists - which the
-		// delete and re-new of TheLAN above guarantees. Assert it so that a future reshuffle of
-		// this function fails loudly here instead of producing a lobby that accepts a joiner and
-		// then silently ejects them.
-		DEBUG_ASSERTCRASH(TheLAN->GetMyGame() == nullptr,
-			("NetworkDirectConnectInit - a LANGameInfo already exists and has snapshotted the old local IP; SetLocalIP below will not reach it"));
-		TheLAN->init();
-		TheLAN->SetLocalIP(IP);
-	}
+	// GeneralsX @feature Matchmaking. Was inline here; extracted so the WOL lobby screen runs the
+	// identical sequence rather than a second copy of it that can drift. See SetUpOnlineLobbyLAN.
+	SetUpOnlineLobbyLAN();
 
 	// GeneralsX @feature Server list. Ask the relay what games exist as soon as the transport is
 	// up. The replies arrive asynchronously on the same socket, so nothing is waited on here -

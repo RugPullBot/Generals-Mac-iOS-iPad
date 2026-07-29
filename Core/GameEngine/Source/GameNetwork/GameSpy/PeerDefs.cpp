@@ -641,6 +641,39 @@ void SetUpGameSpy( const char *motdBuffer, const char *configBuffer )
 	TheRankPointValues = NEW RankPoints;
 }
 
+// --------------------------------------------------------------
+// GeneralsX @feature Matchmaking. See the note on the declaration in PeerDefs.h - this is
+// SetUpGameSpy with the whole GameSpy backend removed, for driving the WOL lobby screens off our
+// own relay.
+//
+// The construction ORDER is not cosmetic: LadderList's constructor reads
+// TheGameSpyConfig->getLeftoverConfig(), and RankPoints' constructor reads
+// TheGameSpyConfig->getPointsForRank(), so the config has to exist before either. GameSpyInfo's
+// constructor is what points TheGameSpyGame at its local staging room, so anything that touches
+// TheGameSpyGame has to come after it.
+void SetUpGameSpyForRelayLobby()
+{
+	// Only fill in what is missing. If a real GameSpy session is somehow live, leave it alone -
+	// stamping a fresh GameSpyInfo over it would strand the threads that hold pointers into it.
+	if (TheGameSpyConfig == nullptr)
+		TheGameSpyConfig = GameSpyConfigInterface::create("");
+
+	if (TheGameSpyInfo == nullptr)
+	{
+		TheGameSpyInfo = GameSpyInfoInterface::createNewGameSpyInfoInterface();
+
+		CustomMatchPreferences pref;
+		TheGameSpyInfo->setDisallowAsianText(pref.getDisallowAsianText());
+		TheGameSpyInfo->setDisallowNonAsianText(pref.getDisallowNonAsianText());
+	}
+
+	if (TheLadderList == nullptr)
+		TheLadderList = NEW LadderList;
+
+	if (TheRankPointValues == nullptr)
+		TheRankPointValues = NEW RankPoints;
+}
+
 void TearDownGameSpy()
 {
 	// save off cached stats
