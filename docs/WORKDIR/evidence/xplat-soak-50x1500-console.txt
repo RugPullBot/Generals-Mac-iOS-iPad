@@ -1,0 +1,161 @@
+=== preflight ===
+linux peer runs in netns gx
+
+=== [000] seed=700000 ai=Hx1 map=alpine assault.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [001] seed=700977 ai=Mx1 map=bitter winter.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [002] seed=701954 ai=Ex1 map=cairo commandos.map ===
+  ok   1500 frames, 0 differing, 1490 distinct
+
+=== [003] seed=702931 ai=Hx2 map=dark mountain.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [004] seed=703908 ai=Hx1 map=death valley.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [005] seed=704885 ai=Mx1 map=desert fury.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [006] seed=705862 ai=Ex1 map=destruction station.map ===
+  ok   1500 frames, 0 differing, 1471 distinct
+
+=== [007] seed=706839 ai=Hx2 map=dust devil.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [008] seed=707816 ai=Hx1 map=final crusade.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [009] seed=708793 ai=Mx1 map=twilight flame.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [010] seed=709770 ai=Ex1 map=alpine assault.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [011] seed=710747 ai=Hx2 map=bitter winter.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [012] seed=711724 ai=Hx1 map=cairo commandos.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [013] seed=712701 ai=Mx1 map=dark mountain.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [014] seed=713678 ai=Ex1 map=death valley.map ===
+  ok   1500 frames, 0 differing, 1477 distinct
+
+=== [015] seed=714655 ai=Hx2 map=desert fury.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [016] seed=715632 ai=Hx1 map=destruction station.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [017] seed=716609 ai=Mx1 map=dust devil.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [018] seed=717586 ai=Ex1 map=final crusade.map ===
+  ok   1500 frames, 0 differing, 1497 distinct
+
+=== [019] seed=718563 ai=Hx2 map=twilight flame.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [020] seed=719540 ai=Hx1 map=alpine assault.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [021] seed=720517 ai=Mx1 map=bitter winter.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [022] seed=721494 ai=Ex1 map=cairo commandos.map ===
+  ok   1500 frames, 0 differing, 1492 distinct
+
+=== [023] seed=722471 ai=Hx2 map=dark mountain.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [024] seed=723448 ai=Hx1 map=death valley.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [025] seed=724425 ai=Mx1 map=desert fury.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [026] seed=725402 ai=Ex1 map=destruction station.map ===
+  ok   1500 frames, 0 differing, 1470 distinct
+
+=== [027] seed=726379 ai=Hx2 map=dust devil.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [028] seed=727356 ai=Hx1 map=final crusade.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [029] seed=728333 ai=Mx1 map=twilight flame.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [030] seed=729310 ai=Ex1 map=alpine assault.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [031] seed=730287 ai=Hx2 map=bitter winter.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [032] seed=731264 ai=Hx1 map=cairo commandos.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [033] seed=732241 ai=Mx1 map=dark mountain.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [034] seed=733218 ai=Ex1 map=death valley.map ===
+  ok   1500 frames, 0 differing, 1476 distinct
+
+=== [035] seed=734195 ai=Hx2 map=desert fury.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [036] seed=735172 ai=Hx1 map=destruction station.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [037] seed=736149 ai=Mx1 map=dust devil.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [038] seed=737126 ai=Ex1 map=final crusade.map ===
+  ok   1500 frames, 0 differing, 1471 distinct
+
+=== [039] seed=738103 ai=Hx2 map=twilight flame.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [040] seed=739080 ai=Hx1 map=alpine assault.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [041] seed=740057 ai=Mx1 map=bitter winter.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [042] seed=741034 ai=Ex1 map=cairo commandos.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [043] seed=742011 ai=Hx2 map=dark mountain.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [044] seed=742988 ai=Hx1 map=death valley.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [045] seed=743965 ai=Mx1 map=desert fury.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [046] seed=744942 ai=Ex1 map=destruction station.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [047] seed=745919 ai=Hx2 map=dust devil.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [048] seed=746896 ai=Hx1 map=final crusade.map ===
+  ok   1500 frames, 0 differing, 1500 distinct
+
+=== [049] seed=747873 ai=Mx1 map=twilight flame.map ===
+  ok   1500 frames, 0 differing, 1489 distinct
+
+======================================================================
+ matches run     : 50 of 50
+ total frames    : 75000
+ differing frames: 0
+ failures        : 0
+ results         : /tmp/claude-501/-Users-administrator-GeneralsX-src/1f6becd6-6780-4ff5-b682-a13c6ea6d85e/scratchpad/soak50
+======================================================================
+PASS: 75000 frames across 50 matches, macOS vs Linux, zero differing

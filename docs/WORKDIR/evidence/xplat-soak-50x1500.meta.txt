@@ -1,0 +1,63 @@
+Cross-platform determinism soak - 50 matches, 75,000 frames - session 7, 2026-07-29
+====================================================================================
+
+The run that answers "everyone desyncs eventually" with volume rather than with one long match.
+scripts/test/xplat-determinism-soak.sh had been committed since cf9d47388 and NEVER RUN.
+
+BUILD
+  macOS  rev=2171 source=6A9BFF78 platform=BF013216
+  Linux  rev=2171 source=6A9BFF78 platform=97FE082D
+  Both deployed from 2e226bf3a. Note that HEAD has since moved past the deployed binaries
+  (another session landed an engine change in NetworkDirectConnect.cpp), so this result belongs
+  to 2e226bf3a, not to HEAD.
+
+SHAPE
+  50 matches. Each runs the SAME pinned seed as a SOLO headless match on macOS and on Linux with
+  no packets exchanged between them, and every frame is diffed. Nothing in the result can be
+  explained by the relay, by NAT or by packet loss - which is the point: a networked run conflates
+  simulation with transport and cannot say which failed.
+  Seeds 700000 + 977n (977 is prime, so seeds do not fall into a pattern). Map and AI spec vary
+  per iteration across 10 standard multiplayer maps and Hx1/Mx1/Ex1/Hx2. Every iteration includes
+  an AI, because skirmish scripts attach only for AI players and that is where the historical
+  divergence lived.
+
+RESULT
+  matches run      : 50 of 50
+  total frames     : 75,000
+  differing frames : 0
+  failures         : 0
+  md5-identical    : 50 of 50 pairs
+  distinct CRC     : 1470-1500 per 1500-frame match
+
+  Verified twice: once by the script, then recomputed independently from the raw .crc artifacts
+  (frames, per-frame value-column diff, per-pair md5). Both agree. Per-iteration detail is in
+  xplat-soak-50x1500-manifest.txt; the full console log is in xplat-soak-50x1500-console.txt.
+
+  The distinct-value count is the control. An earlier "identical" run in this project had three
+  distinct values across 600 frames because two idle bases did nothing. The worst iteration here
+  is 1470 distinct of 1500, so every match did real and varying work.
+
+THE BUG THIS RUN FOUND, BEFORE IT COULD PRODUCE A RESULT
+  On its first execution the soak failed 100% of iterations on the Linux side while macOS
+  simulated its frames perfectly:
+
+      UDP::Bind failed (status -6) for IP 0.0.0.0 port 8086
+      [LAN] localIP=10.42.0.1 ... transportInit=FAILED
+      GameMain() returned with code 1
+
+  The VPS is also the relay host. With RelayAddress set, the game enters relay mode, relay mode
+  forces a wildcard bind, and the game's socket collides with the relay's own listener. This is
+  the documented "the relay cannot share a machine with a player" rule, applied everywhere in the
+  project except in this script - because the script had never been run, and a script that has
+  never run has never had its assumptions tested.
+
+  Fixed in fab389312: the remote peer now runs under `ip netns exec $VPS_NETNS`, the namespace is
+  verified to exist in preflight rather than 50 iterations later, and a zero-frame iteration now
+  prints the bind error instead of only "no frames simulated" - which had made a setup fault look
+  like a headless or determinism bug.
+
+WHAT THIS DOES AND DOES NOT SHOW
+  Shows: macOS arm64/clang and Linux x86-64/gcc simulate the same game, across many seeds and many
+  maps, with an AI in every match, at 75,000 frames with zero divergence.
+  Does not show: anything about Windows or iOS (not in this soak), anything about transport (no
+  packets), or anything about HEAD (these binaries are 2e226bf3a).
