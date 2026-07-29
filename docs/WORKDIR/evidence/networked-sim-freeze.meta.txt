@@ -1,0 +1,87 @@
+=== NETWORKED MATCHES FREEZE ON EVERY MAP TESTED EXCEPT ALPINE ASSAULT ===
+
+Found 29/07/2026 while building the three-platform soak. This is not a determinism failure -
+peers agree perfectly - it is the simulation not advancing at all in a NETWORKED match, while the
+identical map, seed and AI spec run fully active SOLO.
+
+Why it matters more than the frame counts: essentially every networked result this project has
+produced used alpine assault. If alpine is the only map on which a networked match actually runs,
+then the networked evidence base describes one map, and "8 peers agreed for 1500 frames" on any
+other map was measuring a frozen world.
+
+=== the measurement ===
+
+SOLO, linux, one process, no packets (./GeneralsXZH -headless -lanhost q -lanai <spec> -lanseed 424242 -lanframes 600):
+
+  map                    Hx7      Hx5      Hx3
+  alpine assault      600/600  600/600  600/600      frames/distinct
+  bitter winter       600/600  600/600  600/600
+  killing fields      600/600  600/600  600/600
+  + cairo commandos, dark mountain, death valley, desert fury, destruction station,
+    dust devil, final crusade, twilight flame: all 600/600 at Hx7
+
+  Every standard multiplayer map is ACTIVE solo, at every AI count tried.
+
+NETWORKED, 2 peers in separate netns on ONE linux box, via the relay
+(scripts/test/relay-8peer.sh, PEERS=2 FRAMES=300 AI=Hx5):
+
+  map                  frames   distinct   verdict
+  alpine assault          300        299   ACTIVE
+  bitter winter           300          6   FROZEN
+  killing fields          300          5   FROZEN
+
+NETWORKED, three real platforms (scripts/test/xplat-3platform-lobby.sh):
+
+  alpine assault  1500 frames  1499 distinct  ACTIVE   (xplat3-5ai-1500)
+  alpine assault   300 frames   299 distinct  ACTIVE
+  bitter winter    300 frames     5 distinct  FROZEN
+  killing fields  1500 frames     4 distinct  FROZEN
+
+Control: solo bitter winter with the EXACT seed the frozen networked run used (900977), Hx5,
+300 frames -> 300 distinct. ACTIVE. So it is not the seed, not the map, and not the AI count.
+
+=== what "frozen" looks like ===
+
+It is not a slow start. From the frozen bitter winter run's CRC stream:
+
+    2 frames  v=D1B3C4CC
+    1 frame   v=71A83529
+    1 frame   v=BE816D4B
+  149 frames  v=73876F49        <- world state constant
+  147 frames  v=CB48DA13        <- one change, then constant again
+
+Four frames of normal activity, then the world stops changing. All peers hold the same frozen
+value, so lockstep is intact and the transport is fine - there is simply nothing happening.
+
+=== what was ruled out ===
+
+- the map           : all maps active solo
+- the seed          : same seed active solo, frozen networked
+- the AI count      : Hx3/Hx5/Hx7 all active solo
+- AI placement      : identical in both cases -
+                      aiPlayers=5 computers=7 sides=11 sidesWithScripts=7 skirmishSides=14
+- map load failure  : no load errors in any log; map CRC/size present in game options
+                      (bitter winter MC=6C90F128 MS=225694, alpine MC=DEA9E8E4 MS=275491)
+- start positions   : bitter winter runs 8 players fine solo (Hx7 = 8 slots, 600/600)
+
+Not yet ruled out, and where to look next: whatever differs for AI players between the solo and
+networked start paths. The AI are constructed and their scripts attach in both cases
+(sidesWithScripts=7), so the question is why they issue no orders once a network game is running.
+
+=== reproduction, cheapest first ===
+
+Entirely on the VPS, ~2 minutes, no other machine involved:
+
+  ssh root@163.5.210.131
+  cd /root/GeneralsX
+  PEERS=2 FRAMES=300 AI=Hx5 MAP='maps\bitter winter\bitter winter.map' \
+    OUT=/root/freeze-repro ./scripts/test/relay-8peer.sh
+
+  Expect INCONCLUSIVE with ~6 distinct. Swap the map to alpine assault for the passing control.
+
+=== consequence for the harnesses ===
+
+scripts/test/xplat-3platform-soak.sh and relay-8peer.sh both classify a run whose distinct count
+is under half its frame count as INCONCLUSIVE and refuse to count it as a pass. That is what
+surfaced this. Do NOT "fix" a soak by dropping the frozen maps from its map list - the frozen maps
+are the finding.

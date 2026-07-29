@@ -55,6 +55,14 @@ set -uo pipefail
 
 FRAMES="${FRAMES:-1500}"
 AI="${AI:-Hx5}"
+# Pin the match seed. Empty means the host picks one, which is right for a single run and wrong
+# for a soak: without it every iteration is a different game and "50 matches" is really one map
+# sampled 50 ways. The joiners take the seed from the host's game options (the SD= field), so it
+# is set on the host only.
+SEED="${SEED:-}"
+# A soak checks the fingerprints once up front; repeating three ~90s probes per iteration would
+# be most of the wall clock and would prove the same thing every time.
+SKIP_FINGERPRINT="${SKIP_FINGERPRINT:-0}"
 # NOT killing fields, which relay-8peer.sh defaults to. Five Hard AI are placed correctly on it
 # (aiPlayers=5, sidesWithScripts=7) and then nothing happens: 1496 of 1500 frames carry the same
 # CRC. The 8-peer run has the same signature on the same map (distinct=3). alpine assault is the
@@ -128,6 +136,9 @@ ssh -o ConnectTimeout=15 "$VPS" "mkdir -p $VPS_HOME/GeneralsX/GeneralsZH &&
 	die "could not provision the linux data dir"
 
 say ""
+if [ "$SKIP_FINGERPRINT" = "1" ]; then
+say "=== build fingerprints: SKIPPED (SKIP_FINGERPRINT=1, caller asserts) ==="
+else
 say "=== build fingerprints ==="
 # Comparing three peers that are not the same build manufactures evidence. The join path already
 # refuses on engineID, but a refusal reads as "connection timed out" and wastes an hour - assert
@@ -170,6 +181,7 @@ say "  all three identical (platformID excluded by design)"
 
 kill_all
 verify_clean || die "could not get back to a clean state after the fingerprint probes"
+fi
 
 # ---------------------------------------------------------------------------------------------
 say ""
@@ -187,6 +199,7 @@ ssh -o ConnectTimeout=20 "$VPS" "( cd $VPS_GAME && exec setsid ip netns exec $VP
 	CNC_GENERALS_ZH_PATH=$VPS_GAME XDG_DATA_HOME=$VPS_HOME \
 	$VPS_GAME/GeneralsXZH -headless -lanhost xplat3 -lanwait 2 -lanai '$AI' \
 	-lanmap '$MAP' -lanname gxlinux -lanframes $FRAMES -lantimeout 1800000 \
+	${SEED:+-lanseed $SEED} \
 	) < /dev/null > $OUT/linux.out 2> $OUT/linux.err & echo started" >/dev/null 2>&1
 
 # The host mints its room token at start-up; the joiners must be pinned to it. Browsing works but
