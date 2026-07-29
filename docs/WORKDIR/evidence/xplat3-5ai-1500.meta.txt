@@ -1,0 +1,44 @@
+=== Three platforms and five Hard AI in ONE relay match ===
+
+The case neither prior test covered. The 50x1500 soak is macOS vs Linux with ZERO networking.
+relay-8peer is eight copies of the same Linux binary. relay-winhost-600 is two peers. This is
+Windows x64 + Linux x86-64 + macOS arm64, in the same lobby, over the relay, with five Hard AI
+fighting, every frame compared.
+
+Commit    c72eb8d96 (rev 2187, SIMID_EPOCH 2)
+Map       maps\alpine assault\alpine assault.map
+Lobby     8 of 8 slots - gxlinux (host) + gxmac + gxwin + 5x Computer Hard
+Harness   scripts/test/xplat-3platform-lobby.sh
+
+=== build fingerprints, all three probed at runtime before the match ===
+mac      local valid=1 rev=2187 engine=FD486019 source=B30B651C data=1839A83F ordinal=9F43F7B5 parse=CD8F767F asset=8E504171 platform=BF013216 | data-ini=FEAAE3F3 data-loose=300665B3 | epoch=2 tag=53494431 sizeof(SimIdWire)=36 sizeof(LANMessage)=471
+linux    local valid=1 rev=2187 engine=FD486019 source=B30B651C data=1839A83F ordinal=9F43F7B5 parse=CD8F767F asset=8E504171 platform=97FE082D | data-ini=FEAAE3F3 data-loose=300665B3 | epoch=2 tag=53494431 sizeof(SimIdWire)=36 sizeof(LANMessage)=471
+windows  local valid=1 rev=2187 engine=FD486019 source=B30B651C data=1839A83F ordinal=9F43F7B5 parse=CD8F767F asset=8E504171 platform=7480F925 | data-ini=FEAAE3F3 data-loose=300665B3 | epoch=2 tag=53494431 sizeof(SimIdWire)=36 sizeof(LANMessage)=471
+
+Identical on engineID, sourceID, dataID, ordinalID, parseID, assetID. platformID differs by
+design - it is the OS tag and is not part of the compatibility verdict.
+
+=== result ===
+frames          1500 on each of the three peers
+md5             b4903b2fe45f103c91f547f3feaef405  (all three, value column)
+cmp             IDENTICAL for all three pairs (mac/linux, mac/win, linux/win)
+differing       0
+distinct        1499 of 1500 - the sim was doing different work on essentially every frame
+AI placed       afterScriptNewMap seed=1189477537 aiPlayers=5 computers=7 sides=11 sidesWithScripts=7 skirmishSides=14
+
+=== the control, and why it matters here ===
+The FIRST run of this test used killing fields (relay-8peer.sh's default) and produced the same
+single md5 across all three platforms - and only 4 distinct CRC values in 1500 frames, 1496 of
+them identical. Five Hard AI were placed correctly on that map (aiPlayers=5, sidesWithScripts=7)
+and then nothing happened. relay-8peer.meta.txt has the same signature on the same map
+(distinct=3). Agreement on an idle simulation is not evidence of determinism, and the harness
+fails the run rather than reporting it as a pass. alpine assault is the map that makes the AI act.
+
+=== two bugs this run surfaced ===
+1. Windows headless was believed broken and was driven through the GUI with scripted mouse clicks
+   in earlier sessions. It was never broken: it needs CNC_GENERALS_ZH_PATH pointing at the Steam
+   data install, and without it the engine stalls forever right after
+   "[INI] ERROR: No files read from directory". With it set, it reaches SimID in ~5 seconds.
+2. The Windows peer reaches its frame limit, logs "simulated N frames", flushes, and THEN faults
+   on teardown with 0xC0000005. The frame data is complete and the comparison above is unaffected,
+   but the crash is real and is not yet diagnosed.
