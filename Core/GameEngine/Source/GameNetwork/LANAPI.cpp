@@ -975,8 +975,28 @@ void LANAPI::RequestGameOptions( AsciiString gameOptions, Bool isPublic, Unsigne
 		else
 			gameName.translate(m_currentGame->getName());
 
-		m_transport->setGameAdvertisement(gameName.str(), m_currentGame->getMap().str(),
-			players, MAX_SLOTS);
+		// Advertise the map's DISPLAY name, not its path. getMap() returns what the slot list
+		// carries - "maps\twilight flame\twilight flame.map" - and putting that in a browser row
+		// overflows the widget, which then renders the TAIL of the string: the player is shown
+		// "s\twilight flame\twilight flame.map)" and nothing that identifies the game.
+		AsciiString mapPath = m_currentGame->getMap();
+		const char *mapLeaf = mapPath.str();
+		for (const char *c = mapPath.str(); *c != '\0'; ++c)
+		{
+			if (*c == '\\' || *c == '/')
+				mapLeaf = c + 1;
+		}
+
+		char mapName[64];
+		strlcpy(mapName, mapLeaf, sizeof(mapName));
+
+		// Drop a trailing ".map" - it is on every entry, so it costs width and distinguishes
+		// nothing.
+		const Int nameLen = (Int)strlen(mapName);
+		if (nameLen > 4 && _stricmp(mapName + nameLen - 4, ".map") == 0)
+			mapName[nameLen - 4] = '\0';
+
+		m_transport->setGameAdvertisement(gameName.str(), mapName, players, MAX_SLOTS);
 	}
 
 	int player;
