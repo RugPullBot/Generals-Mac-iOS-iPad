@@ -1,0 +1,1 @@
+[SIMID] local valid=1 rev=2161 engine=4D31F2F2 source=09014B6F data=FEAAE3F3 ordinal=9F43F7B5 parse=CD8F767F asset=8E504171 platform=BF013216 | epoch=1 tag=53494431 sizeof(SimIdWire)=36 sizeof(LANMessage)=471
