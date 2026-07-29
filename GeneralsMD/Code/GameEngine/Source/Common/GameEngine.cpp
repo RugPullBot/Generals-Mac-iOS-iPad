@@ -515,7 +515,10 @@ void GameEngine::init()
 					"  EnforceMaxCameraHeight = No\n"
 					"  ; Keyboard scroll - vanilla 0.5 is sluggish, double it.\n"
 					"  KeyboardScrollSpeedFactor = 1.0\n"
-					"  ; ~5% more terrain drawn at max zoom to fix terrain pop-in.\n"
+					// %% because this is an fprintf FORMAT string, not a literal: "% m" is read as a
+					// conversion, so this wrote "~5" followed by whatever %m produced (strerror on
+					// glibc, undefined elsewhere) and consumed a vararg that was never passed.
+					"  ; ~5%% more terrain drawn at max zoom to fix terrain pop-in.\n"
 					"  TerrainDrawDistanceScale = 1.05\n"
 					"End\n"
 				);
