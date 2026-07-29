@@ -95,12 +95,27 @@ measured yet.** Full detail in `docs/WORKDIR/STATE_2026-07-29_session6.md`.
       that constraint has never been exercised on a real cellular link.
 - [ ] 28. **The real matrix in one lobby:** macOS + Windows x64 + iPadOS + iOS through the relay.
 - [ ] 29. Commit a **Windows** CRC stream for a multi-platform played match. Windows was in the
-      14,756-frame match but only macOS and Linux streams were compared.
+      14,756-frame match but only macOS and Linux streams were compared. Partly addressed in session
+      7: a Windows CRC stream is now committed for a Windows-HOSTED match against a Linux joiner
+      (`evidence/relay-winhost-600-*`, 600 frames byte-identical, 599 distinct), and Windows'
+      SimID is confirmed at runtime as `source=6A9BFF78` — matching macOS and Linux. Still open is
+      the ≥3-platform *played* match with the Windows stream captured.
 
 # Phase 5: the things nobody has measured
 
-- [ ] 30. **Map transfer over the relay.** Never tested. Every match so far used the same built-in map
-      already present on both sides. Unicast routing exists specifically for this path.
+- [ ] 30. **Map transfer over the relay.** BLOCKED, and not by the relay — see
+      `evidence/relay-maptransfer.meta.txt`. With a genuinely missing map the joiner detects it and
+      the transfer then fails ("Unable to transfer the map"), while the host is not blocked at all:
+      it starts, plays its full frame budget alone with the AI, and stops only when the joiner
+      leaves — so the host's transfer mask was empty. **The same scenario on a plain LAN with no
+      relay fails character-for-character identically**, so GXR1 unicast routing is neither
+      implicated nor exercised. Lead, not a finding: `DoAnyMapTransfers` drives the transfer from a
+      `MapTransferLoadScreen` that headless never pumps. Decisive next step is the same missing-map
+      join from a **UI client on macOS**, which separates "headless cannot drive it" from "map
+      transfer is broken for everyone".
+      Note for whoever picks this up: a renamed stock map will NOT reproduce it — maps are identified
+      by CRC and size, so the joiner resolves it locally and the run looks like a clean pass. Pad the
+      file. And a loose map is addressed by its full lowercased absolute path, not a relative key.
 - [ ] 31. **Latency, jitter and stall behaviour**, especially with a phone on cellular. Lockstep waits
       for the slowest peer, so one bad link stalls all eight. No measurement of any kind exists.
 - [ ] 32. **Names, accounts, moderation.** Registration is `GXRLY <room> <virtualIP>` with no auth:
