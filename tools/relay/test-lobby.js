@@ -369,6 +369,109 @@ async function fullTableChecks() {
 		check('the refused advert was logged', /REFUSED advert .* not registered in that room/.test(relayA.log));
 
 		// =========================================================================================
+		// Lobby chat
+		// The lobby screen has a chat box, and it stays inert unless the relay carries chat. Every
+		// property below is a security property rather than a feature: a chat line is
+		// unauthenticated, it is echoed to other players, and the relay has already had a
+		// log-injection bug from exactly this shape of data.
+		// =========================================================================================
+		alphaHost.clear();
+		alphaPeer.clear();
+		bravoHost.clear();
+		await alphaPeer.send('GXCHT roomalpha hello alpha  spaced');
+		await wait(400);
+
+		const said = alphaHost.find('GXSAY');
+		check('a chat line reaches the other member of the same room', !!said);
+		check('the relay stamps the sender it knows, not one the client claimed',
+			!!said && said.trim() === 'GXSAY roomalpha 10.42.0.2 hello alpha  spaced');
+		check('a chat line never crosses into another room', !bravoHost.got('hello alpha'));
+		check('the sender does not receive its own chat', !alphaPeer.got('GXSAY'));
+
+		// --- the sender field cannot be forged -------------------------------------------------
+		// The wire format has no sender field precisely so that this is impossible, so what is
+		// tested is that a line SHAPED like one carrying a sender is still stamped by the relay:
+		// the claimed address lands as ordinary message text, never as an identity. The payload is
+		// the actual abuse - speaking as the host to move everybody into a room you control.
+		alphaHost.clear();
+		await alphaPeer.send('GXCHT roomalpha 10.42.0.1 everyone leave and rejoin room free-wins');
+		await wait(400);
+		const forged = alphaHost.find('GXSAY');
+		check('a claimed sender inside the text is not treated as an identity',
+			!!forged && forged.startsWith('GXSAY roomalpha 10.42.0.2 10.42.0.1 everyone leave'));
+
+		// --- an outsider cannot speak into a room ----------------------------------------------
+		const stranger = await newClient();
+		alphaHost.clear();
+		await stranger.send('GXCHT roomalpha free wins here');
+		await wait(400);
+		check('chat from an unregistered endpoint is refused', !alphaHost.got('free wins here'));
+		check('the refused chat was logged',
+			/REFUSED chat from .* not registered in that room/.test(relayA.log));
+
+		// A registered client of the WRONG room is the sharper case: it has an identity on this
+		// relay, just not in this room. imposter is registered in roombravo.
+		alphaHost.clear();
+		await imposter.send('GXCHT roomalpha still not my room');
+		await wait(400);
+		check('chat addressed to a room the sender is not in is refused',
+			!alphaHost.got('still not my room'));
+
+		// --- control bytes cannot forge a log line or drive a terminal -------------------------
+		alphaHost.clear();
+		await alphaPeer.send('GXCHT roomalpha one\nTWO\r\x1b[31mthree\x00four');
+		await wait(400);
+		const scrubbed = alphaHost.find('GXSAY');
+		check('control bytes in chat are replaced, not passed through',
+			!!scrubbed && !/[\x00-\x1F\x7F]/.test(scrubbed)
+			&& scrubbed.includes('one TWO') && scrubbed.includes('three four'));
+		check('a chat line is still exactly one datagram after scrubbing',
+			!!scrubbed && scrubbed.split('\n').length === 1);
+		check('the chat text is never written to the relay log', !/TWO/.test(relayA.log));
+
+		// --- the text is bounded ---------------------------------------------------------------
+		alphaHost.clear();
+		await alphaPeer.send(`GXCHT roomalpha ${'A'.repeat(280)}`);
+		await wait(400);
+		const long = alphaHost.find('GXSAY');
+		// Anchored at the END on purpose. A /A+/ over the whole line matches the 'A' in the GXSAY
+		// tag itself, four characters in, and reports a 100-character message as one character -
+		// a check that fails while the relay is doing exactly the right thing.
+		check('an over-long chat line is truncated rather than dropped or forwarded raw',
+			!!long && long.endsWith('A'.repeat(100)) && !long.endsWith('A'.repeat(101)));
+
+		// --- an empty line costs nobody a datagram ---------------------------------------------
+		alphaHost.clear();
+		await alphaPeer.send('GXCHT roomalpha    ');
+		await wait(300);
+		check('a whitespace-only chat line is not delivered', !alphaHost.got('GXSAY'));
+
+		// --- and one player cannot fill everyone else's chat box -------------------------------
+		// The bucket is per member and lives on the member record, so it is bounded by the room's
+		// own ceiling and adds no table keyed on anything a sender chose.
+		const floodHost = await newClient();
+		const floodPeer = await newClient();
+		await floodHost.send('GXRLY chatflood 10.42.0.1');
+		await floodPeer.send('GXRLY chatflood 10.42.0.2');
+		await wait(300);
+		floodHost.clear();
+		for (let i = 0; i < 40; i++) {
+			await floodPeer.send(`GXCHT chatflood spam ${i}`);
+		}
+		await wait(500);
+		const delivered = floodHost.seen.filter((s) => s.startsWith('GXSAY')).length;
+		check('a chat flood is cut to the burst allowance', delivered >= 1 && delivered <= 8);
+		check('the throttling was logged', /dropping chat from 10\.42\.0\.2/.test(relayA.log));
+
+		// The throttle must not have taken the conversation with it.
+		await wait(2500);	// one token back
+		floodHost.clear();
+		await floodPeer.send('GXCHT chatflood back to normal');
+		await wait(400);
+		check('a throttled player can talk again once the bucket refills',
+			floodHost.got('back to normal'));
+
+		// =========================================================================================
 		// One endpoint, one room
 		// A relayed packet carries no room, so the sender's endpoint is the only thing that says
 		// which room it belongs to. Joining a second room is therefore leaving the first.

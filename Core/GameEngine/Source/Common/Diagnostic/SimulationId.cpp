@@ -23,6 +23,8 @@
 #include "PreRTS.h"
 
 #include "Common/Diagnostic/SimulationId.h"
+#include "Common/File.h"
+#include "Common/FileSystem.h"         // TheFileSystem, FilenameList
 #include "Common/GameDefines.h"
 #include "Common/INI.h"
 #include "GameNetwork/LANAPI.h"        // SimIdWire, SIMID_WIRE_TAG, sizeof(LANMessage)
@@ -30,7 +32,10 @@
 #include "gitinfo.h"                   // GitRevision
 #include "simsourcedigest.h"           // SimSourceDigestZeroHour / Generals
 
+#include <algorithm>
+#include <string>
 #include <string.h>
+#include <vector>
 
 // RTS_ZEROHOUR has no 0-fallback and is defined only for the Zero Hour target, so it
 // may never be used as a C++ expression - only under #if.
@@ -216,6 +221,180 @@ static UnsignedInt computePlatformID( void )
 }
 
 // ---------------------------------------------------------------------------
+// looseDataID - tier1. Folded into dataID rather than carried as a wire field of its
+// own, so the packet layout, MAX_LANAPI_PACKET_SIZE budget and every LAN handler are
+// untouched; SIMID_EPOCH is bumped instead, which makes an old peer refuse at engineID
+// with a named verdict rather than at dataID with a misleading "your INI files differ".
+//
+// WHY THIS EXISTS. dataID was m_iniCRC alone, and m_iniCRC covers only what went
+// through the INI parser. A .scb is a compiled script bundle, not INI, so it sat
+// entirely outside the fingerprint - and Data\Scripts\SkirmishScripts.scb is read by
+// SidesList and MultiplayerScripts.scb by GameLogic, both before frame 0, both feeding
+// the simulation directly. Two peers have already been observed reporting identical
+// engine/source/data/ordinal while simulating different games for exactly this reason:
+// one was missing SkirmishScripts.scb, and the AI diverged on frame 0. Covering these
+// turns that silent desync into a refused join, which is strictly better - a player who
+// cannot join asks why, a player who desyncs blames the netcode.
+//
+// WHAT IS DELIBERATELY NOT IN IT, and this is the load-bearing half. Anything the
+// simulation does not read must stay out, or two players whose games would have agreed
+// perfectly refuse each other over a replaced cursor. So this is NOT a scan of the data
+// directory: it is an explicit allow-list of one directory and one extension, and every
+// future entry has to earn its place the same way.
+//   * Cursors, fonts, shell art, .wnd layouts, .csf strings, sounds, shaders - all
+//     client-only. A skinned UI has no effect on the simulation and must not be a
+//     compatibility barrier.
+//   * Maps. A map is per-game, negotiated in the lobby and transferred by the map
+//     transfer path; hashing the player's whole map collection would refuse a join
+//     because someone downloaded a map nobody in the lobby is playing.
+//   * .ini anywhere. Already in m_iniCRC, and hashing it twice buys nothing.
+//   * SagePatch.ini. Per-device client tuning, already excluded from the identity for
+//     the reason recorded at the initialize() call site.
+//
+// The KEY hashed for each file is its basename, lowercased - never the path the
+// enumeration returned. On this fork a loose file may be found under the cwd or under
+// the asset root (StdLocalFileSystem's fallback) or inside a mounted .big, and the same
+// content must fingerprint identically in all three. The path is used only to open it.
+// ---------------------------------------------------------------------------
+struct SimIdLooseScan
+{
+	const char *directory;
+	const char *pattern;
+};
+
+static const SimIdLooseScan SIMID_LOOSE_SCANS[] =
+{
+	// Compiled script bundles. SkirmishScripts.scb drives the skirmish AI and
+	// MultiplayerScripts.scb the multiplayer rules; both are simulation input and
+	// neither is INI. The whole directory is scanned rather than the two known names so
+	// that a mod which adds a third bundle is caught rather than silently tolerated.
+	{ "Data\\Scripts\\", "*.scb" },
+};
+
+// Distinct from any real digest: "the scan itself could not run". Two peers that both
+// fail compare equal, which is exactly the coverage that existed before this change, so
+// a broken filesystem degrades to the old behaviour rather than to a permanent refusal.
+// One side failing while the other succeeds refuses the join, which is the safe way round.
+static const UnsignedInt SIMID_LOOSE_FAILED = 0xFFFFFFFFu;
+
+// A ceiling, not a tuning knob. The allow-list above should produce a handful of files;
+// anything near this means a directory is not what it is believed to be, and hashing an
+// unbounded set at startup would be a boot-time stall on someone's install.
+static const size_t SIMID_LOOSE_MAX_FILES = 64;
+
+static std::string simIdBasenameLower( const AsciiString &path )
+{
+	std::string s(path.str() != NULL ? path.str() : "");
+	const size_t slash = s.find_last_of("/\\");
+	if (slash != std::string::npos)
+		s = s.substr(slash + 1);
+	for (size_t i = 0; i < s.size(); ++i)
+		s[i] = (char)tolower((unsigned char)s[i]);
+	return s;
+}
+
+static UnsignedInt computeLooseDataID( void )
+{
+	if (TheFileSystem == NULL)
+		return SIMID_LOOSE_FAILED;
+
+	UnsignedInt h = fnv1a(FNV_SEED, "SIMID/LOOSE/1", 13);
+	try
+	{
+		// basename -> the path to open it by. std::map would sort for free, but the
+		// shadowing rule wants "first one wins" and a vector says that plainly: the local
+		// filesystem is enumerated before the archives (FileSystem::getFileListInDirectory),
+		// which is the same precedence openFile itself applies.
+		std::vector< std::pair<std::string, AsciiString> > found;
+		for (size_t s = 0; s < sizeof(SIMID_LOOSE_SCANS)/sizeof(SIMID_LOOSE_SCANS[0]); ++s)
+		{
+			FilenameList list;
+			TheFileSystem->getFileListInDirectory(
+				AsciiString(SIMID_LOOSE_SCANS[s].directory),
+				AsciiString(SIMID_LOOSE_SCANS[s].pattern),
+				list, FALSE);
+
+			for (FilenameList::const_iterator it = list.begin(); it != list.end(); ++it)
+			{
+				const std::string key = simIdBasenameLower(*it);
+				if (key.empty())
+					continue;
+				bool dupe = false;
+				for (size_t i = 0; i < found.size(); ++i)
+					if (found[i].first == key) { dupe = true; break; }
+				if (!dupe)
+					found.push_back(std::make_pair(key, *it));
+			}
+		}
+
+		std::sort(found.begin(), found.end());
+
+		// Hash the count and any truncation, so a file appearing or disappearing moves the
+		// digest even when nothing else about the set changed.
+		const bool truncated = found.size() > SIMID_LOOSE_MAX_FILES;
+		if (truncated)
+			found.resize(SIMID_LOOSE_MAX_FILES);
+		h = fnv1aU32(h, (UnsignedInt)found.size());
+		h = fnv1aU32(h, truncated ? 1u : 0u);
+
+		for (size_t i = 0; i < found.size(); ++i)
+		{
+			const std::string &key = found[i].first;
+			h = fnv1a(h, key.data(), key.size());
+			h = fnv1a(h, "\n", 1);
+
+			UnsignedInt content = FNV_SEED;
+			UnsignedInt bytes = 0;
+			bool readable = false;
+
+			File *fp = TheFileSystem->openFile(found[i].second.str(), File::READ | File::BINARY);
+			if (fp != NULL)
+			{
+				char buf[8192];
+				Int n;
+				readable = true;
+				while ((n = fp->read(buf, (Int)sizeof(buf))) > 0)
+				{
+					content = fnv1a(content, buf, (size_t)n);
+					bytes += (UnsignedInt)n;
+				}
+				if (n < 0)
+					readable = false;	// a truncated read must not hash as a shorter file
+				fp->close();
+			}
+
+			// A file that exists but cannot be read is NOT the same as one that is absent,
+			// and must not be allowed to hash like it.
+			h = fnv1aU32(h, readable ? bytes : 0xDEADBEEFu);
+			h = fnv1aU32(h, readable ? content : 0xDEADBEEFu);
+
+			// Release-visible, for the same reason as the [ARCHIVES] trace: when two peers
+			// disagree on dataID the value alone does not say which file did it, and DEBUG_LOG
+			// is ((void)0) in every shipping preset.
+			fprintf(stderr, "[SIMID] loose %-32s bytes=%-8u crc=%08X%s\n",
+				key.c_str(), bytes, content, readable ? "" : "  <== UNREADABLE");
+		}
+
+		if (truncated)
+			fprintf(stderr, "[SIMID] loose TRUNCATED at %u files - the allow-list matched more than expected\n",
+				(UnsignedInt)SIMID_LOOSE_MAX_FILES);
+		fflush(stderr);
+	}
+	catch (...)
+	{
+		// Same contract as everything else here: never escape into GameEngine::init's
+		// catch (...), which would kill startup.
+		return SIMID_LOOSE_FAILED;
+	}
+
+	// Keep the sentinel unambiguous. One digest in 2^32 would otherwise claim the scan
+	// had failed, and a peer whose scan really did fail would then be let in.
+	if (h == SIMID_LOOSE_FAILED)
+		h ^= 1u;
+	return h;
+}
+
+// ---------------------------------------------------------------------------
 static SimulationId &mutableInstance( void )
 {
 	static SimulationId s_id = SimulationId();   // zero-initialised, valid == false
@@ -233,6 +412,10 @@ static SimulationId &mutableInstance( void )
 	if (id.valid)
 		return;                                   // idempotent
 
+	// Outside the try below only because it has its own, and because the trace it writes
+	// is wanted even on a path that later fails.
+	const UnsignedInt looseID = computeLooseDataID();
+
 	// Nothing here may escape: this runs inside GameEngine::init's try block and a
 	// throw would reach catch (...) and abort startup. Leaving valid == false fails
 	// safe to "cannot join" rather than to "compatible".
@@ -241,7 +424,11 @@ static SimulationId &mutableInstance( void )
 		id.revision   = (UnsignedInt)GitRevision;
 		id.engineID   = computeEngineID();
 		id.sourceID   = SIMID_SOURCE_DIGEST;
-		id.dataID     = in.iniCRC;
+		// dataID is now "everything the simulation reads as data": the INI CRC AND the
+		// loose simulation-relevant files that never went through the INI parser. Both
+		// components are printed below, because the wire carries only the mixed value and
+		// "which half moved" is the first question a refused join raises.
+		id.dataID     = fnv1aU32(fnv1aU32(fnv1a(FNV_SEED, "SIMID/DATA/2", 12), in.iniCRC), looseID);
 		id.ordinalID  = fnv1aU32(fnv1aU32(FNV_SEED, in.nameKeyBeforeScience), in.nameKeyAfterScience);
 		id.parseID    = computeParseID();
 		id.assetID    = in.archiveFingerprint;
@@ -269,9 +456,11 @@ static SimulationId &mutableInstance( void )
 	// epoch mismatch and a genuine content mismatch look identical from the verdict alone.
 	fprintf(stderr,
 		"[SIMID] local valid=%d rev=%u engine=%08X source=%08X data=%08X ordinal=%08X "
-		"parse=%08X asset=%08X platform=%08X | epoch=%u tag=%08X sizeof(SimIdWire)=%u sizeof(LANMessage)=%u\n",
+		"parse=%08X asset=%08X platform=%08X | data-ini=%08X data-loose=%08X%s "
+		"| epoch=%u tag=%08X sizeof(SimIdWire)=%u sizeof(LANMessage)=%u\n",
 		(int)id.valid, id.revision, id.engineID, id.sourceID, id.dataID, id.ordinalID,
 		id.parseID, id.assetID, id.platformID,
+		in.iniCRC, looseID, (looseID == SIMID_LOOSE_FAILED) ? " (LOOSE SCAN FAILED)" : "",
 		(UnsignedInt)SIMID_EPOCH, (UnsignedInt)SIMID_WIRE_TAG,
 		(UnsignedInt)sizeof(SimIdWire), (UnsignedInt)sizeof(LANMessage));
 	fflush(stderr);
@@ -326,7 +515,14 @@ void SimIdLogMismatch( const char *side, const char *peerAddr, SimIdVerdict verd
 	// dataID and assetID have specific, actionable causes - say them rather than making
 	// the reader rediscover them.
 	if (mine.dataID != peer.dataID)
-		fprintf(stderr, "[SIMID]   dataID is m_iniCRC: the INI file SET or its ORDER differs.\n");
+	{
+		fprintf(stderr, "[SIMID]   dataID mixes m_iniCRC with the loose simulation data digest:\n");
+		fprintf(stderr, "[SIMID]     either the INI file SET or its ORDER differs, or a loose\n");
+		fprintf(stderr, "[SIMID]     simulation file does (Data\\Scripts\\*.scb - missing, extra or edited).\n");
+		fprintf(stderr, "[SIMID]     Compare the 'data-ini=' and 'data-loose=' values in each side's\n");
+		fprintf(stderr, "[SIMID]     startup [SIMID] line to see which half moved, then the per-file\n");
+		fprintf(stderr, "[SIMID]     '[SIMID] loose ...' lines to see which file.\n");
+	}
 	if (mine.assetID != peer.assetID)
 		fprintf(stderr, "[SIMID]   assetID is the mounted-archive fingerprint: the .big set differs.\n");
 	fflush(stderr);

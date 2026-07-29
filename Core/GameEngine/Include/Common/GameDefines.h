@@ -126,8 +126,14 @@
 // trees, Core/Libraries/Include, WWMath, the two game trees' equivalents, and the
 // build configuration under cmake/, triplets/, CMakePresets.json and the vcpkg files).
 // Nothing depends on you remembering to bump it.
+//
+// 2 (29/07/2026): dataID stopped being m_iniCRC alone and became m_iniCRC mixed with a
+// digest of the loose simulation-relevant files (Data\Scripts\*.scb). Bumped so an
+// epoch-1 peer refuses at engineID with ENGINE_DIFFERS - "these are different
+// generations of the check" - instead of at dataID with DATA_DIFFERS, which would have
+// told an honest player their INI files disagreed when in fact only the recipe changed.
 #ifndef SIMID_EPOCH
-#define SIMID_EPOCH (1)
+#define SIMID_EPOCH (2)
 #endif
 
 #ifndef ENABLE_GAMETEXT_SUBSTITUTES

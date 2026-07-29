@@ -113,6 +113,39 @@ const REPLY_BUDGET_PER_SEC = parseNumber(process.env.RELAY_REPLY_BUDGET, 1000);
 // disappears frees its number.
 const WHO_TAG = 'GXWHO';
 const YOU_TAG = 'GXYOU';
+
+// GeneralsX @feature Lobby chat. The lobby screen has a chat box and the relay carried no chat at
+// all, so it was inert.
+//
+//     GXCHT <room> <text>                     client -> relay
+//     GXSAY <room> <senderVirtualIP> <text>   relay -> every OTHER member of that room
+//
+// The sender's identity is supplied by the RELAY, from the registration table, and is never read
+// out of the datagram. This is the whole security design in one sentence: a client that could name
+// itself could name anybody, and an unauthenticated line that is echoed verbatim to seven other
+// players is the ideal place to impersonate the host ("everyone leave and rejoin room X"). Same
+// rule as GXADV, and for the same reason - a chat line is a claim about a room, so it has to come
+// from inside that room.
+//
+// The <room> argument is therefore redundant with the sender's endpoint, and is required anyway: it
+// is the client saying which room it BELIEVES it is in. A mismatch means the client and the relay
+// disagree - a client that just switched rooms, or a forgery - and refusing loudly is better than
+// silently delivering a message into a room the sender did not mean to be in.
+const CHAT_TAG = 'GXCHT';
+const SAY_TAG = 'GXSAY';
+// The datagram bound, generous compared with the text bound below so that an over-long line is
+// TRUNCATED rather than falling through the parser to be treated as a game packet and broadcast raw.
+const MAX_CHAT_LEN = 320;
+// And the text bound. 100 is g_lanMaxChatLength (GameNetwork/LANAPI.h) - what the game's own chat
+// field holds, so nothing that would have been displayed is lost by it.
+const MAX_CHAT_TEXT = 100;
+// Per-member token bucket: a burst for someone typing fast, then a sustained trickle. The bucket
+// lives ON THE MEMBER, so it is bounded by MEMBERS_PER_ROOM x MAX_ROOMS and adds no table of its
+// own - a per-source counter keyed on something the sender chose would be the same unbounded-table
+// bug the room ceiling exists to prevent. An unregistered sender is refused before any state is
+// touched at all, so flooding chat from a stranger allocates nothing.
+const CHAT_BURST = 5;
+const CHAT_REFILL_MS = 2000;
 // The virtual LAN the game believes it is on. Must stay inside 10.0.0.0/8: the join path builds
 // the address it dials with a signed shift, which is undefined behaviour for a first octet >= 128.
 const VIRTUAL_NET_PREFIX = [10, 42, 0];
@@ -307,6 +340,57 @@ function isListRequest(msg) {
 	return msg.length <= LIST_TAG.length + 2 && msg.toString('latin1').trim() === LIST_TAG;
 }
 
+/*
+ * Chat text is scrubbed harder than an advertisement's, and never with a character that could be
+ * mistaken for content. It ends up in two places that both punish raw bytes:
+ *
+ *   - other players' chat widgets, where a control byte is at best garbage;
+ *   - this relay's own log, where a newline forges a whole journalctl line and an ESC can drive a
+ *     terminal escape sequence at whoever is reading `journalctl -fu gxrelay`. That is not
+ *     theoretical here: the relay has already had a log-injection bug from exactly this shape of
+ *     data, which is why sanitizeText exists for GXADV.
+ *
+ * '|' is deliberately KEPT, unlike in an advertisement: there it is a field separator and moving it
+ * would misattribute a map, whereas chat has no delimiter after the sender and a player typing
+ * "a|b" means it. Control bytes and DEL become a space rather than being deleted, so that padding a
+ * word with them cannot silently splice two words together.
+ */
+function sanitizeChat(s) {
+	// eslint-disable-next-line no-control-regex
+	return s.replace(/[\x00-\x1F\x7F]/g, ' ');
+}
+
+/*
+ * A chat line, or null. The text is free-form and may contain spaces, so only the tag and the room
+ * ahead of it are split off.
+ *
+ * Note what is NOT parsed: a sender. See the note by CHAT_TAG - the identity is taken from the
+ * registration table, never from the datagram.
+ */
+function parseChat(msg) {
+	if (msg.length > MAX_CHAT_LEN || msg.length <= CHAT_TAG.length) {
+		return null;
+	}
+
+	const line = msg.toString('latin1');
+	const parts = line.split(' ');
+	if (parts.length < 3 || parts[0] !== CHAT_TAG || !TOKEN_RE.test(parts[1])) {
+		return null;
+	}
+
+	// Everything after "GXCHT <room> " verbatim, so spaces inside the message survive. Sanitise
+	// first and trim afterwards: doing it the other way round leaves a line that ended in control
+	// bytes ending in the spaces they turned into.
+	const text = sanitizeChat(line.slice(CHAT_TAG.length + 1 + parts[1].length + 1))
+		.slice(0, MAX_CHAT_TEXT)
+		.replace(/\s+$/, '');
+	if (text === '') {
+		return null;	// an empty or whitespace-only line is not worth a datagram to seven peers
+	}
+
+	return { room: parts[1], text };
+}
+
 /* An identity request, or null. */
 function parseWhoRequest(msg) {
 	if (msg.length > MAX_REGISTRATION_LEN || msg.length <= WHO_TAG.length) {
@@ -326,7 +410,8 @@ function startRelay(port) {
 	const assigned = new Map();		// room name -> Map("addr:port" -> { id, lastSeen })
 	const stats = { forwarded: 0, bytes: 0, dropped: 0, refused: 0, unrouted: 0, headerless: 0,
 		listed: 0, dupeSuspect: 0, assigned: 0, assignFull: 0, roomsFull: 0, advRefused: 0,
-		listClipped: 0, roomsEvicted: 0, assignEvicted: 0, replyDropped: 0 };
+		listClipped: 0, roomsEvicted: 0, assignEvicted: 0, replyDropped: 0,
+			chat: 0, chatRefused: 0, chatThrottled: 0 };
 	const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
 
 	// Refilling allowance for lobby replies, in datagrams per second. O(1) and global on purpose: a
@@ -718,6 +803,75 @@ function startRelay(port) {
 		adverts.set(adv.room, { ...adv, endpoint: key, lastSeen: now });
 	}
 
+	/*
+	 * Deliver one chat line to the rest of the sender's room.
+	 *
+	 * Three refusals, in this order, and each one matters:
+	 *
+	 *  1. Not registered here. The sender's identity is looked up, never read from the datagram, so
+	 *     an endpoint the relay does not know has no identity to speak under and is dropped before
+	 *     anything is allocated on its behalf.
+	 *  2. Registered, but in a different room than the one it addressed. The client and the relay
+	 *     disagree about where it is; delivering into the room the relay believes would put a
+	 *     message the player wrote for their friends in front of strangers.
+	 *  3. Talking too fast. Per-member bucket, so one player cannot fill seven other players' chat
+	 *     boxes - or the relay's send queue - by looping a datagram.
+	 *
+	 * The text itself is never logged. It is unauthenticated data from the internet, and the value
+	 * of putting it in an operator's journal is far below the cost of having a chat log at all. The
+	 * counters say how much chat there is; nothing says what was in it.
+	 */
+	function chat(line, rinfo) {
+		const key = endpointKey(rinfo.address, rinfo.port);
+		const sender = byEndpoint.get(key);
+		if (!sender || sender.room !== line.room) {
+			stats.chatRefused++;
+			logLimited(`${port}/chat-outsider`,
+				`[${port}] room ${line.room}: REFUSED chat from ${key} - not registered in that room`);
+			return;
+		}
+
+		const now = Date.now();
+		sender.chatTokens = Math.min(CHAT_BURST,
+			(sender.chatTokens ?? CHAT_BURST) + ((now - (sender.chatAt ?? now)) / CHAT_REFILL_MS));
+		sender.chatAt = now;
+		if (sender.chatTokens < 1) {
+			stats.chatThrottled++;
+			logLimited(`${port}/chat-flood`,
+				`[${port}] room ${line.room}: dropping chat from ${sender.id} at ${key} - over `
+				+ `${CHAT_BURST} in a burst / 1 per ${CHAT_REFILL_MS / 1000}s`);
+			return;
+		}
+		sender.chatTokens -= 1;
+
+		// The relay stamps the sender. A client that could name itself could name anybody, and the
+		// obvious abuse of an echoed, unauthenticated line is to speak as the host.
+		const members = rooms.get(sender.room);
+		if (!members) {
+			return;
+		}
+		const buf = Buffer.from(`${SAY_TAG} ${sender.room} ${sender.id} ${line.text}`, 'latin1');
+
+		// Sent like game traffic rather than through reply(): every destination is a peer that
+		// registered ITSELF on this relay, so this cannot be pointed at a forged source address and
+		// RELAY_REPLY_BUDGET - which exists to stop exactly that - does not apply. The bound here is
+		// the per-member bucket above, and the room's own eight-member ceiling. The error callback is
+		// not optional: a bare send() hands the failure to the socket's 'error' handler, which exits
+		// the process and would drop every game on both ports.
+		for (const peer of members.values()) {
+			if (peer === sender || peer.address === null) {
+				continue;
+			}
+			sock.send(buf, peer.port, peer.address, (err) => {
+				if (err) {
+					logLimited(`${port}/chat-failed`,
+						`[${port}] chat to ${endpointKey(peer.address, peer.port)} failed: ${err.message}`);
+				}
+			});
+		}
+		stats.chat++;
+	}
+
 	function sendList(rinfo) {
 		const deadline = Date.now() - ADVERT_TIMEOUT_MS;
 		let allowed = Math.min(MAX_GAMES_PER_LIST, replyAllowance());
@@ -771,6 +925,11 @@ function startRelay(port) {
 		}
 		if (isListRequest(msg)) {
 			sendList(rinfo);
+			return;
+		}
+		const say = parseChat(msg);
+		if (say) {
+			chat(say, rinfo);
 			return;
 		}
 		const who = parseWhoRequest(msg);
@@ -856,7 +1015,8 @@ function startRelay(port) {
 			+ `assigned ${stats.assigned}, assign-full ${stats.assignFull}, `
 			+ `rooms-full ${stats.roomsFull}, advert-refused ${stats.advRefused}, `
 			+ `list-clipped ${stats.listClipped}, rooms-evicted ${stats.roomsEvicted}, `
-			+ `assign-evicted ${stats.assignEvicted}, reply-dropped ${stats.replyDropped}`);
+			+ `assign-evicted ${stats.assignEvicted}, reply-dropped ${stats.replyDropped}, `
+			+ `chat ${stats.chat}, chat-refused ${stats.chatRefused}, chat-throttled ${stats.chatThrottled}`);
 		for (const k of Object.keys(stats)) {
 			stats[k] = 0;
 		}

@@ -67,6 +67,9 @@ GXGAME <room> <hostVirtualIP> <players> <slots> <name>|<map>  relay -> client, o
 GXWHO <room>                                                  client-> relay: who am I here?
 GXYOU <room> <virtualIP>                                      relay -> client: you are 10.42.0.N
 GXYOU <room> -                                                relay -> client: no address free
+
+GXCHT <room> <text>                                           client-> relay: say this
+GXSAY <room> <senderVirtualIP> <text>                         relay -> everyone else in that room
 ```
 
 A game is listed **only while its host keeps advertising**. There is no teardown message and none
@@ -78,6 +81,16 @@ browser.
 players no longer have to agree on them by hand. Assignment is per room — two rooms are separate
 address spaces, and the same client may hold an address in each — sticky per endpoint so a
 retransmitted request does not burn a second slot, and released when the client goes quiet.
+
+`GXCHT` is the lobby chat box. The relay **stamps the sender itself**, from its registration table —
+the line carries no sender field, because a client that could name itself could name anybody, and
+the obvious use of an unauthenticated line echoed to seven other players is to speak as the host.
+The `<room>` argument is the client saying which room it believes it is in; a client that is not
+registered there is refused rather than having its message quietly delivered somewhere it did not
+intend. Text is cut to 100 characters (what the game's own chat field holds), control bytes are
+replaced with spaces, and each player gets a burst of 5 messages then one every two seconds. The
+relay never writes chat text to its log — the counters say how much chat there was, nothing says
+what was in it.
 
 An advertisement is accepted **only from an endpoint registered in the room it advertises**, and it
 cannot overwrite a listing held by a different, still-live endpoint. Without that rule, `GXADV` is
@@ -106,6 +119,12 @@ What the relay does defend, because it is reachable by anyone who can send it a 
   took the relay from 48 MB to 470 MB. Each kind of line now gets a burst of 20 and then one per
   five seconds, with the held-back count appended to the next one. Real volumes are in the periodic
   summary, which is a fixed number of lines however hard anyone pushes.
+- **Anything a client can say is bounded before it is repeated.** Chat is the only place the relay
+  echoes free text from one player to another, so it is length-capped, stripped of control bytes
+  (a newline would forge a line in `journalctl`, an ESC would drive a terminal escape at whoever is
+  reading it), rate-limited per player, and attributed by the relay rather than by the sender. The
+  rate-limit bucket lives on the member record, so it inherits the room's ceiling instead of being
+  a new table keyed on something an attacker chose.
 - **A failed send never takes the relay down.** Every reply carries an error callback, so an
   `ENETUNREACH` while answering a stray datagram is a log line rather than an exit that would drop
   both ports and every game on them.
@@ -302,4 +321,6 @@ four `joined` lines within about five seconds — each machine registers separat
 | `REFUSED advert ... listing is held by ...`      | Two hosts are claiming one room name. The one that got there first keeps it until it goes quiet.                  |
 | `room X: evicted`                                | The room table hit `RELAY_MAX_ROOMS` and gave up its quietest, emptiest room. Almost always a flood of junk names. |
 | `+N more like this were suppressed`              | Log rate limiting. Normal while something is flooding; the real counts are in the periodic summary.                |
+| `REFUSED chat ... not registered in that room`   | Someone chatted into a room they are not in. A client that just switched rooms, or a forgery.                       |
+| `dropping chat from 10.42.0.N`                   | That player is over the chat rate limit. Normal for a moment if someone holds a key; sustained means a flood.       |
 | `dropping ... over N lobby replies/s`            | The lobby reply ceiling. Legitimate browsing never reaches it — assume a forged source address is being reflected. |
