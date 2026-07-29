@@ -482,6 +482,46 @@ void NetworkDirectConnectInit( WindowLayout *layout, void *userData )
 	comboboxRemoteIP = TheWindowManager->winGetWindowFromId( nullptr,	comboboxRemoteIPID);
 	staticLocalIP = TheWindowManager->winGetWindowFromId( nullptr, staticLocalIPID);
 
+	// GeneralsX @feature Matchmaking. Relabel the screen when it is a game browser.
+	//
+	// The Online button opens this layout, so a player who clicks Online is shown a screen that
+	// says "Remote IP" over a list of games and "Local IP" over an address that is not on any
+	// interface. Both are leftovers from when this screen existed for typing an address at a
+	// friend, and both read as something being broken.
+	//
+	// Done at runtime rather than by editing the layout because the .wnd lives inside a .big -
+	// retitling it properly means repacking an archive, which is a much bigger commitment than the
+	// wording is worth while the real lobby screen is still to come.
+	//
+	// Only when a relay is actually configured: on a plain LAN this screen still IS direct
+	// connect by IP, and the original wording is correct there.
+	{
+		Transport *labelTransport = (TheLAN != nullptr) ? TheLAN->getTransport() : nullptr;
+		if (labelTransport != nullptr && labelTransport->isRelayEnabled())
+		{
+			static const struct { const char *control; const char *key; const WideChar *fallback; }
+			relabels[] =
+			{
+				{ "NetworkDirectConnect.wnd:StaticWindowLabel",          "GUI:OnlineGames",     L"ONLINE" },
+				{ "NetworkDirectConnect.wnd:StaticRemoteIPDescription",  "GUI:AvailableGames",  L"Games" },
+				{ "NetworkDirectConnect.wnd:StaticLocalIPDescription",   "GUI:YourIdentity",    L"You" },
+			};
+
+			for (Int i = 0; i < (Int)(sizeof(relabels) / sizeof(relabels[0])); ++i)
+			{
+				GameWindow *label = TheWindowManager->winGetWindowFromId(
+					nullptr, TheNameKeyGenerator->nameToKey(relabels[i].control));
+				if (label == nullptr)
+					continue;	// a layout without this control is not an error, just older
+
+				// FETCH_OR_SUBSTITUTE so a translation can exist later without another code change;
+				// no .csf carries these keys today, so the literal is what shows.
+				GadgetStaticTextSetText(label,
+					TheGameText->FETCH_OR_SUBSTITUTE(relabels[i].key, relabels[i].fallback));
+			}
+		}
+	}
+
 //	// animate controls
 //	TheShell->registerWithAnimateManager(buttonBack, WIN_ANIMATION_SLIDE_LEFT, TRUE, 800);
 //	TheShell->registerWithAnimateManager(buttonHost, WIN_ANIMATION_SLIDE_LEFT, TRUE, 600);
