@@ -1,0 +1,65 @@
+Map transfer - BLOCKED, and not by the relay - session 7, 2026-07-29
+=====================================================================
+
+Todo 30 wanted the unicast map-transfer path exercised over the relay, since every match so far
+used a built-in map both peers already had. The path could not be proven, because MAP TRANSFER
+DOES NOT WORK IN HEADLESS AT ALL - with or without a relay in the picture.
+
+WHAT IT TAKES TO EVEN ATTEMPT THIS (two dead ends first)
+--------------------------------------------------------
+1. There are no loose maps on any machine. Every map lives inside MapsZH.big, so a map from the
+   archive is present on every peer by definition and can never be the missing one. A BIG reader
+   was written (tools: bigtool, 299 entries) to extract one and install it loose under a new name.
+
+2. RENAMING A STOCK MAP IS NOT ENOUGH, and it fails silently in the most misleading way. A map is
+   identified by CRC and size, not by name. The renamed copy still matched the alpine assault every
+   peer holds in MapsZH.big (crc=DEA9E8E4 size=275491), so the joiner resolved it locally, no
+   transfer was attempted, and the run ended with both peers simulating 600 frames byte-identically
+   with 599 distinct values. It looked exactly like a pass. It proved nothing.
+
+   Padding the file gives it a CRC and size no peer can hold (crc=A4C9318A size=275509). The engine
+   reads the EAR header for the payload length and ignores the tail, so the map still loads. That
+   is what finally forced a real transfer attempt.
+
+3. A loose map is also not addressable like a built-in one. Maps in MapsZH.big are cached under a
+   relative key ("maps\alpine assault\alpine assault.map"); a map in the user data dir is cached
+   under its FULL, LOWERCASED ABSOLUTE PATH. Passing the relative form gives "is not in the map
+   cache", the host aborts before the lobby starts, and the joiner reports join failed code 1
+   (RET_TIMEOUT) - a timeout with nothing to do with the network.
+
+THE ACTUAL RESULT
+-----------------
+With a genuinely missing map, the joiner detects it correctly and the transfer then fails:
+
+    [GXLAN] chat: You do not have the map gxcustom.map. It will be transferred to you at game start
+    [GXLAN] chat: Unable to transfer the map. The game cannot start
+    [GXLAN] game did not start - the map is missing or could not be transferred
+
+The host is NOT blocked by this. It logs "game starting", simulates its full 370 frames alone with
+the AI, and only stops when the joiner leaves. So the host never waited for a transfer at all -
+its transfer mask was empty, i.e. it believed the joiner already had the map, while the joiner sat
+waiting for a file that was never sent.
+
+IT IS NOT THE RELAY. This was checked rather than assumed: the same scenario was run on a PLAIN LAN
+with no relay in it - two namespaces on one veth L2 segment, 10.99.0.1 and 10.99.0.2, Options.ini
+with no RelayAddress at all - and the failure is character-for-character identical, including the
+host running 371 frames alone. Both transcripts are in relay-maptransfer-failure.txt.
+
+So GXR1 unicast routing is NOT implicated, and equally NOT exercised: the transfer never reaches
+the wire, so the path the header was added for remains untested.
+
+WHERE IT LIKELY BREAKS, STATED AS A LEAD AND NOT A FINDING
+----------------------------------------------------------
+FileTransfer.cpp DoAnyMapTransfers builds its mask from slots that are human and !hasMap, then
+drives the whole transfer from a UI object: TheShell->hideShell(), a MapTransferLoadScreen, and a
+loop that pumps ls->update()/ls->processProgress() while waiting on
+TheNetwork->getFileTransferProgress(). Headless has a shell but does not drive that load screen.
+Whether the empty host-side mask is a hasMap bookkeeping problem or a consequence of the UI-driven
+loop was not determined here.
+
+THE DECISIVE NEXT STEP
+----------------------
+Run the same missing-map join with a UI client (macOS), where MapTransferLoadScreen genuinely
+exists and is pumped. That separates "headless cannot drive the transfer" from "map transfer is
+broken for everyone". Until then, todo 30 stays open and the honest status is: the transfer path
+is blocked upstream of the relay, and nothing is known about it over the relay.

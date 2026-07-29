@@ -1,0 +1,28 @@
+=== OVER THE RELAY (maptransfer-run3) ===
+[GXLAN] joined game
+[GXLAN] chat: You do not have the map gxcustom.map. It will be transferred to you at game start
+[GXLAN] a player left
+[GXLAN] chat: Unable to transfer the map. The game cannot start
+[GXLAN] game did not start - the map is missing or could not be transferred
+[GXLAN] aborting: game did not start - the map is missing or could not be transferred
+
+host:
+[GXLAN] starting match
+[GXLAN] game starting
+[GXLAN] game over at frame 370
+[GXLAN] simulated 370 frames
+[GXLAN] a player left
+
+=== PLAIN LAN, NO RELAY (lanmt) ===
+[GXLAN] joined game
+[GXLAN] chat: You do not have the map gxcustom.map. It will be transferred to you at game start
+[GXLAN] a player left
+[GXLAN] chat: Unable to transfer the map. The game cannot start
+[GXLAN] game did not start - the map is missing or could not be transferred
+[GXLAN] aborting: game did not start - the map is missing or could not be transferred
+
+host:
+[GXLAN] game starting
+[GXLAN] game over at frame 370
+[GXLAN] simulated 370 frames
+[GXLAN] a player left

@@ -37,8 +37,13 @@
 
 set -uo pipefail
 
-SRC_MAP="${SRC_MAP:-Maps\\Killing Fields\\Killing Fields.map}"
+# Source map defaults to one whose AI actually moves. This matters: -lanai on a map with no
+# skirmish scripts produces a frozen simulation (4 distinct CRC values in 1500 frames on killing
+# fields, 1499 on alpine assault), and then the CRC half of this test proves nothing even though
+# the file transfer half is fine.
+SRC_MAP="${SRC_MAP:-Maps\\Alpine Assault\\Alpine Assault.map}"
 CUSTOM="${CUSTOM:-gxcustom}"
+AI="${AI:-Hx1}"
 FRAMES="${FRAMES:-600}"
 GAME="${GAME:-/root/gamedata}"
 RELAY_IP="${RELAY_IP:-163.5.210.131}"
@@ -75,6 +80,16 @@ done
 
 python3 "$BIGTOOL" "$GAME/MapsZH.big" extract "$SRC_MAP" "$HOST_MAPS/$CUSTOM.map" ||
 	die "could not extract $SRC_MAP"
+
+# RENAMING A STOCK MAP IS NOT ENOUGH, and the failure is silent. A map is identified by CRC and
+# size, not by name, so an extracted stock map still matches the copy every peer already has inside
+# MapsZH.big: the joiner resolves it locally, no transfer is attempted, and the run still ends with
+# both peers simulating the same 600 frames byte-identically. It looks exactly like a pass.
+#
+# Padding the file gives it a CRC and size no peer can already hold, which is what forces the
+# transfer. The engine reads the EAR header for the real payload length and ignores the tail, so
+# the map still loads - verified: stock crc=DEA9E8E4 size=275491, padded crc=C8F6A91C size=275517.
+printf 'GXTESTPAD_%s' "$CUSTOM" >> "$HOST_MAPS/$CUSTOM.map"
 HOST_MAP_MD5="$(md5sum "$HOST_MAPS/$CUSTOM.map" | cut -d' ' -f1)"
 HOST_MAP_SIZE="$(stat -c %s "$HOST_MAPS/$CUSTOM.map")"
 say "host has $CUSTOM.map  size=$HOST_MAP_SIZE md5=$HOST_MAP_MD5"
@@ -83,9 +98,25 @@ say "host has $CUSTOM.map  size=$HOST_MAP_SIZE md5=$HOST_MAP_MD5"
 # happens looks exactly like a transfer that worked.
 [ -e "$JOIN_MAPS/$CUSTOM/$CUSTOM.map" ] && die "joiner already has the map - test would prove nothing"
 say "joiner has no $CUSTOM.map (verified)"
+
+# And the same assertion against the archive, which is where the first version of this test went
+# wrong: the joiner does not need a loose copy if MapsZH.big holds one with the same CRC and size.
+if python3 "$BIGTOOL" "$GAME/MapsZH.big" list | grep -q " $HOST_MAP_SIZE  "; then
+	say "NOTE: an archive entry shares this size - relying on the CRC pad to force the transfer"
+fi
 say ""
 
-MAPARG="maps\\$CUSTOM\\$CUSTOM.map"
+# A loose map is NOT addressable the way a built-in one is. Maps inside MapsZH.big are cached under
+# a relative key - "maps\alpine assault\alpine assault.map" - but a map in the user data dir is
+# cached under its FULL, LOWERCASED absolute path:
+#
+#   available: /root/.../home0/generalsx/generalszh/maps/gxcustom/gxcustom.map
+#
+# so passing the relative form gets "is not in the map cache", the host aborts before the lobby
+# starts, and the joiner reports join failed code 1 (RET_TIMEOUT) - a timeout that has nothing to do
+# with the network. Address it exactly as the cache lists it.
+MAPARG="$(printf '%s' "$HOST_MAPS/$CUSTOM.map" | tr '[:upper:]' '[:lower:]')"
+say "map key: $MAPARG"
 
 launch() {	# launch <index> <home> <netns> <name> <extra args...>
 	local i="$1" home="$2" ns="$3" nm="$4"; shift 4
@@ -100,7 +131,8 @@ launch() {	# launch <index> <home> <netns> <name> <extra args...>
 
 ROOM=""
 say "=== host, with the custom map ==="
-HOST_PID="$(launch 0 "$HOST_HOME" gx gxhost -lanhost maptransfer -lanwait 1 -lanmap "$MAPARG")"
+HOST_PID="$(launch 0 "$HOST_HOME" gx gxhost -lanhost maptransfer -lanwait 1 \
+	-lanmap "$MAPARG" ${AI:+-lanai "$AI"})"
 for _ in $(seq 1 60); do
 	ROOM="$(grep -ao "in room [a-z0-9]*" "$OUT/peer0.err" 2>/dev/null | head -1 | awk '{print $3}')"
 	[ -n "$ROOM" ] && break
