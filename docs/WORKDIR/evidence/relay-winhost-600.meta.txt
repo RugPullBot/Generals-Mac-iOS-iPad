@@ -1,0 +1,42 @@
+=== Windows host, first time ever ===
+[SIMID] local valid=1 rev=2171 engine=4D31F2F2 source=6A9BFF78 data=FEAAE3F3 ordinal=9F43F7B5 parse=CD8F767F asset=8E504171 platform=7480F925 | epoch=1 tag=53494431 sizeof(SimIdWire)=36 sizeof(LANMessage)=471
+[GXLAN] relay assigned us 10.42.0.1 in room g3d6cawc432osr
+[GXLAN] relay mode: local identity is the virtual address 10.42.0.1 (relay 163.5.210.131, room g3d6cawc432osr)
+[GXLAN] hosted game created
+[GXLAN] map set to maps\alpine assault\alpine assault.map (crc=DEA9E8E4 size=275491)
+[GXLAN] waiting for 1 peer(s) to accept
+[GXLAN] accept from 10.42.0.2 = 1
+[GXLAN] starting match
+[GXLAN] simulated 600 frames
+
+=== result ===
+windows frames 600, linux joiner frames 600
+md5 both        c2d32eda10edb1db18db6e5a9eb99d66
+cmp             IDENTICAL
+differing       0 (compared on the CRC value column, $3 vs $6)
+distinct        599 of 600 - the AI was active (alpine assault)
+
+=== what is new here ===
+Windows had only ever been a JOINER. This is Windows running the -lanhost path: it generated
+its own room token (g3d6cawc432osr), was relay-ASSIGNED 10.42.0.1 with no LocalVirtualIP
+configured, advertised, accepted a peer and drove the match.
+
+Windows SimID observed at RUNTIME for the first time - the state doc listed it as built from
+2e226bf3a but never confirmed live:
+  rev=2171 source=6A9BFF78 platform=7480F925
+source matches macOS and Linux (6A9BFF78) exactly; platform differs, as it must.
+
+=== the exit code, stated plainly ===
+EXIT=-1073741819 = 0xC0000005, an access violation. This is the KNOWN pre-existing crash at the
+END of a headless run, already recorded as still-open: it happens after every frame and every CRC
+has been written, which is why the CRC stream is the verdict and the exit code is not gated on.
+Not a new fault and not fixed here.
+
+=== two invocation traps, both silent ===
+generalszh.exe is a WINDOWS-subsystem binary, so PowerShell does not wait for it - only
+Start-Process -Wait blocks. CNC_GENERALS_ZH_PATH is mandatory; without it the engine finds no data
+and hangs having written ~1239 bytes of stderr.
+Additionally, the map argument contains BOTH spaces and backslashes and does not survive
+bash -> ssh -> PowerShell quoting: it arrives split, and PowerShell reports "A positional parameter
+cannot be found that accepts argument 'maps\alpine'". Run it from a .ps1 on the box rather than
+building the command line through ssh.
