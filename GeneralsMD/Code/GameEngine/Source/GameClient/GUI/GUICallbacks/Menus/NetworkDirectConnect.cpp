@@ -187,10 +187,18 @@ void PopulateRemoteIPComboBox()
 			// The room rides in the text as well as in the snapshot below - see the note by
 			// s_listedRoom. It is inside the parentheses so the row still reads as one unit, and
 			// after the address so JoinDirectConnectGame's split on '(' is unaffected.
+			// Field order is chosen for a box that is too narrow for the whole row. A combo box
+			// scrolled to the end shows the TAIL, so the tail has to be the part a human picks
+			// by - the map, the player count and who is hosting. The address and the room token
+			// are machine-readable and go first, where being clipped costs nothing: the address
+			// is recovered by parsing (the split is on '(') and the room by strrchr on '#'.
+			//
+			// Before this the row ended "...ht flame  #gxtest-f96603c4)", which is the least
+			// useful possible slice of it.
 			UnicodeString listing;
-			listing.format(L"%d.%d.%d.%d (%ls  %d/%d  %ls  #%ls)",
+			listing.format(L"%d.%d.%d.%d (#%ls  %ls  %d/%d  %ls)",
 				PRINTF_IP_AS_4_INTS(game->hostVirtualIP),
-				wideName.str(), game->players, game->slots, wideMap.str(), wideRoom.str());
+				wideRoom.str(), wideMap.str(), game->players, game->slots, wideName.str());
 			GadgetComboBoxAddEntry(comboboxRemoteIP, listing, white);
 
 			if (s_listedCount < Transport::MAX_RELAY_LISTINGS)
