@@ -94,7 +94,12 @@ void PopulateRemoteIPComboBox()
 	// saved history until the first join. A host does not need it set at all. Routing no longer
 	// reads it - every destination now comes from the slot list, like it would on a LAN.
 	OptionPreferences prefs;
-	const Bool relayMode = !prefs.getRelayAddress().isEmpty() && (prefs.getLocalVirtualIP() != 0);
+
+	// Ask the TRANSPORT whether relay mode is on, not the preferences file. Since the relay
+	// assigns identities, LocalVirtualIP is usually absent now, and keying off it here would
+	// silently hide the game list on exactly the setups the assignment was built for.
+	Transport *relayTransport = (TheLAN != nullptr) ? TheLAN->getTransport() : nullptr;
+	const Bool relayMode = (relayTransport != nullptr) && relayTransport->isRelayEnabled();
 	const UnsignedInt peerVirtualIP = prefs.getPeerVirtualIP();
 	UnicodeString peerEntry;
 
@@ -114,7 +119,9 @@ void PopulateRemoteIPComboBox()
 				continue;
 
 			// Do not offer our own game - a host browsing its own lobby would be dialling itself.
-			if (game->hostVirtualIP == prefs.getLocalVirtualIP())
+			// Compare against the identity actually in use, which is normally relay-assigned and
+			// therefore not in the preferences file at all.
+			if (TheLAN != nullptr && game->hostVirtualIP == TheLAN->GetLocalIP())
 				continue;
 
 			UnicodeString wideName, wideMap;
@@ -378,8 +385,38 @@ void NetworkDirectConnectInit( WindowLayout *layout, void *userData )
 		// 10.42.0.1 and 10.42.0.2 wherever the machines physically are. The interface enumeration
 		// below must be skipped entirely, because the virtual address is on no interface and the
 		// "the IP we had no longer exists" fallback would replace it with a real one.
-		const UnsignedInt virtualIP = prefs.getLocalVirtualIP();
-		const Bool relayMode = !prefs.getRelayAddress().isEmpty() && (virtualIP != 0);
+		// GeneralsX @feature Matchmaking. Ask the relay to allocate our address rather than reading
+		// a hand-written one. This has to happen HERE, before SetLocalIP below, because
+		// LANGameInfo snapshots the local IP at construction and AmIHost and slot matching read
+		// that snapshot - an identity that lands later reaches nothing that matters.
+		//
+		// Falls back to the configured LocalVirtualIP so hand-set setups and LAN play are
+		// unchanged; relay mode simply stays off if neither produces an address.
+		const AsciiString relayHost = prefs.getRelayAddress();
+		UnsignedInt virtualIP = 0;
+		if (!relayHost.isEmpty())
+		{
+			AsciiString room = prefs.getRelayRoom();
+			if (room.isEmpty())
+				room = "default";
+
+			UnsignedInt assignedIP = 0;
+			if (Transport::requestRelayIdentity(relayHost.str(), room.str(), assignedIP))
+			{
+				Transport::setAssignedIdentity(room.str(), assignedIP);
+				virtualIP = assignedIP;
+				DEBUG_LOG(("NetworkDirectConnectInit - relay assigned %d.%d.%d.%d in room '%s'",
+					PRINTF_IP_AS_4_INTS(virtualIP), room.str()));
+			}
+			else
+			{
+				virtualIP = prefs.getLocalVirtualIP();
+				DEBUG_LOG(("NetworkDirectConnectInit - relay did not assign an identity; falling back to LocalVirtualIP %d.%d.%d.%d",
+					PRINTF_IP_AS_4_INTS(virtualIP)));
+			}
+		}
+
+		const Bool relayMode = !relayHost.isEmpty() && (virtualIP != 0);
 
 		if (relayMode)
 		{
