@@ -1,156 +1,134 @@
-# Plan: 8-player crossplay through the relay
+# Plan: public crossplay through the relay
 
-**Goal:** a full 8-slot lobby playing together across **iOS, iPadOS, macOS and Windows x64**,
-through the relay, off-LAN. Linux is the *server* platform, not a client target.
+**Goal:** strangers on **iOS, iPadOS, macOS and Windows x64** find each other in a browser, fill an
+8-slot lobby and play, off-LAN, with nothing hand-configured. Linux is the *server* platform, not a
+client target.
 
-Status of the ground beneath this: the sim is proven identical across macOS/Linux (800 frames solo,
-byte for byte) and macOS/Windows (3000 frames LAN). A full match now runs mac↔linux over the relay,
-1200 frames identical with 1200 distinct CRCs. So determinism is not the risk here; **peer identity
-is**.
-
-## What actually blocks 8 players
-
-**1. The relay caps a room at two, and evicts.**
-`tools/relay/relay.js:36` `MEMBERS_PER_ROOM = 2`, and a third registration does not get refused —
-`relay.js:98` evicts the least-recently-seen member to make space. So player 3 silently kicks
-player 1 off the relay. Everything else about the relay is already N-ready: `forward()` loops over
-every member and skips only the sender.
-
-**2. The client collapses every peer into one identity. This is the real work.**
-`Transport.cpp` stamps every relayed datagram as coming from `m_peerVirtualIP` — a single
-configured address — in both the live path and the latency-sim path. The comment states the
-assumption outright: *"Only two machines can be in a room, so the peer is unambiguous."* With 8
-players every packet would be attributed to the same peer and the lobby cannot tell who sent what.
-
-**3. Nothing tells the relay who a packet is FOR.**
-In relay mode the client overwrites the destination with the relay's address, so the relay can only
-broadcast to the whole room. Fine for lockstep command traffic, wrong for the unicast paths — join
-handshake, map transfer — where 7 peers would receive traffic addressed to someone else.
-
-## Design
-
-Give the relay a real (src, dst) to work with, by prepending a small header **outside** the game
-payload. The relay stays payload-blind: it reads only its own header and never parses, decrypts or
-rewrites game bytes.
-
-```
-[ magic 'GXR1' (4) ][ src virtual IP (4) ][ dst virtual IP (4) ][ ...unchanged game datagram... ]
-```
-
-* **Client send:** prepend the header. `dst` is the address the game already chose
-  (`m_outBuffer[i].addr`), `src` is our own virtual IP.
-* **Relay:** look up `dst` in the room. Unicast if it names a member; forward to all others if it is
-  a broadcast address. Never inspect past byte 12.
-* **Client receive:** strip the header and report `src` as the source address, replacing the
-  `m_peerVirtualIP` substitution.
-
-**Why this is small:** every peer already advertises its virtual IP in the slot list, so the game is
-*already* addressing peers by virtual address. The relay becomes an L3 switch for a virtual /24 and
-the layers above keep seeing the two-machine LAN they were written for — extended to eight.
-`PeerVirtualIP` stops being needed for routing; only `LocalVirtualIP` remains as identity.
-
-### The constraint that bites: packet budget
-
-`MAX_UDP_PAYLOAD_SIZE = 1100`, chosen deliberately low because mobile MTUs run 1340-1500 before
-PPPoE/IPv6 encapsulation — i.e. chosen for exactly the iOS/iPadOS clients that are the point of this
-work. The on-wire size is already `length + sizeof(TransportMessageHeader)`, so 12 header bytes
-must come **out of** the payload budget, never on top of it. Adding them naively fragments packets
-on cellular and the failure would look like random desyncs on iPhone only.
-
-## Tasks
-
-- [x] 1. Relay: `MEMBERS_PER_ROOM` 2 -> 8; refuse an over-full room instead of evicting a live
-      player, and log the refusal. Eviction stays only for genuinely timed-out members.
-- [x] 2. Relay: parse the `GXR1` header, unicast on a known `dst`, broadcast on a broadcast `dst`,
-      drop with a counter on an unknown one.
-- [x] 3. Client: prepend the header in `Transport::doSend`, at the socket-write layer so it sits
-      outside the CRC/encryption, the same layer `sendRelayRegistration` already writes at.
-- [x] 4. Client: strip the header in `doRecv` and use `src` as the reported address. **Both** the
-      live path and the `RTS_DEBUG` latency-sim path — they are separate copies today and the
-      existing relay substitution had to be applied twice.
-- [x] 5. Client: reduce the effective payload cap by the header size when relay mode is on, and
-      assert the on-wire size never exceeds `MAX_UDP_PAYLOAD_SIZE`.
-- [x] 6. Drop `PeerVirtualIP` from the routing path; keep `LocalVirtualIP` as identity. Update the
-      relay-mode gate in `initRelay` and `NetworkDirectConnect` accordingly.
-- [x] 7. Update `tools/relay/README.md`: N-player config, and the two footguns found today —
-      the relay and a relay-mode peer cannot share a host, and virtual IPs must be inside 10/8.
-
-## How this gets verified (not "it compiles")
-
-- [ ] 8. **8 peers on the VPS, one per network namespace.** A netns has its own port table, so each
-      peer binds 8086/8088 independently — this is how to test 8 clients without 8 machines, and it
-      is already proven: today's linux peer ran in one. Multi-instance on a single box will NOT
-      work, since `initRelay` disables relay mode for multi-instance clients.
-- [x] 9. Diff all 8 `[GXCRC]` streams pairwise, with the controls that make it mean something:
-      distinct-CRC count (a 3-distinct idle run "passed" today and proved nothing) and the
-      serialised slot list showing the real player mix.
-- [ ] 10. Then the real matrix: macOS + Windows x64 + iPadOS + iOS in one lobby through the relay.
-      Windows needs `C:\dev\GeneralsX` synced (it is ~10 commits behind) and rebuilt; iPad and
-      iPhone need reinstalling, since `sourceID` has moved and a stale build cannot join.
+**Where this stands (2026-07-29, HEAD `508d6c563`):** a human has played a real match — macOS +
+Windows + a headless Linux host, through the relay, over the internet, 14,756 frames, byte-identical
+streams, 14,757 distinct CRC values, zero mismatches. Determinism is not the risk and neither is
+transport. What is left is **matchmaking hygiene, the mobile clients, and the things nobody has
+measured yet.** Full detail in `docs/WORKDIR/STATE_2026-07-29_session6.md`.
 
 ---
 
-# Phase 2: a server list, served by the relay
+# Phase 1: eight peers in a room — DONE except the 8-peer run
 
-**Why this exists:** the Online tab dials `peerchat.gamespy.com` and `gamestats.gamespy.com`.
-GameSpy shut down in 2014, so "CANNOT CONNECT" is the correct result and always will be. There is
-no hostname override in the tree. A server list therefore needs a backend we control, and the relay
-is already most of one — it tracks rooms and knows who is in them. This makes it the third role the
-design doc predicted: NAT relay, desync arbiter, **and** matchmaker.
+- [x] 1. Relay: `MEMBERS_PER_ROOM` 2 → 8; refuse an over-full room instead of evicting a live player,
+      and log the refusal. Eviction stays only for genuinely timed-out members. (`99846529d`)
+- [x] 2. Relay: parse the `GXR1` header, unicast on a known `dst`, broadcast on a broadcast `dst`,
+      drop with a counter on an unknown one. (`99846529d`)
+- [x] 3. Client: prepend the header in `Transport::doSend`, outside the CRC/encryption. (`99846529d`)
+- [x] 4. Client: strip the header in `doRecv` and use `src` as the reported address — both the live
+      path and the `RTS_DEBUG` latency-sim path. (`99846529d`)
+- [x] 5. Client: take the header **out of** `MAX_UDP_PAYLOAD_SIZE` rather than adding to it, on every
+      platform. Also fixed the two-byte receive overrun this exposed. (`99846529d`)
+- [x] 6. Drop `PeerVirtualIP` from the routing path; keep it only as the Direct Connect default.
+      (`99846529d`)
+- [x] 7. `tools/relay/README.md`: N-player config and the two footguns. (`99846529d`)
+- [x] 8. Headless: use the virtual address when a relay is configured, instead of electing an
+      interface address. (`3c2d2a7fa`)
+- [x] 9. Headless: a joiner must re-assert its accept, or two joiners deadlock. (`c353d8f65`)
+- [x] 10. Diff every `[GXCRC]` stream pairwise with the controls that make it mean something —
+      distinct-CRC count and the serialised slot list. Done at 3 peers / 900 frames
+      (`evidence/relay-3peer-900-*`).
+- [ ] 11. **8 peers in one room, one per network namespace on the VPS.** Still the largest untested
+      number: the biggest real game so far is 3. A netns has its own port table so each peer binds
+      8086/8088 independently; multi-instance on one box will not work, since `initRelay` disables
+      relay mode for multi-instance clients on macOS/Linux.
 
-## The thing that shapes the design
+# Phase 2: a server list served by the relay — DONE except the UI proof
 
-Today a room *is* a game: one room token, hardcoded in `Options.ini`, one match. A browsable list
-means **many rooms on one relay**, and a client that can pick one at runtime. So:
+- [x] 12. Relay: track advertisements per room, expire them on the existing sweep, answer `GXLIST`.
+      (`9e6d1e5dd`)
+- [x] 13. Relay: make duplicate virtual IPs within a room **visible** — count identity moves in a
+      window and log loudly. Not a refusal: a real NAT rebind happens once and settles, duplicates
+      flap, and refusing would break a legitimate rebind on a mobile client. (`9e6d1e5dd`)
+- [x] 14. Client: send `GXADV` while hosting, from the registration keepalive, so the list entry and
+      the NAT mapping expire together. (`f44e305d2`)
+- [x] 15. Client: query `GXLIST`, take `GXGAME` replies off the wire in `doRecv` before the packet
+      parser sees them, rebuild the list from scratch per query. (`f44e305d2`)
+- [x] 16. Advertise the **host player's name**, not the LAN game name — that is a 16-char uniqueness
+      token that always truncates away whatever the host asked for. (`873f12cf9`)
+- [x] 17. `-lanlist`, a browser with no UI — the only way to exercise query → reply → parse against
+      the real relay on a machine with no display. (`f44e305d2`, `4e7249af3`)
+- [x] 18. UI: show the relay's game list on the Direct Connect screen. (`25e3212f0`)
+- [x] 19. Windows: stop the multi-instance guard disabling relay mode there. (`15d18ed30`)
+- [ ] 20. **Prove the UI browser.** `evidence/relay-gamelist-browse.txt` is the *headless* path. No
+      committed evidence that the dropdown renders a live list, that picking a row joins, or that a
+      host is correctly absent from its own list.
+- [ ] 21. **Two concurrent games on one relay** — each listed, each joinable, neither seeing the
+      other's traffic. Blocked on task 23; today they would land in the same room.
 
-* The relay has to distinguish an **advertised** (listed) room from a private one, or every private
-  game leaks into the browser.
-* The client has to be able to **change room after startup**. `initRelay` prebuilds the registration
-  datagram once, so this needs a real (small) change rather than a config edit.
+# Phase 3: identities and rooms — half built, ZERO real-match proof
 
-## Protocol — plaintext, same shape as `GXRLY`
+- [x] 22. Relay + client: `GXWHO` / `GXYOU`, sticky per endpoint, excluding already-registered
+      addresses, released on the sweep. Wired into the headless driver, the Direct Connect screen and
+      the relay-mode gate. Covered by `test-lobby.js` 11/11.
+      (`973aed2d4`, `d87460c65`, `6a2b7482e`)
+- [ ] 23. **Wire `Transport::setRelayRoom`. It has zero call sites.** It is implemented, commented as
+      "replaced later by `setRelayRoom` when a game is picked out of the browser", and nothing calls
+      it. `RelayGameListing` parses a `room` field and discards it. Consequence: every client is in
+      `prefs.getRelayRoom()` or the literal `"default"`, so **one relay is one game at a time** and
+      two groups today corrupt each other's lobby. Needs (a) a host generating a unique room token,
+      (b) `GXLIST` returning games across rooms, (c) the browser calling `setRelayRoom` before dialling.
+- [ ] 24. **Play one match with no `LocalVirtualIP` configured on any machine.** The 14,756-frame
+      match ran rev 2157 with addresses allocated *by hand*; assignment landed four commits later and
+      has never been through a lobby. This is the single highest-value next run.
+- [ ] 25. **Click the Online button in a built binary.** `508d6c563` has never been run.
 
-The relay stays payload-blind; these are control datagrams on 8086, recognised by their tag alone.
+# Phase 4: the client matrix
 
-```
-GXADV <room> <hostVirtualIP> <players>/<slots> <name>|<map>   host -> relay, every 5s
-GXLIST                                                        client -> relay
-GXGAME <room> <hostVirtualIP> <players>/<slots> <name>|<map>  relay -> client, one per game
-```
+- [ ] 26. **iPad Air M3** — four commits behind (engine binary 02:45, package 02:46, both before
+      `973aed2d4` at 02:51). `sourceID` has moved, so it cannot join at all, and it predates identity
+      assignment, so it could not matchmake if it could. Rebuild the `ios-vulkan` preset **first**,
+      then `./scripts/build/ios/package-ios-zh.sh --install` over USB — the script does **not** build
+      the engine, it copies whatever binary is already on disk.
+- [ ] 27. **iPhone** — not built, not installed, not tested. iOS is why `MAX_UDP_PAYLOAD_SIZE` is 1100;
+      that constraint has never been exercised on a real cellular link.
+- [ ] 28. **The real matrix in one lobby:** macOS + Windows x64 + iPadOS + iOS through the relay.
+- [ ] 29. Commit a **Windows** CRC stream for a multi-platform played match. Windows was in the
+      14,756-frame match but only macOS and Linux streams were compared.
 
-A room with no `GXADV` in the last interval is simply not listed — no separate teardown, and a host
-that crashes drops off the list on its own.
+# Phase 5: the things nobody has measured
 
-## Tasks
+- [ ] 30. **Map transfer over the relay.** Never tested. Every match so far used the same built-in map
+      already present on both sides. Unicast routing exists specifically for this path.
+- [ ] 31. **Latency, jitter and stall behaviour**, especially with a phone on cellular. Lockstep waits
+      for the slowest peer, so one bad link stalls all eight. No measurement of any kind exists.
+- [ ] 32. **Names, accounts, moderation.** Registration is `GXRLY <room> <virtualIP>` with no auth:
+      whoever knows a room token is in that room. No kick, no ban, no report, no join rate limit.
+- [ ] 33. **The real Online UI.** The Online button opens the Direct Connect layout — no chat, no
+      staging room, no player list. Driving the original screens means reimplementing the GameSpy peer
+      and staging-room objects. Generals Online is the prior art.
 
-- [x] 11. Relay: track advertisements per room, expire them on the existing sweep, answer `GXLIST`.
-- [x] 12. Relay: refuse a **duplicate** virtual IP within a room, the same way a full room is
-      refused. Today two players sharing a `LocalVirtualIP` look to the relay like one member that
-      keeps moving, which is the single most likely way to break a lobby and is currently invisible.
-- [x] 13. Client: `Transport::setRelayRoom()` — rebuild the registration at runtime so a browser
-      selection can switch rooms without an `Options.ini` edit and a restart.
-- [x] 14. Client: send `GXADV` while hosting, from the same place the registration keepalive is
-      sent, so it inherits the NAT-keepalive cadence for free.
-- [ ] 15. Client: query `GXLIST` and populate the **Direct Connect** screen's remote list with live
-      games. Direct Connect, not the Online tab: the Online screens are wired through the GameSpy
-      peer/staging-room objects, and re-pointing them is a far larger job than the browser itself.
-- [ ] 16. Verify: two concurrent games on one relay, each listed, each joinable, neither seeing the
-      other's traffic. Then the 8-man matrix.
+# Phase 6: cleanups that are now more likely to bite
 
-## Known limit of this phase, stated up front
+- [ ] 34. **AWOL players block victory.** `hasSinglePlayerBeenDefeated` (`VictoryConditions.cpp:328`)
+      is purely asset-based and never consults connection state, so "Exit to lobby" leaves your base
+      standing and nobody can win. **CAUTION:** `VictoryConditions::update` calls `p->killPlayer()`, so
+      any fix mutates simulation state and must use state all peers agree on or it desyncs.
+- [ ] 35. Defeated observers are never pulled to the score screen.
+- [ ] 36. Windows exits `0xC0000005` at the **end** of a headless run, after all frames and CRCs are
+      written. Cosmetic today, a real crash regardless.
+- [ ] 37. Extend the data fingerprint to cover loose simulation-relevant files — `.scb` is not INI, so
+      it is outside `m_iniCRC`, and two peers reported identical digests while simulating different
+      games. Turns a silent desync into a refused join.
+- [ ] 38. `SDL3GameEngine::createAudioManager(Bool dummy)` does `(void)dummy;` — headless on Mac/Linux
+      runs the full OpenAL backend. Win32 returns `MilesAudioManagerDummy`; there is no OpenAL dummy.
+- [ ] 39. `Generals/` (base game): no headless CLI, and the `LANEnableStartButton` null-deref fixed in
+      `GeneralsMD/` is still live there.
+- [ ] 40. Terrain draw-window fix is still **not visually verified** — zoom out and look.
 
-`LocalVirtualIP` is still configured per machine. That is fine for a known group of devices and
-**not** fine for public matchmaking between strangers, where two players will eventually both be
-`10.42.0.1`. Task 12 turns that from a silent lobby corruption into a refusal, which is the honest
-interim. Properly fixing it means the relay **assigns** the virtual address on join, and that is a
-deeper change: identity is currently decided before registration and is threaded through
-`LANAPI::m_localIP`, `GameInfo`'s local IP and slot matching. Deliberately not in this phase.
+---
 
-## Risks
+## Risks that have not gone away
 
-* **Protocol break.** The 12-byte header is incompatible with the current 2-player relay. Nothing is
-  released, so this is a clean break, but both ends must ship together.
-* **The mobile packet budget above** is the one that would hide, because it would only show on
-  cellular iOS.
-* **8-way is not 2-way with a bigger number.** Lockstep waits for the slowest peer, so a phone on a
-  bad link stalls all eight. Out of scope here, but it is the next thing that will hurt.
+* **8-way is not 2-way with a bigger number.** Lockstep waits for the slowest peer (task 31).
+* **The mobile packet budget hides.** An oversized packet fragments and presents as a desync that only
+  ever reproduces on cellular. The 12-byte header came out of the 1100-byte budget for this reason;
+  nothing has confirmed it on a real phone.
+* **Maphack is unsolvable in lockstep** — every client must know the whole world to simulate it. Catch
+  it behaviourally by re-simulating replays, not by trying to prevent it.
+* **Never use burstable CPU for the relay.** A throttled sim does not degrade gracefully, it stalls the
+  match for everyone. Budget 30-40% of one *dedicated* core per heavy match.
