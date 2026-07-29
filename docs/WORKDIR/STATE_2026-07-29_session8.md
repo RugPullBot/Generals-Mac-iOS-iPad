@@ -12,13 +12,13 @@ says so. "Not verified" at the bottom is a list of known gaps, not a certificate
 
 | | |
 |---|---|
-| HEAD | `643b48a7c` — **rev 2197** |
-| `origin/main` | `57dc6bbe9` — rev 2196 |
-| unpushed | **1 commit** — `643b48a7c` (task 61) |
+| HEAD | `e9e94fabe` — **rev 2199** |
+| `origin/main` | `e9e94fabe` — **everything is pushed, 0 unpushed** |
+| unpushed | none |
 | dirty | `M references/fbraz3-dxvk` only — untouched all session, still carries its three uncommitted DXVK edits |
 | worktrees | **two, and the second is not this session's.** `.claude/worktrees/nervous-babbage-9d03d2` is on branch `claude/nervous-babbage-9d03d2` at `4d1237692`, a task 49 instrumentation commit that is NOT an ancestor of `main`. See the collision section below before touching task 49. |
 
-**The ZH SimID digest moved twice this session and NOTHING deployed can join HEAD.**
+**The ZH SimID digest moved four times this session and NOTHING deployed can join HEAD.**
 Measured per commit against a clean worktree, not inferred — full table in
 `evidence/simid-digest-by-commit.md`:
 
@@ -27,13 +27,14 @@ Measured per commit against a clean worktree, not inferred — full table in
 | `c72eb8d96` … `060752a15` | `0xB30B651C` | yes — **`060752a15` is the newest commit that still joins** |
 | `4cb42f38e` (diagnostics) | `0x89C01A42` | no |
 | `300f43652` (task 59) | `0xF6E71C2F` | no |
-| `643b48a7c` (task 61, HEAD) | `0xBB5A1FF3` | no |
+| `643b48a7c` (task 61) | `0xBB5A1FF3` | no |
+| `e9e94fabe` (task 49 reconcile, **HEAD**) | `0xD33D97FD` | no |
 
 `G` never moved (`0xE827650A`) — nothing this session touched a `Generals/` path.
 
 **Consequence, and it is the first thing to do next session:** macOS, Linux and Windows are still
 deployed at `c72eb8d96`. **All three must be rebuilt at HEAD together.** They will then agree with
-each other at `0xBB5A1FF3` and none of them will join anything still at `c72eb8d96`. Mixing gives
+each other at `0xD33D97FD` and none of them will join anything still at `c72eb8d96`. Mixing gives
 `SOURCE_DIFFERS` — `engineID` matches (same epoch), `sourceID` does not.
 
 ## What was done
@@ -126,8 +127,8 @@ match" was the overfilled lobby and now says so.
 ## Open work, ranked
 
 **1. Rebuild and redeploy all three desktops at HEAD.** Blocking for everything networked. They are
-at `c72eb8d96`; HEAD is `0xBB5A1FF3`. Rebuild macOS, Linux and Windows *together* — a partial
-rebuild leaves peers that cannot join each other. Push `643b48a7c` first; the Linux and Windows
+at `c72eb8d96`; HEAD is `0xD33D97FD`. Rebuild macOS, Linux and Windows *together* — a partial
+rebuild leaves peers that cannot join each other. Everything is already pushed; the Linux and Windows
 clones sync with `git fetch && git reset --hard origin/main`.
 
 **2. Task 60 — re-run the networked corpus on capacity-8 maps, with `GX_ACTIVITY` set.** This is now
@@ -175,8 +176,10 @@ change.** The two versions are not the same:
 | `ActiveBody.cpp` | +49 | +49 — identical content |
 
 Nothing is lost — the fuller version is on its branch — but `main` now carries a partially-written
-snapshot of it. **Reconcile before doing more task 49 work:** decide whether `main` should take
-`4d1237692`'s version, and note that doing so moves the ZH digest again.
+snapshot of it. **RECONCILED in `e9e94fabe`.** `main` now carries `4d1237692`'s version. It was NOT a plain
+checkout: that branch predates task 59, so taking its `HeadlessMatch.cpp` wholesale would have
+deleted the capacity guard. `W3DModelDraw.cpp` was taken whole; `HeadlessMatch.cpp` was merged by
+hand. The branch itself is untouched and can be deleted once its owner is done with it.
 
 **The rule this produced:** more than one agent may be writing to this tree. Verify edits are still
 on disk immediately before building, gate on the build's own relink rather than its exit code, and
