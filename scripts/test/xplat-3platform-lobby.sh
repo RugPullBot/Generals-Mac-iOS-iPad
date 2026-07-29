@@ -18,6 +18,11 @@
 # cross-platform divergence lived. Three humans idling in a lobby agree trivially; five Hard AI
 # fighting is what makes each frame do different work.
 #
+# But the MAP has to be able to hold them. Filling 8 slots on a 2-player map does not fail loudly:
+# the surplus players get no start position, no Command Center is placed, their AI owns nothing,
+# and the run still reports aiPlayers=5 and completes. The preflight below refuses that case,
+# because it produced a "passing" three-platform result that was really measuring an ambient train.
+#
 # WHY THE LINUX PEER RUNS IN A NAMESPACE
 #
 # The VPS is also the relay host. Relay mode forces a WILDCARD bind, so the game's socket collides
@@ -45,7 +50,7 @@
 # Env:
 #   FRAMES    logic frames             (default 1500)
 #   AI        -lanai spec for the host (default Hx5 - five Hard AI)
-#   MAP       host's map               (default killing fields)
+#   MAP       host's map               (default twilight flame - capacity 8)
 #   VPS       linux peer / relay       (default root@163.5.210.131)
 #   VPS_NETNS netns for the linux peer (default gx)
 #   WIN       windows peer             (default User@192.168.10.89)
@@ -63,12 +68,12 @@ SEED="${SEED:-}"
 # A soak checks the fingerprints once up front; repeating three ~90s probes per iteration would
 # be most of the wall clock and would prove the same thing every time.
 SKIP_FINGERPRINT="${SKIP_FINGERPRINT:-0}"
-# NOT killing fields, which relay-8peer.sh defaults to. Five Hard AI are placed correctly on it
-# (aiPlayers=5, sidesWithScripts=7) and then nothing happens: 1496 of 1500 frames carry the same
-# CRC. The 8-peer run has the same signature on the same map (distinct=3). alpine assault is the
-# map the 7-peer+AI run used, and that one produced 1499 distinct values in 1500 frames. A map
-# where the sim idles makes every peer agree trivially, which is the one result worth nothing.
-MAP="${MAP:-maps\\alpine assault\\alpine assault.map}"
+# Must be a map whose capacity is at least 3 humans + the AI count, or the surplus players get no
+# start position, no Command Center, and their AI owns nothing while still reporting aiPlayers=N.
+# Only three standard maps hold 8: death valley, destruction station, twilight flame (measured -
+# md->m_numPlayers, GameLogic.cpp:882-885). alpine assault is TWO, and every earlier run here used
+# it; its healthy-looking distinct count came from an ambient train, not from the AI.
+MAP="${MAP:-maps\\twilight flame\\twilight flame.map}"
 VPS="${VPS:-root@163.5.210.131}"
 VPS_NETNS="${VPS_NETNS:-gx}"
 WIN="${WIN:-User@192.168.10.89}"
@@ -123,6 +128,36 @@ kill_all
 verify_clean || die "a game is still running somewhere - refusing to start"
 
 [ -x "$MAC_GAME/GeneralsXZH" ] || die "no mac binary at $MAC_GAME/GeneralsXZH"
+
+# ---------------------------------------------------------------------------------------------
+# Map capacity. Measured with md->m_numPlayers (GameLogic.cpp:882-885) by loading each map; see
+# evidence/xplat3-tf-legal-1500.meta.txt. Only three standard maps hold 8 players.
+map_capacity() {
+	case "$1" in
+		*"death valley"*|*"destruction station"*|*"twilight flame"*) echo 8 ;;
+		*"dark mountain"*)                                           echo 4 ;;
+		*"cairo commandos"*)                                         echo 3 ;;
+		*"alpine assault"*|*"bitter winter"*|*"desert fury"*)        echo 2 ;;
+		*"dust devil"*|*"final crusade"*|*"killing fields"*)         echo 2 ;;
+		*) echo 0 ;;
+	esac
+}
+
+AI_COUNT="$(printf '%s' "$AI" | sed -E 's/^[EMHemh][xX]([0-9]+).*/\1/')"
+case "$AI_COUNT" in ''|*[!0-9]*) AI_COUNT=0 ;; esac
+NEED=$(( 3 + AI_COUNT ))
+CAP="$(map_capacity "$MAP")"
+if [ "$CAP" = "0" ]; then
+	say "  WARNING: unknown capacity for '$MAP' - cannot check it holds $NEED players"
+elif [ "$NEED" -gt "$CAP" ]; then
+	die "map '${MAP##*\\}' holds $CAP players but this lobby needs $NEED (3 humans + $AI_COUNT AI).
+       The surplus players would get no start position and their AI would own nothing, and the run
+       would still report aiPlayers=$AI_COUNT and 'pass'. Pick death valley, destruction station or
+       twilight flame, or lower AI."
+else
+	say "  map holds $CAP, lobby needs $NEED - ok"
+fi
+
 ssh -o ConnectTimeout=15 "$VPS" "ip netns list | grep -qw '$VPS_NETNS'" 2>/dev/null ||
 	die "netns '$VPS_NETNS' missing on $VPS - see tools/relay/README.md"
 ssh -o ConnectTimeout=15 "$VPS" 'pgrep -x node >/dev/null' 2>/dev/null ||

@@ -1,0 +1,51 @@
+=== Three platforms, five Hard AI, a LEGAL lobby, and a control that proves the AI moved ===
+
+This supersedes xplat3-5ai-1500 as the headline three-platform result. That run was on alpine
+assault, and alpine assault is a 2-PLAYER map that we filled with 8 players. See
+networked-sim-freeze-diagnosis.md and networked-sim-freeze.meta.txt for how that was found.
+
+Commit   c72eb8d96 (rev 2187, epoch 2) on all three peers
+Map      maps\twilight flame\twilight flame.map  - capacity 8, measured
+Lobby    8 of 8 LEGAL slots: gxlinux (host) + gxmac + gxwin + 5x Computer Hard
+Seed     606060
+Harness  scripts/test/xplat-3platform-lobby.sh
+
+=== result ===
+frames     1500 on each of the three peers
+md5        b29a9b44bd3a5ff68e77aef25f966baa   (all three, CRC value column)
+cmp        IDENTICAL for all three pairs (mac/linux, mac/win, linux/win)
+differing  0
+distinct   1500 of 1500 - every single frame did different work
+AI         aiPlayers=5 computers=7 sides=11 sidesWithScripts=7 skirmishSides=14
+
+=== THE CONTROL, which is the part that matters ===
+
+A high distinct count is NOT by itself evidence that the AI did anything: an ambient mover with no
+player attached will produce one. Alpine assault carries a TrainEngine, and a railroad behaviour
+self-moves every frame and has its transform hashed into the object CRC. So the control is to run
+the same networked match with NO AI at all and see whether the activity disappears.
+
+  networked 2-peer, 300 frames        0 AI          5 Hard AI
+  twilight flame  (capacity 8)        3 distinct    300 distinct     <- AI are the activity
+  alpine assault  (capacity 2)      299 distinct    299 distinct     <- AI contributed NOTHING
+
+On twilight flame the activity vanishes without the AI, so the AI are demonstrably simulating.
+On alpine the number is identical with and without them - it was measuring a train, and every
+alpine-based "the AI were active" claim in this corpus is unsupported.
+
+=== measured map capacities (md->m_numPlayers, GameLogic.cpp:882-885) ===
+
+  death valley          8      cairo commandos       3
+  destruction station   8      alpine assault        2
+  twilight flame        8      bitter winter         2
+  dark mountain         4      desert fury           2
+                               dust devil            2
+                               final crusade         2
+                               killing fields        2
+
+Only three standard maps hold 8 players. Any test that puts more players in a map than it has
+start positions is not testing what it claims to test - the surplus players get no start position,
+no Command Center is placed, and their AI owns nothing while still reporting aiPlayers=N.
+
+This also explains relay-3platform-93017: it ran on twilight flame with 4 players, comfortably
+inside capacity, which is why it produced 93,016 distinct values across ~52 minutes of gameplay.

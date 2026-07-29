@@ -6,14 +6,19 @@
 #
 # The evidence base is lopsided, and the gap is exactly where a sceptic will push.
 #
-#   macOS vs Linux   75,000 frames, 50 matches, 10 maps, varied seeds   (xplat-determinism-soak)
-#   Windows included  ~2,100 frames total: 1500 (xplat3-5ai) + 600 (winhost)
+#   macOS vs Linux    75,000 frames, 50 matches, 10 maps, varied seeds  (xplat-determinism-soak)
+#   Windows, active   ~4,200 frames: xplat3-5ai-1500, xplat-lan-ai-1500, relay-winhost-600,
+#                     relay-win-vs-linux-600   (all recounted from the committed .crc files)
+#   plus              relay-3platform-93017 - 93,017 frames, macOS+Linux+Windows in ONE match,
+#                     all three streams md5 f65722d3252acf0737cb4b0e5ba3f13f, 93,016 distinct.
+#                     On TWILIGHT FLAME, at rev 2162, with 1 AI and 4 players.
 #
-# So "macOS and Linux simulate identically" is backed by volume, and "Windows simulates
-# identically too" is backed by one map and one seed. One clean counterexample is enough to
-# falsify "it's guaranteed to mismatch", and we have that. It is NOT enough to answer "it will
-# desync eventually", which is a claim about the tail. This script closes that gap by running the
-# three-platform match repeatedly across the standard map set with pinned, non-patterned seeds.
+# So the gap is narrower than a frame count alone suggests, but it is still real: only 1500 of
+# those frames have Windows in the same match as BOTH other platforms at the CURRENT revision, on
+# one map with one seed. One clean counterexample falsifies "it's guaranteed to mismatch" and we
+# have several. Neither answers "it desyncs eventually", which is a claim about the tail. This
+# script attacks the tail by running the three-platform match repeatedly with pinned,
+# non-patterned seeds.
 #
 # HOW IT DIFFERS FROM xplat-determinism-soak.sh
 #
@@ -58,6 +63,12 @@ FRAMES="${FRAMES:-1500}"
 AI="${AI:-Hx5}"
 SEED_BASE="${SEED_BASE:-900000}"
 OUT="${OUT:-/tmp/gx-soak3-$(date +%Y%m%d-%H%M%S)}"
+# Restrict the rotation to maps matching this substring. The reason to use it is the networked
+# freeze (evidence/networked-sim-freeze.meta.txt): until that is fixed, only alpine assault
+# actually runs a networked match, so a long-haul run that wants real frames rather than
+# INCONCLUSIVE ones sets ONLY_MAP=alpine. Leave it empty for the full rotation, which is what you
+# want when checking whether the freeze is fixed.
+ONLY_MAP="${ONLY_MAP:-}"
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
@@ -89,6 +100,16 @@ MAPS=(
 	"maps\\final crusade\\final crusade.map"
 	"maps\\twilight flame\\twilight flame.map"
 )
+
+if [ -n "$ONLY_MAP" ]; then
+	FILTERED=()
+	for m in "${MAPS[@]}"; do
+		case "$m" in *"$ONLY_MAP"*) FILTERED+=("$m") ;; esac
+	done
+	[ "${#FILTERED[@]}" -gt 0 ] || die "ONLY_MAP='$ONLY_MAP' matched no map in the rotation"
+	MAPS=("${FILTERED[@]}")
+	say "ONLY_MAP='$ONLY_MAP' -> ${#MAPS[@]} map(s) in rotation"
+fi
 
 say "======================================================================"
 say " three-platform soak: macOS + Linux + Windows, $AI, $ITERATIONS x $FRAMES frames"
