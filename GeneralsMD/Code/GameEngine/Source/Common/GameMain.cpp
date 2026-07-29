@@ -46,6 +46,12 @@ Int GameMain()
 	TheGameEngine = CreateGameEngine();
 	TheGameEngine->init();
 
+	// GXDRAWDBG - TEMPORARY diagnostic sweep for the destroyed-structure rendering bug. REMOVE when fixed.
+	{
+		extern void gxRubbleSweep();
+		gxRubbleSweep();
+	}
+
 	if (!TheGlobalData->m_simulateReplays.empty())
 	{
 		exitcode = ReplaySimulation::simulateReplays(TheGlobalData->m_simulateReplays, TheGlobalData->m_simulateReplayJobs);

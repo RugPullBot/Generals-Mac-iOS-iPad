@@ -64,6 +64,18 @@
 
 #define YELLOW_DAMAGE_PERCENT (0.25f)
 
+// GXDRAWDBG - TEMPORARY diagnostic gate for the destroyed-structure rendering bug. REMOVE when fixed.
+static Bool gxBodyDbgEnabled()
+{
+	static Int s_on = -1;
+	if (s_on < 0)
+	{
+		const char *e = getenv("GX_DRAWDBG");
+		s_on = (e != nullptr && *e != '\0' && *e != '0') ? 1 : 0;
+	}
+	return s_on != 0;
+}
+
 // FORWARD REFERENCES /////////////////////////////////////////////////////////////////////////////
 
 // ------------------------------------------------------------------------------------------------
@@ -986,6 +998,30 @@ void ActiveBody::evaluateVisualCondition()
 	//
 	updateBodyParticleSystems();
 
+	// GXDRAWDBG - TEMPORARY diagnostic for the destroyed-structure rendering bug. REMOVE when fixed.
+	if (gxBodyDbgEnabled() && m_curDamageState == BODY_RUBBLE && draw != nullptr)
+	{
+		AsciiString cond;
+		draw->getModelConditionFlags().buildDescription(&cond);
+		AsciiString flat;
+		for (const char *p = cond.str(); *p != '\0'; ++p)
+			if (*p != '\n') flat.concat(*p);
+		fprintf(stderr, "[DRAWDBG] f=%d RUBBLE-COND id=%d tmpl=%s cond=%s\n",
+			TheGameLogic ? (Int)TheGameLogic->getFrame() : -1,
+			(Int)getObject()->getID(), getObject()->getTemplate()->getName().str(), flat.str());
+	}
+	if (gxBodyDbgEnabled() && m_curDamageState == BODY_RUBBLE)
+	{
+		Int psCount = 0;
+		for (BodyParticleSystem *s = m_particleSystems; s != nullptr; s = s->m_next)
+			++psCount;
+		const Object *o = getObject();
+		fprintf(stderr, "[DRAWDBG] f=%d BODY-RUBBLE id=%d tmpl=%s health=%.1f draw=%s bodyPS=%d\n",
+			TheGameLogic ? (Int)TheGameLogic->getFrame() : -1,
+			(Int)o->getID(), o->getTemplate()->getName().str(), m_currentHealth,
+			draw ? "yes" : "NO", psCount);
+	}
+
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1251,6 +1287,19 @@ void ActiveBody::internalChangeHealth( Real delta )
 	// recalc the damage state
 	BodyDamageType oldState = m_curDamageState;
 	setCorrectDamageState();
+
+	// GXDRAWDBG - TEMPORARY: catch deaths where the visual update is skipped entirely. REMOVE when fixed.
+	{
+		if (gxBodyDbgEnabled() && m_currentHealth <= 0.0f && m_prevHealth > 0.0f)
+		{
+			const Object *o = getObject();
+			fprintf(stderr, "[DRAWDBG] f=%d DIED id=%d tmpl=%s old=%d new=%d underConstruction=%d structure=%d\n",
+				TheGameLogic ? (Int)TheGameLogic->getFrame() : -1,
+				(Int)o->getID(), o->getTemplate()->getName().str(), (Int)oldState, (Int)m_curDamageState,
+				o->getStatusBits().test(OBJECT_STATUS_UNDER_CONSTRUCTION) ? 1 : 0,
+				o->isKindOf(KINDOF_STRUCTURE) ? 1 : 0);
+		}
+	}
 
 	// if our state has changed
 	if( m_curDamageState != oldState )

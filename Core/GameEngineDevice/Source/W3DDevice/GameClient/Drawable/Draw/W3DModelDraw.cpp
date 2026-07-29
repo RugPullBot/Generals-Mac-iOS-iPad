@@ -42,6 +42,7 @@
 #include "Common/GlobalData.h"
 #include "Common/PerfTimer.h"
 #include "Common/RandomValue.h"
+#include "Common/ThingFactory.h"
 #include "Common/ThingTemplate.h"
 #include "Common/GameLOD.h"
 #include "Common/Xfer.h"
@@ -74,6 +75,157 @@ static inline Bool isValidTimeToCalcLogicStuff()
 {
 	return (TheGameLogic && TheGameLogic->isInGameLogicUpdate()) ||
 		(TheGameState && TheGameState->isInLoadGame());
+}
+
+//-------------------------------------------------------------------------------------------------
+// GXDRAWDBG - TEMPORARY diagnostic instrumentation for the destroyed-structure rendering bug.
+// Enabled only when GX_DRAWDBG is set in the environment; costs one branch otherwise.
+// REMOVE once the root cause is fixed.
+//-------------------------------------------------------------------------------------------------
+static Bool gxDrawDbgEnabled()
+{
+	static Int s_on = -1;
+	if (s_on < 0)
+	{
+		const char *e = getenv("GX_DRAWDBG");
+		s_on = (e != nullptr && *e != '\0' && *e != '0') ? 1 : 0;
+	}
+	return s_on != 0;
+}
+
+//-------------------------------------------------------------------------------------------------
+// buildDescription() emits ",\n" between bit names; flatten so one event stays on one log line.
+static AsciiString gxFlatDesc(const ModelConditionFlags &f)
+{
+	AsciiString s;
+	f.buildDescription(&s);
+	AsciiString out;
+	for (const char *p = s.str(); *p != '\0'; ++p)
+	{
+		if (*p != '\n')
+			out.concat(*p);
+	}
+	if (out.isEmpty())
+		out = "<none>";
+	return out;
+}
+
+//-------------------------------------------------------------------------------------------------
+// m_description only exists in debug builds, so describe a state by its "yes" condition sets.
+static AsciiString gxStateDesc(const ModelConditionInfo *info)
+{
+	if (info == nullptr)
+		return AsciiString("<null>");
+
+	AsciiString out;
+	for (Int i = 0; i < (Int)info->m_conditionsYesVec.size(); ++i)
+	{
+		if (i > 0)
+			out.concat('|');
+		out.concat(gxFlatDesc(info->m_conditionsYesVec[i]));
+	}
+	if (out.isEmpty())
+		out = "<default>";
+	out.concat('/');
+	out.concat(info->m_modelName.isEmpty() ? "<nomodel>" : info->m_modelName.str());
+	return out;
+}
+
+//-------------------------------------------------------------------------------------------------
+// GXDRAWDBG - TEMPORARY static sweep over the loaded game data: for every W3DModelDraw module of
+// every ThingTemplate, ask what model it would show at RUBBLE alone versus RUBBLE plus one other
+// condition flag, and report every case where the extra flag steals the model away from the
+// rubble state. REMOVE once the root cause is fixed.
+//-------------------------------------------------------------------------------------------------
+void gxRubbleSweep()
+{
+	const char *e = getenv("GX_RUBBLESWEEP");
+	if (e == nullptr || *e == '\0' || *e == '0')
+		return;
+	if (TheThingFactory == nullptr)
+		return;
+
+	Int hits = 0;
+	for (const ThingTemplate *t = TheThingFactory->firstTemplate(); t != nullptr; t = t->friend_getNextTemplate())
+	{
+		const ModuleInfo &mi = t->getDrawModuleInfo();
+		for (Int m = 0; m < mi.getCount(); ++m)
+		{
+			const ModuleData *md = mi.getNthData(m);
+			const W3DModelDrawModuleData *d = md ? md->getAsW3DModelDrawModuleData() : nullptr;
+			if (d == nullptr || d->m_conditionStates.empty())
+				continue;
+
+			ModelConditionFlags rubbleOnly;
+			rubbleOnly.set(MODELCONDITION_RUBBLE);
+			const ModelConditionInfo *base = d->findBestInfo(rubbleOnly);
+			if (base == nullptr)
+				continue;
+
+			// Case A: RUBBLE alone does not even land on a rubble state - the module has no rubble
+			// art at all, so a destroyed object keeps rendering whatever it was showing before.
+			{
+				Bool baseIsRubbleState = FALSE;
+				for (Int y = 0; y < (Int)base->m_conditionsYesVec.size(); ++y)
+				{
+					if (base->m_conditionsYesVec[y].test(MODELCONDITION_RUBBLE))
+					{
+						baseIsRubbleState = TRUE;
+						break;
+					}
+				}
+				if (!baseIsRubbleState && (!base->m_animations.empty() || !base->m_particleSysBones.empty()))
+				{
+					fprintf(stderr, "[RUBBLESWEEP-NOART] tmpl=%s tag=%s rubbleGets=[%s] anims=%d psBones=%d\n",
+						t->getName().str(),
+						KEYNAME(md->getModuleTagNameKey()).str(),
+						gxStateDesc(base).str(),
+						(Int)base->m_animations.size(),
+						(Int)base->m_particleSysBones.size());
+				}
+			}
+
+			for (Int f = 0; f < MODELCONDITION_COUNT; ++f)
+			{
+				if (f == MODELCONDITION_RUBBLE)
+					continue;
+
+				ModelConditionFlags both;
+				both.set(MODELCONDITION_RUBBLE);
+				both.set((ModelConditionFlagType)f);
+				const ModelConditionInfo *other = d->findBestInfo(both);
+				if (other == nullptr || other == base)
+					continue;
+
+				// Only interesting when the winning state is not itself a rubble state: that is the
+				// case where a destroyed object goes on rendering its pre-destruction model.
+				Bool otherIsRubbleState = FALSE;
+				for (Int y = 0; y < (Int)other->m_conditionsYesVec.size(); ++y)
+				{
+					if (other->m_conditionsYesVec[y].test(MODELCONDITION_RUBBLE))
+					{
+						otherIsRubbleState = TRUE;
+						break;
+					}
+				}
+				if (otherIsRubbleState)
+					continue;
+
+				ModelConditionFlags justF;
+				justF.set((ModelConditionFlagType)f);
+				++hits;
+				fprintf(stderr, "[RUBBLESWEEP] tmpl=%s tag=%s extra=%s rubbleWants=[%s] butGets=[%s] anims=%d psBones=%d\n",
+					t->getName().str(),
+					KEYNAME(md->getModuleTagNameKey()).str(),
+					gxFlatDesc(justF).str(),
+					gxStateDesc(base).str(),
+					gxStateDesc(other).str(),
+					(Int)other->m_animations.size(),
+					(Int)other->m_particleSysBones.size());
+			}
+		}
+	}
+	fprintf(stderr, "[RUBBLESWEEP] done: %d case(s)\n", hits);
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -2114,6 +2266,52 @@ void W3DModelDraw::doDrawModule(const Matrix3D* transformMtx)
 
   handleClientRecoil();
 
+	// GXDRAWDBG - TEMPORARY post-mortem audit: periodically report what a DEAD structure is still
+	// rendering, so "destroyed thing still animating / still on fire" is measured, not guessed.
+	// REMOVE when fixed.
+	if (gxDrawDbgEnabled() && TheGameLogic != nullptr && (TheGameLogic->getFrame() % 240) == 0)
+	{
+		const Drawable *d = getDrawable();
+		const Object *o = d ? d->getObject() : nullptr;
+		if (o != nullptr && o->isKindOf(KINDOF_STRUCTURE) && o->isEffectivelyDead())
+		{
+			Bool curIsRubbleState = FALSE;
+			if (m_curState != nullptr)
+			{
+				for (Int y = 0; y < (Int)m_curState->m_conditionsYesVec.size(); ++y)
+				{
+					if (m_curState->m_conditionsYesVec[y].test(MODELCONDITION_RUBBLE))
+					{
+						curIsRubbleState = TRUE;
+						break;
+					}
+				}
+			}
+
+			Int liveParticles = 0;
+			for (std::vector<ParticleSysTrackerType>::const_iterator it = m_particleSystemIDs.begin();
+					it != m_particleSystemIDs.end(); ++it)
+			{
+				if (TheParticleSystemManager->findParticleSystem((*it).id) != nullptr)
+					++liveParticles;
+			}
+
+			const Bool animating = (m_renderObject != nullptr && m_curState != nullptr &&
+				m_whichAnimInCurState >= 0 && !m_pauseAnimation);
+
+			if (animating || liveParticles > 0 || !curIsRubbleState)
+			{
+				fprintf(stderr, "[DRAWDBG] f=%d POSTMORTEM id=%d tmpl=%s tag=%s cond=%s cur=[%s] rubbleState=%d animating=%d clientPS=%d robj=%s\n",
+					(Int)TheGameLogic->getFrame(), (Int)o->getID(), o->getTemplate()->getName().str(),
+					KEYNAME(getModuleTagNameKey()).str(),
+					gxFlatDesc(d->getModelConditionFlags()).str(),
+					gxStateDesc(m_curState).str(),
+					curIsRubbleState ? 1 : 0, animating ? 1 : 0, liveParticles,
+					m_renderObject ? "yes" : "no");
+			}
+		}
+	}
+
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -2944,6 +3142,11 @@ void W3DModelDraw::setModelState(const ModelConditionInfo* newState)
 				DEBUG_LOG(("IGNORE duplicate state %s for obj %s %d",newState->m_description.str(),getDrawable()->getObject()->getTemplate()->getName().str(),getDrawable()->getObject()->getID()));
 			}
 #endif
+			// GXDRAWDBG - TEMPORARY
+			if (gxDrawDbgEnabled())
+				fprintf(stderr, "[DRAWDBG] SETSTATE tag=%s DUPLICATE-IGNORED want=[%s]\n",
+					KEYNAME(getModuleTagNameKey()).str(), gxStateDesc(newState).str());
+
 			// I don't think he'll be interested...
 			// he's already got one, you see
 			return;
@@ -2961,6 +3164,11 @@ void W3DModelDraw::setModelState(const ModelConditionInfo* newState)
 				DEBUG_LOG(("ALLOW_TO_FINISH state %s for obj %s %d",newState->m_description.str(),getDrawable()->getObject()->getTemplate()->getName().str(),getDrawable()->getObject()->getID()));
 			}
 #endif
+			// GXDRAWDBG - TEMPORARY
+			if (gxDrawDbgEnabled())
+				fprintf(stderr, "[DRAWDBG] SETSTATE tag=%s DEFERRED-ALLOW-TO-FINISH cur=[%s] want=[%s]\n",
+					KEYNAME(getModuleTagNameKey()).str(), gxStateDesc(m_curState).str(), gxStateDesc(newState).str());
+
 			m_nextState = newState;
 			m_nextStateAnimLoopDuration = NO_NEXT_DURATION;
 			return;
@@ -2980,6 +3188,11 @@ void W3DModelDraw::setModelState(const ModelConditionInfo* newState)
 					DEBUG_LOG(("using TRANSITION state %s before requested state %s for obj %s %d",transState->m_description.str(),newState->m_description.str(),getDrawable()->getObject()->getTemplate()->getName().str(),getDrawable()->getObject()->getID()));
 				}
 #endif
+				// GXDRAWDBG - TEMPORARY
+				if (gxDrawDbgEnabled())
+					fprintf(stderr, "[DRAWDBG] SETSTATE tag=%s VIA-TRANSITION trans=[%s] then=[%s]\n",
+						KEYNAME(getModuleTagNameKey()).str(), gxStateDesc(transState).str(), gxStateDesc(newState).str());
+
 				nextState = newState;
 				newState = transState;
 			}
@@ -3178,8 +3391,39 @@ void W3DModelDraw::replaceModelConditionState(const ModelConditionFlags& c)
 	m_hideHeadlights = c.test(MODELCONDITION_NIGHT) ? false : true;
 
 	const ModelConditionInfo* info = findBestInfo(c);
+
+	// GXDRAWDBG - TEMPORARY
+	if (gxDrawDbgEnabled() && c.test(MODELCONDITION_RUBBLE))
+	{
+		const Drawable *d = getDrawable();
+		const Object *o = d ? d->getObject() : nullptr;
+		fprintf(stderr, "[DRAWDBG] f=%d REPLACE id=%d tmpl=%s tag=%s cond=%s cur=[%s] best=[%s]\n",
+			TheGameLogic ? (Int)TheGameLogic->getFrame() : -1,
+			o ? (Int)o->getID() : -1,
+			o ? o->getTemplate()->getName().str() : "<nodraw>",
+			KEYNAME(getModuleTagNameKey()).str(),
+			gxFlatDesc(c).str(),
+			gxStateDesc(m_curState).str(),
+			gxStateDesc(info).str());
+	}
+
 	if (info)
 		setModelState(info);
+
+	// GXDRAWDBG - TEMPORARY: what actually stuck, and is there still a render object?
+	if (gxDrawDbgEnabled() && c.test(MODELCONDITION_RUBBLE))
+	{
+		const Drawable *d = getDrawable();
+		const Object *o = d ? d->getObject() : nullptr;
+		fprintf(stderr, "[DRAWDBG] f=%d SETTLED id=%d tag=%s cur=[%s] next=[%s] robj=%s anim=%d\n",
+			TheGameLogic ? (Int)TheGameLogic->getFrame() : -1,
+			o ? (Int)o->getID() : -1,
+			KEYNAME(getModuleTagNameKey()).str(),
+			gxStateDesc(m_curState).str(),
+			gxStateDesc(m_nextState).str(),
+			m_renderObject ? "yes" : "no",
+			(Int)m_whichAnimInCurState);
+	}
 
 	hideAllHeadlights(m_hideHeadlights);
 }

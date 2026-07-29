@@ -25,7 +25,11 @@
 #include "Common/GameEngine.h"
 #include "Common/GlobalData.h"
 #include "Common/PlayerTemplate.h"
+#include "Common/PlayerList.h"
+#include "Common/Player.h"
+#include "Common/ThingTemplate.h"
 #include "Common/Recorder.h"
+#include "GameLogic/Object.h"
 #include "GameClient/GameClient.h"
 #include "GameClient/MapUtil.h"	// TheMapCache
 #include "GameLogic/GameLogic.h"
@@ -654,6 +658,24 @@ Bool HeadlessMatch::publishGameOptions()
 		}
 	}
 
+	// GXDRAWDBG - TEMPORARY. The match loop stops as soon as the LOCAL player is defeated, which on
+	// a cramped map is long before the AI have destroyed each other's bases - exactly the events a
+	// structure-rendering investigation needs. Allying the host with the first AI keeps the team
+	// alive after the host is wiped out, so the run continues to its frame limit. REMOVE when done.
+	if (getenv("GX_ALLYHOST") != nullptr)
+	{
+		LANGameSlot host = *game->getLANSlot(0);
+		host.setTeamNumber(0);
+		game->setSlot(0, host);
+		if (nextSlot > 1)
+		{
+			LANGameSlot ally = *game->getLANSlot(1);
+			ally.setTeamNumber(0);
+			game->setSlot(1, ally);
+		}
+		headlessLog("GX_ALLYHOST: host and slot 1 allied on team 0");
+	}
+
 	// -lanseed pins the match seed. RequestGameCreate seeds from GetTickCount(), so two runs
 	// never share a starting state and cannot be compared. With a fixed seed, two SOLO headless
 	// runs on different platforms produce directly diffable [GXCRC] streams with no network
@@ -758,9 +780,64 @@ Bool HeadlessMatch::runMatch()
 	// Reuse GameEngine::update rather than open-coding the subsystem order. That ordering
 	// (client, message stream, network, then logic, all inside VERIFY_CRC) is load-bearing
 	// for determinism, and a second copy of it here would drift from the real one.
+	// GXDRAWDBG - TEMPORARY deterministic forcing function for the destroyed-structure rendering
+	// investigation: capture and then kill every instance of a named template at fixed frames, so
+	// the POSTMORTEM audit has something to look at without waiting on the AI. REMOVE when done.
+	const char *killTmpl = getenv("GX_KILLTMPL");
+	const char *killFrameEnv = getenv("GX_KILLFRAME");
+	const UnsignedInt killFrame = (killFrameEnv != nullptr) ? (UnsignedInt)atoi(killFrameEnv) : 400;
+	const Bool wantCapture = (getenv("GX_CAPTURE") != nullptr);
+	Bool didCapture = FALSE;
+	Bool didKill = FALSE;
+
 	while (!TheGameEngine->getQuitting())
 	{
 		TheGameEngine->update();
+
+		if (killTmpl != nullptr && TheGameLogic->isInGame())
+		{
+			const UnsignedInt now = TheGameLogic->getFrame();
+			if (wantCapture && !didCapture && now >= killFrame / 2)
+			{
+				Player *owner = nullptr;
+				for (Int p = 0; p < ThePlayerList->getPlayerCount(); ++p)
+				{
+					Player *cand = ThePlayerList->getNthPlayer(p);
+					if (cand != nullptr && cand->isPlayableSide())
+					{
+						owner = cand;
+						break;
+					}
+				}
+				for (Object *o = TheGameLogic->getFirstObject(); o != nullptr; o = o->getNextObject())
+				{
+					const Bool capMatches = (strcmp(killTmpl, "*STRUCTURE*") == 0)
+						? o->isKindOf(KINDOF_STRUCTURE)
+						: (strcmp(o->getTemplate()->getName().str(), killTmpl) == 0);
+					if (owner != nullptr && capMatches)
+					{
+						o->setTeam(owner->getDefaultTeam());
+						headlessLog("GX_KILLTMPL: captured %s id=%d for player %d", killTmpl, (Int)o->getID(), (Int)owner->getPlayerIndex());
+					}
+				}
+				didCapture = TRUE;
+			}
+			if (!didKill && now >= killFrame)
+			{
+				for (Object *o = TheGameLogic->getFirstObject(); o != nullptr; o = o->getNextObject())
+				{
+					const Bool matches = (strcmp(killTmpl, "*STRUCTURE*") == 0)
+						? o->isKindOf(KINDOF_STRUCTURE)
+						: (strcmp(o->getTemplate()->getName().str(), killTmpl) == 0);
+					if (matches && !o->isEffectivelyDead())
+					{
+						headlessLog("GX_KILLTMPL: killing %s id=%d at frame %d", o->getTemplate()->getName().str(), (Int)o->getID(), (Int)now);
+						o->kill();
+					}
+				}
+				didKill = TRUE;
+			}
+		}
 
 		// Sample the desync flag while the game is still live and latch it. This must be
 		// TheNetwork's flag, NOT TheRecorder's: RecorderClass::sawCRCMismatch dereferences
