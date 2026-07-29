@@ -23,8 +23,12 @@
 #include "PreRTS.h"
 
 #include "Common/Diagnostic/SimulationId.h"
-#include "Common/File.h"
-#include "Common/FileSystem.h"         // TheFileSystem, FilenameList
+// NOT "Common/File.h": that spelling resolves to GeneralsMD's File.h, a *different* class from
+// Core's Common/file.h. On case-insensitive filesystems the two collapse into one and nothing
+// happens; on Linux both land in this TU and it fails with "redefinition of class File". Every
+// other TU in the tree takes File transitively through FileSystem.h, which is also the header
+// openFile() declares its return type against. Do the same here.
+#include "Common/FileSystem.h"         // TheFileSystem, FilenameList, File
 #include "Common/GameDefines.h"
 #include "Common/INI.h"
 #include "GameNetwork/LANAPI.h"        // SimIdWire, SIMID_WIRE_TAG, sizeof(LANMessage)
